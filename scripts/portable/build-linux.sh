@@ -45,7 +45,11 @@ mkdir -p "$static_build"
 pushd "$static_build"
 env "${common_env[@]}" "$root_dir/configure" \
   "${common_options[@]}" --disable-shared --enable-static
-make -j"$(getconf _NPROCESSORS_ONLN)"
+for component in common scconf ui pkcs15init sm libopensc pkcs11; do
+  make -C "src/$component" -j"$(getconf _NPROCESSORS_ONLN)"
+done
+make -C src/tools -j"$(getconf _NPROCESSORS_ONLN)" pkcs11-tool \
+  LIBS="../libopensc/libopensc.la ../common/libscdl.la ../common/libcompat.la $openssl_prefix/lib/libcrypto.a -ldl -pthread"
 popd
 
 mkdir -p "$shared_build"
