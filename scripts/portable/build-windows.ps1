@@ -55,4 +55,5 @@ foreach ($Binary in $Tool, $Spy) {
 $ArchivePath = Join-Path $OutputDir $ArchiveName
 Remove-Item $ArchivePath -ErrorAction SilentlyContinue
 Compress-Archive -Path (Join-Path $StageDir "*") -DestinationPath $ArchivePath -CompressionLevel Optimal
-Get-FileHash -Algorithm SHA256 $ArchivePath
+certutil -hashfile $ArchivePath SHA256
+if ($LASTEXITCODE -ne 0) { throw "cannot calculate package SHA-256" }

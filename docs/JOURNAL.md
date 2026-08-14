@@ -31,3 +31,11 @@
 Проверка: библиотеки собрались, но параллельная линковка посторонних tools остановилась на undefined OpenSSL symbols. Их глобальный `LIBS` ставит внутренний `libopensc.a` после `OPTIONAL_OPENSSL_LIBS`; для статического архива порядок существенен.
 
 Вывод: static-stage собирает только цепочку библиотек, нужную `pkcs11-tool`, а сам целевой executable линкует с явным завершающим `libcrypto.a`. Shared-stage остается штатным и создает `pkcs11-spy`; неподлежащие упаковке tools в static-stage не собираются.
+
+## 2026-08-14 — SHA-256 внутри Visual Studio environment
+
+Гипотеза: `Get-FileHash` доступен в PowerShell, запущенном из `vcvarsall` build-step.
+
+Проверка: Windows x64 полностью собрал `pkcs11-tool.exe` и `pkcs11-spy.dll`, прошел проверки PE machine/dependencies и создал ZIP, но завершился ошибкой только потому, что этот cmdlet не разрешился в измененном Visual Studio environment.
+
+Вывод: сборочный скрипт использует системный `certutil -hashfile ... SHA256`, не зависящий от загрузки PowerShell-модуля. Хэш остается диагностическим; release-job независимо создает итоговый `SHA256SUMS`.
