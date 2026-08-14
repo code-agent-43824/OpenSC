@@ -232,6 +232,7 @@ jobs:
             case "$(basename "$archive")" in
               opensc-portable-windows-*.zip)
                 zipinfo -1 "$archive" | grep -Fx 'bin/pkcs11-tool.exe' >/dev/null
+                zipinfo -1 "$archive" | grep -Fx 'bin/opensc.dll' >/dev/null
                 zipinfo -1 "$archive" | grep -Fx 'lib/pkcs11-spy.dll' >/dev/null
                 ;;
               opensc-portable-macos-*.zip)

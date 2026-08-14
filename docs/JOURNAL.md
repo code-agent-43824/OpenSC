@@ -1,5 +1,13 @@
 # Журнал исследований
 
+## 2026-08-14 — Windows-зависимость pkcs11-tool от opensc.dll
+
+Гипотеза: Windows `pkcs11-tool.exe`, собранный через штатный `Makefile.mak`, самодостаточен при статическом vcpkg triplet.
+
+Проверка: все три Windows build прошли проверку архитектуры, но на чистых runner процесс завершился с `0xC0000135` до вывода. Таблица PE imports показала зависимость от проектной `opensc.dll`; сторонние библиотеки vcpkg при этом действительно связаны статически.
+
+Вывод: Windows portable-архив содержит `bin/opensc.dll` рядом с executable. Сборка проверяет архитектуру и отсутствие динамических OpenSSL/VC runtime dependencies также у этой DLL, а release-job проверяет ее наличие в каждом Windows ZIP.
+
 ## 2026-08-14 — исполняемый бит Unix-файлов в Actions artifacts
 
 Гипотеза: архив, восстановленный release-job из скачанного Actions artifact, сохранит исполняемый бит `bin/pkcs11-tool`.

@@ -5,11 +5,12 @@ This archive contains an installer-free pkcs11-tool executable and the
 pkcs11-spy tracing module for one platform:
 
   Linux:   bin/pkcs11-tool, lib/pkcs11-spy.so
-  Windows: bin/pkcs11-tool.exe, lib/pkcs11-spy.dll
+  Windows: bin/pkcs11-tool.exe, bin/opensc.dll, lib/pkcs11-spy.dll
   macOS:   bin/pkcs11-tool, lib/pkcs11-spy.dylib
 
 pkcs11-tool loads a PKCS #11 module supplied with --module. The executable and
-spy module have no non-system runtime dependencies.
+spy module have no runtime dependencies outside this archive and the operating
+system. On Windows, opensc.dll must remain beside pkcs11-tool.exe.
 
 To trace a module, set PKCS11SPY to its absolute path, set PKCS11SPY_OUTPUT to
 the desired log path, and pass the bundled spy module to pkcs11-tool:
