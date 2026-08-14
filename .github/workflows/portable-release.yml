@@ -1,0 +1,260 @@
+name: Portable PKCS11 tools release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag to create or update
+        required: true
+        default: 0.27.1-portable.1
+
+permissions:
+  contents: read
+
+env:
+  OPENSSL_VERSION: 3.5.7
+  OPENSSL_SHA256: a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8
+
+jobs:
+  build-linux:
+    name: Build Linux ${{ matrix.arch }} (glibc 2.31)
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    container: ubuntu:20.04
+    steps:
+      - name: Install build tools
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            autoconf automake build-essential ca-certificates curl file libtool \
+            make perl pkg-config unzip zip
+      - uses: actions/checkout@v7
+      - name: Build package
+        env:
+          PORTABLE_ARCH: ${{ matrix.arch }}
+        run: scripts/portable/build-linux.sh
+      - name: Prepare flat Actions artifact
+        run: |
+          mkdir -p artifact/opensc-portable-linux-${{ matrix.arch }}
+          unzip -q dist/opensc-portable-linux-${{ matrix.arch }}.zip \
+            -d artifact/opensc-portable-linux-${{ matrix.arch }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: opensc-portable-linux-${{ matrix.arch }}
+          path: artifact/opensc-portable-linux-${{ matrix.arch }}/
+          if-no-files-found: error
+          retention-days: 90
+
+  build-windows:
+    name: Build Windows ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86
+            runner: windows-2025
+            setenv: amd64_x86
+          - arch: x64
+            runner: windows-2025
+            setenv: amd64
+          - arch: arm64
+            runner: windows-2025
+            setenv: amd64_arm64
+    runs-on: ${{ matrix.runner }}
+    env:
+      PORTABLE_ARCH: ${{ matrix.arch }}
+      VCPKG_DEFAULT_TRIPLET: ${{ matrix.arch }}-windows-static
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install CPDK
+        run: choco install windows-cryptographic-provider-development-kit -y > $null
+      - name: Cache vcpkg
+        uses: actions/cache@v6
+        with:
+          path: ${{ github.workspace }}/vcpkg_cache
+          key: portable-vcpkg-${{ matrix.arch }}-${{ hashFiles('win32/vcpkg.json', 'win32/ports/**') }}
+      - name: Prepare vcpkg
+        env:
+          VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}/vcpkg_cache,readwrite
+        run: |
+          $installed = "${{ github.workspace }}\vcpkg_installed"
+          "VCPKG_INSTALLED=$installed" >> $env:GITHUB_ENV
+          C:\vcpkg\vcpkg install `
+            --x-manifest-root "${{ github.workspace }}\win32" `
+            --x-install-root $installed
+      - name: Build package
+        run: |
+          $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          & "$vsPath\VC\Auxiliary\Build\vcvarsall.bat" ${{ matrix.setenv }} "&&" scripts\portable\build-windows.cmd
+      - name: Prepare flat Actions artifact
+        run: Expand-Archive -LiteralPath dist\opensc-portable-windows-${{ matrix.arch }}.zip -DestinationPath artifact\opensc-portable-windows-${{ matrix.arch }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: opensc-portable-windows-${{ matrix.arch }}
+          path: artifact/opensc-portable-windows-${{ matrix.arch }}/
+          if-no-files-found: error
+          retention-days: 90
+
+  build-macos:
+    name: Build macOS universal
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install build tools
+        run: brew install autoconf automake libtool pkg-config
+      - name: Build package
+        run: scripts/portable/build-macos.sh
+      - name: Prepare flat Actions artifact
+        run: |
+          mkdir -p artifact/opensc-portable-macos-universal
+          unzip -q dist/opensc-portable-macos-universal.zip \
+            -d artifact/opensc-portable-macos-universal
+      - uses: actions/upload-artifact@v7
+        with:
+          name: opensc-portable-macos-universal
+          path: artifact/opensc-portable-macos-universal/
+          if-no-files-found: error
+          retention-days: 90
+
+  verify-linux:
+    name: Verify Linux ${{ matrix.arch }} on a clean runner
+    needs: build-linux
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    container: ubuntu:20.04
+    steps:
+      - name: Install test tools
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates curl python3 unzip
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: opensc-portable-linux-${{ matrix.arch }}
+          path: opensc-package
+      - name: Download latest matching SoftHSM portable library
+        run: |
+          curl --fail --location --retry 5 \
+            --output softhsm-portable-linux-${{ matrix.arch }}.zip \
+            https://github.com/code-agent-43824/SoftHSMv2/releases/latest/download/softhsm-portable-linux-${{ matrix.arch }}.zip
+          mkdir softhsm-package
+          unzip -q softhsm-portable-linux-${{ matrix.arch }}.zip -d softhsm-package
+      - name: Test direct and through pkcs11-spy
+        run: python3 scripts/portable/test.py opensc-package softhsm-package linux-${{ matrix.arch }}
+
+  verify-windows:
+    name: Verify Windows ${{ matrix.arch }} on a clean runner
+    needs: build-windows
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86
+            runner: windows-2025
+          - arch: x64
+            runner: windows-2025
+          - arch: arm64
+            runner: windows-11-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: opensc-portable-windows-${{ matrix.arch }}
+          path: opensc-package
+      - name: Download latest matching SoftHSM portable library
+        run: |
+          Invoke-WebRequest `
+            -Uri https://github.com/code-agent-43824/SoftHSMv2/releases/latest/download/softhsm-portable-windows-${{ matrix.arch }}.zip `
+            -OutFile softhsm.zip
+          Expand-Archive -LiteralPath softhsm.zip -DestinationPath softhsm-package
+      - name: Test direct and through pkcs11-spy
+        run: python scripts/portable/test.py opensc-package softhsm-package windows-${{ matrix.arch }}
+
+  verify-macos:
+    name: Verify macOS universal on a clean runner
+    needs: build-macos
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: opensc-portable-macos-universal
+          path: opensc-package
+      - name: Download latest matching SoftHSM portable library
+        run: |
+          curl --fail --location --retry 5 \
+            --output softhsm.zip \
+            https://github.com/code-agent-43824/SoftHSMv2/releases/latest/download/softhsm-portable-macos-universal.zip
+          mkdir softhsm-package
+          unzip -q softhsm.zip -d softhsm-package
+      - name: Test direct and through pkcs11-spy
+        run: python3 scripts/portable/test.py opensc-package softhsm-package macos-universal
+
+  release:
+    name: Publish all verified portable packages
+    needs: [verify-linux, verify-windows, verify-macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: opensc-portable-*
+          path: release-input
+      - name: Create release archives and checksums
+        run: |
+          mkdir release-assets
+          count=0
+          for source in release-input/opensc-portable-*; do
+            name=$(basename "$source")
+            case "$name" in
+              opensc-portable-windows-*) ;;
+              *) chmod +x "$source/bin/pkcs11-tool" ;;
+            esac
+            (cd "$source" && zip -X -9 -r "$GITHUB_WORKSPACE/release-assets/$name.zip" .)
+            count=$((count + 1))
+          done
+          test "$count" -eq 6
+          (cd release-assets && sha256sum *.zip > SHA256SUMS)
+      - name: Verify release archive layout
+        run: |
+          test "$(find release-assets -maxdepth 1 -type f -name '*.zip' | wc -l)" -eq 6
+          for archive in release-assets/*.zip; do
+            case "$(basename "$archive")" in
+              opensc-portable-windows-*.zip)
+                zipinfo -1 "$archive" | grep -Fx 'bin/pkcs11-tool.exe' >/dev/null
+                zipinfo -1 "$archive" | grep -Fx 'lib/pkcs11-spy.dll' >/dev/null
+                ;;
+              opensc-portable-macos-*.zip)
+                zipinfo -1 "$archive" | grep -Fx 'bin/pkcs11-tool' >/dev/null
+                zipinfo -1 "$archive" | grep -Fx 'lib/pkcs11-spy.dylib' >/dev/null
+                ;;
+              *)
+                zipinfo -1 "$archive" | grep -Fx 'bin/pkcs11-tool' >/dev/null
+                zipinfo -1 "$archive" | grep -Fx 'lib/pkcs11-spy.so' >/dev/null
+                ;;
+            esac
+          done
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          notes='Portable pkcs11-tool and pkcs11-spy packages for Linux x64/ARM64, Windows x86/x64/ARM64, and macOS universal. Each package was tested on a separate clean runner against the matching ordinary library archive from the latest code-agent-43824/SoftHSMv2 release. Verification initializes and changes token PINs, writes, reads, compares and deletes a data object directly and through pkcs11-spy, then validates the corresponding successful function sequence in the spy log.'
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release-assets/* --clobber
+          else
+            gh release create "$RELEASE_TAG" release-assets/* \
+              --target "$GITHUB_SHA" \
+              --title "OpenSC portable $RELEASE_TAG" \
+              --notes "$notes"
+          fi

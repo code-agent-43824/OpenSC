@@ -1,6 +1,7 @@
 # Передача работы
 
-В работе portable-релиз `pkcs11-tool` и `pkcs11-spy` для Linux x64/ARM64, Windows x86/x64/ARM64 и macOS universal.
+В работе первый portable-релиз `pkcs11-tool` и `pkcs11-spy` для Linux x64/ARM64, Windows x86/x64/ARM64 и macOS universal.
 
-Следующий шаг: добавить платформенные скрипты сборки, общий тестовый сценарий и `.github/workflows/portable-release.yml`, затем проверить локально и в GitHub Actions.
+Платформенные скрипты, общий тестовый сценарий и `.github/workflows/portable-release.yml` реализованы и локально статически проверены. Прямой сценарий прошел на обычном архиве последнего SoftHSMv2.
 
+Следующий шаг: запустить workflow с тегом `0.27.1-portable.1`, изучить логи и содержимое всех шести артефактов; при зеленом результате проверить опубликованный GitHub Release.
