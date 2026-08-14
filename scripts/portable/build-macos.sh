@@ -22,7 +22,7 @@ tar -xzf "$openssl_archive" -C "$work_dir"
 "$root_dir/bootstrap"
 
 common_options=(
-  --disable-pcsc --disable-sm --disable-zlib --disable-readline
+  --disable-strict --disable-pcsc --disable-sm --disable-zlib --disable-readline
   --disable-openpace --disable-man --disable-doc --disable-tests
   --disable-integration-tests --disable-notify --disable-cmocka
   --enable-openssl
