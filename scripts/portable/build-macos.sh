@@ -74,7 +74,10 @@ for arch in arm64 x86_64; do
   popd
 
   cp "$static_build/src/tools/pkcs11-tool" "$work_dir/pkcs11-tool-$arch"
-  cp "$shared_build/src/pkcs11/.libs/pkcs11-spy.dylib" "$work_dir/pkcs11-spy-$arch.dylib"
+  spy_module=$(find "$shared_build/src/pkcs11/.libs" -maxdepth 1 -type f \
+    -name 'pkcs11-spy.*' ! -name '*.la' ! -name '*.lai' -print -quit)
+  test -n "$spy_module"
+  cp "$spy_module" "$work_dir/pkcs11-spy-$arch.dylib"
 done
 
 lipo -create "$work_dir/pkcs11-tool-arm64" "$work_dir/pkcs11-tool-x86_64" \
