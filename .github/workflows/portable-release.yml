@@ -195,7 +195,7 @@ jobs:
           Copy-Item softhsm-package\* artifact-testkit\softhsm-package -Recurse
           Copy-Item scripts\portable\test.py artifact-testkit\test.py
           Copy-Item packaging\portable\TEST-KIT-README.txt artifact-testkit\README.txt
-          Set-Content -NoNewline artifact-testkit\platform.txt 'windows-${{ matrix.arch }}'
+          Set-Content -LiteralPath artifact-testkit\platform.txt -Value 'windows-${{ matrix.arch }}' -NoNewline
           python artifact-testkit\test.py
       - uses: actions/upload-artifact@v7
         with:
