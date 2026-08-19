@@ -8,9 +8,15 @@ on:
       - '**.sh'
       - .github/workflows/external-pkcs11.yaml
       - '**.am'
-      - doc/**
       - configure.ac
   push:
+    paths:
+      - '**.c'
+      - '**.h'
+      - '**.sh'
+      - .github/workflows/external-pkcs11.yaml
+      - '**.am'
+      - configure.ac
 
 permissions:
   contents: read  #  to fetch code (actions/checkout)
