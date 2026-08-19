@@ -91,12 +91,17 @@ def verify_spy_log(log_path: Path) -> None:
 
 
 def main() -> None:
-    if len(sys.argv) != 4:
-        raise SystemExit("usage: test.py <OpenSC package dir> <SoftHSM package dir> <platform>")
-
-    package_dir = Path(sys.argv[1]).resolve()
-    softhsm_dir = Path(sys.argv[2]).resolve()
-    platform = sys.argv[3]
+    if len(sys.argv) == 1:
+        testkit_dir = Path(__file__).resolve().parent
+        package_dir = testkit_dir / "opensc-package"
+        softhsm_dir = testkit_dir / "softhsm-package"
+        platform = (testkit_dir / "platform.txt").read_text(encoding="ascii").strip()
+    elif len(sys.argv) == 4:
+        package_dir = Path(sys.argv[1]).resolve()
+        softhsm_dir = Path(sys.argv[2]).resolve()
+        platform = sys.argv[3]
+    else:
+        raise SystemExit("usage: test.py [<OpenSC package dir> <SoftHSM package dir> <platform>]")
     if platform.startswith("windows-"):
         tool = package_dir / "bin" / "pkcs11-tool.exe"
         spy = package_dir / "lib" / "pkcs11-spy.dll"

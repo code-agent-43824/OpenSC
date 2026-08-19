@@ -6,7 +6,7 @@ on:
       release_tag:
         description: Release tag to create or update
         required: true
-        default: 0.27.1-portable.1
+        default: 0.27.1-portable.2
 
 permissions:
   contents: read
@@ -146,8 +146,21 @@ jobs:
             https://github.com/code-agent-43824/SoftHSMv2/releases/latest/download/softhsm-portable-linux-${{ matrix.arch }}.zip
           mkdir softhsm-package
           unzip -q softhsm-portable-linux-${{ matrix.arch }}.zip -d softhsm-package
-      - name: Test direct and through pkcs11-spy
-        run: python3 scripts/portable/test.py opensc-package softhsm-package linux-${{ matrix.arch }}
+      - name: Prepare and test downloadable test kit
+        run: |
+          mkdir -p artifact-testkit/opensc-package artifact-testkit/softhsm-package
+          cp -a opensc-package/. artifact-testkit/opensc-package/
+          cp -a softhsm-package/. artifact-testkit/softhsm-package/
+          cp scripts/portable/test.py artifact-testkit/test.py
+          cp packaging/portable/TEST-KIT-README.txt artifact-testkit/README.txt
+          printf '%s\n' 'linux-${{ matrix.arch }}' > artifact-testkit/platform.txt
+          python3 artifact-testkit/test.py
+      - uses: actions/upload-artifact@v7
+        with:
+          name: opensc-testkit-linux-${{ matrix.arch }}
+          path: artifact-testkit/
+          if-no-files-found: error
+          retention-days: 90
 
   verify-windows:
     name: Verify Windows ${{ matrix.arch }} on a clean runner
@@ -175,8 +188,21 @@ jobs:
             -Uri https://github.com/code-agent-43824/SoftHSMv2/releases/latest/download/softhsm-portable-windows-${{ matrix.arch }}.zip `
             -OutFile softhsm.zip
           Expand-Archive -LiteralPath softhsm.zip -DestinationPath softhsm-package
-      - name: Test direct and through pkcs11-spy
-        run: python scripts/portable/test.py opensc-package softhsm-package windows-${{ matrix.arch }}
+      - name: Prepare and test downloadable test kit
+        run: |
+          New-Item -ItemType Directory -Force artifact-testkit\opensc-package, artifact-testkit\softhsm-package | Out-Null
+          Copy-Item opensc-package\* artifact-testkit\opensc-package -Recurse
+          Copy-Item softhsm-package\* artifact-testkit\softhsm-package -Recurse
+          Copy-Item scripts\portable\test.py artifact-testkit\test.py
+          Copy-Item packaging\portable\TEST-KIT-README.txt artifact-testkit\README.txt
+          Set-Content -NoNewline artifact-testkit\platform.txt 'windows-${{ matrix.arch }}'
+          python artifact-testkit\test.py
+      - uses: actions/upload-artifact@v7
+        with:
+          name: opensc-testkit-windows-${{ matrix.arch }}
+          path: artifact-testkit/
+          if-no-files-found: error
+          retention-days: 90
 
   verify-macos:
     name: Verify macOS universal on a clean runner
@@ -195,8 +221,21 @@ jobs:
             https://github.com/code-agent-43824/SoftHSMv2/releases/latest/download/softhsm-portable-macos-universal.zip
           mkdir softhsm-package
           unzip -q softhsm.zip -d softhsm-package
-      - name: Test direct and through pkcs11-spy
-        run: python3 scripts/portable/test.py opensc-package softhsm-package macos-universal
+      - name: Prepare and test downloadable test kit
+        run: |
+          mkdir -p artifact-testkit/opensc-package artifact-testkit/softhsm-package
+          cp -a opensc-package/. artifact-testkit/opensc-package/
+          cp -a softhsm-package/. artifact-testkit/softhsm-package/
+          cp scripts/portable/test.py artifact-testkit/test.py
+          cp packaging/portable/TEST-KIT-README.txt artifact-testkit/README.txt
+          printf '%s\n' macos-universal > artifact-testkit/platform.txt
+          python3 artifact-testkit/test.py
+      - uses: actions/upload-artifact@v7
+        with:
+          name: opensc-testkit-macos-universal
+          path: artifact-testkit/
+          if-no-files-found: error
+          retention-days: 90
 
   release:
     name: Publish all verified portable packages
@@ -208,27 +247,33 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
-          pattern: opensc-portable-*
+          pattern: opensc-*
           path: release-input
       - name: Create release archives and checksums
         run: |
           mkdir release-assets
           count=0
-          for source in release-input/opensc-portable-*; do
+          for source in release-input/opensc-*; do
             name=$(basename "$source")
             case "$name" in
               opensc-portable-windows-*) ;;
-              *) chmod +x "$source/bin/pkcs11-tool" ;;
+              opensc-portable-*) chmod +x "$source/bin/pkcs11-tool" ;;
+              opensc-testkit-windows-*) ;;
+              opensc-testkit-*) chmod +x "$source/opensc-package/bin/pkcs11-tool" ;;
             esac
             (cd "$source" && zip -X -9 -r "$GITHUB_WORKSPACE/release-assets/$name.zip" .)
             count=$((count + 1))
           done
-          test "$count" -eq 6
+          test "$count" -eq 12
           (cd release-assets && sha256sum *.zip > SHA256SUMS)
       - name: Verify release archive layout
         run: |
-          test "$(find release-assets -maxdepth 1 -type f -name '*.zip' | wc -l)" -eq 6
+          test "$(find release-assets -maxdepth 1 -type f -name '*.zip' | wc -l)" -eq 12
           for archive in release-assets/*.zip; do
+            if zipinfo -1 "$archive" | grep -Eq '\.zip$'; then
+              echo "nested ZIP found in $archive" >&2
+              exit 1
+            fi
             case "$(basename "$archive")" in
               opensc-portable-windows-*.zip)
                 zipinfo -1 "$archive" | grep -Fx 'bin/pkcs11-tool.exe' >/dev/null
@@ -239,9 +284,15 @@ jobs:
                 zipinfo -1 "$archive" | grep -Fx 'bin/pkcs11-tool' >/dev/null
                 zipinfo -1 "$archive" | grep -Fx 'lib/pkcs11-spy.dylib' >/dev/null
                 ;;
-              *)
+              opensc-portable-linux-*.zip)
                 zipinfo -1 "$archive" | grep -Fx 'bin/pkcs11-tool' >/dev/null
                 zipinfo -1 "$archive" | grep -Fx 'lib/pkcs11-spy.so' >/dev/null
+                ;;
+              opensc-testkit-*.zip)
+                zipinfo -1 "$archive" | grep -Fx 'test.py' >/dev/null
+                zipinfo -1 "$archive" | grep -Fx 'platform.txt' >/dev/null
+                zipinfo -1 "$archive" | grep -E '^opensc-package/(bin|lib)/pkcs11-(tool|spy)' >/dev/null
+                zipinfo -1 "$archive" | grep -E '^softhsm-package/(libsofthsm2|softhsm2)' >/dev/null
                 ;;
             esac
           done
@@ -250,7 +301,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
-          notes='Portable pkcs11-tool and pkcs11-spy packages for Linux x64/ARM64, Windows x86/x64/ARM64, and macOS universal. Each package was tested on a separate clean runner against the matching ordinary library archive from the latest code-agent-43824/SoftHSMv2 release. Verification initializes and changes token PINs, writes, reads, compares and deletes a data object directly and through pkcs11-spy, then validates the corresponding successful function sequence in the spy log.'
+          notes='Portable pkcs11-tool and pkcs11-spy packages plus independently downloadable test kits for Linux x64/ARM64, Windows x86/x64/ARM64, and macOS universal. Each clean runner assembles and executes the exact test kit later uploaded to Actions and the release. The kit includes the OpenSC tools, the matching ordinary module archive from the latest code-agent-43824/SoftHSMv2 release, and the integration scenario. Verification initializes and changes token PINs, writes, reads, compares and deletes a data object directly and through pkcs11-spy, then validates the corresponding successful function sequence in the spy log.'
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" release-assets/* --clobber
           else
