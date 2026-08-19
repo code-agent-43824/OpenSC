@@ -4,7 +4,7 @@
 
 Каждый архив перед публикацией передается на отдельный чистый runner. Проверка скачивает соответствующий обычный архив последнего релиза `code-agent-43824/SoftHSMv2`, собирает плоский автономный `opensc-testkit-<platform>` и запускает сценарий именно из него. В test kit входят portable-инструменты OpenSC, модуль SoftHSM, `test.py`, manifest платформы и инструкция. Сценарий выполняется напрямую и через `pkcs11-spy` с проверкой лога.
 
-Полный GitHub Actions прогон [`32304930879`](https://github.com/code-agent-43824/OpenSC/actions/runs/32304930879) успешен: шесть build, шесть clean-runner verify и release job завершились с `PASS`. Все 12 Actions artifacts доступны напрямую, без вложенных ZIP. Дополнительный workflow тестов `pkcs11-tool` с внешними модулями [`32304931353`](https://github.com/code-agent-43824/OpenSC/actions/runs/32304931353) также успешен.
+Полный GitHub Actions прогон [`32304930879`](https://github.com/code-agent-43824/OpenSC/actions/runs/32304930879) успешен: шесть build, шесть clean-runner verify и release job завершились с `PASS`. Все 12 Actions artifacts доступны напрямую, без вложенных ZIP. Дополнительный workflow тестов `pkcs11-tool` с внешними модулями [`32305704510`](https://github.com/code-agent-43824/OpenSC/actions/runs/32305704510) также успешен.
 
 Релиз [`0.27.1-portable.2`](https://github.com/code-agent-43824/OpenSC/releases/tag/0.27.1-portable.2) содержит шесть product ZIP, шесть test-kit ZIP и общий `SHA256SUMS`. Все assets скачаны заново: 12 хэшей совпали, вложенных ZIP нет, Linux x64 test kit повторно прошел вне CI.
 
