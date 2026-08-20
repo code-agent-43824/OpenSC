@@ -46,7 +46,7 @@ Copy-Item $OpenSSLCopyright (Join-Path $StageDir "LICENSE-OpenSSL.txt")
 
 $Stub = Join-Path $RutokenTestDir "rutoken-stub.dll"
 $Driver = Join-Path $RutokenTestDir "rutoken-driver.exe"
-& cl /nologo /LD "/I$RootDir\src" "/Fo$RutokenTestDir\rutoken-stub.obj" "/Fe$Stub" "$RootDir\tests\rutoken-stub.c"
+& cl /nologo /LD "/I$RootDir\src" "/Fo$RutokenTestDir\rutoken-stub.obj" "/Fe$Stub" "$RootDir\tests\rutoken-stub.c" /link /export:C_GetFunctionList
 if ($LASTEXITCODE -ne 0) { throw "Rutoken stub build failed" }
 & cl /nologo "/I$RootDir\src" "/Fo$RutokenTestDir\rutoken-driver.obj" "/Fe$Driver" "$RootDir\tests\rutoken-driver.c"
 if ($LASTEXITCODE -ne 0) { throw "Rutoken driver build failed" }

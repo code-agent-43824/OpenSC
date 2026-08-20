@@ -12,21 +12,21 @@ CK_RV CK_SPEC name parameters \
 	return CKR_VENDOR_DEFINED + (number); \
 }
 
-CK_RV CK_SPEC
+CK_RV
 C_Initialize(CK_VOID_PTR pInitArgs)
 {
 	(void)pInitArgs;
 	return CKR_OK;
 }
 
-CK_RV CK_SPEC
+CK_RV
 C_Finalize(CK_VOID_PTR pReserved)
 {
 	(void)pReserved;
 	return CKR_OK;
 }
 
-CK_RV CK_SPEC
+CK_RV
 C_GetFunctionList(CK_FUNCTION_LIST_PTR_PTR ppFunctionList)
 {
 	if (!ppFunctionList)
@@ -35,7 +35,7 @@ C_GetFunctionList(CK_FUNCTION_LIST_PTR_PTR ppFunctionList)
 	return CKR_OK;
 }
 
-CK_RV CK_SPEC
+CK_RV
 C_GetSlotList(CK_BBOOL tokenPresent, CK_SLOT_ID_PTR pSlotList,
 		CK_ULONG_PTR pulCount)
 {
@@ -55,7 +55,7 @@ C_GetSlotList(CK_BBOOL tokenPresent, CK_SLOT_ID_PTR pSlotList,
 	return CKR_OK;
 }
 
-CK_RV CK_SPEC
+CK_RV
 C_GetSlotInfo(CK_SLOT_ID slotID, CK_SLOT_INFO_PTR pInfo)
 {
 	if (slotID != 7)
@@ -67,7 +67,7 @@ C_GetSlotInfo(CK_SLOT_ID slotID, CK_SLOT_INFO_PTR pInfo)
 	return CKR_OK;
 }
 
-CK_RV CK_SPEC
+CK_RV
 C_OpenSession(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication,
 		CK_NOTIFY notify, CK_SESSION_HANDLE_PTR phSession)
 {
@@ -82,7 +82,7 @@ C_OpenSession(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication,
 	return CKR_OK;
 }
 
-CK_RV CK_SPEC
+CK_RV
 C_CloseSession(CK_SESSION_HANDLE hSession)
 {
 	return hSession == 23 ? CKR_OK : CKR_SESSION_HANDLE_INVALID;
