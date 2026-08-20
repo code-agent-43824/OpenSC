@@ -22,5 +22,6 @@
 #define __LIBPKCS11_H
 #include "pkcs11/pkcs11.h"
 void *C_LoadModule(const char *name, CK_FUNCTION_LIST_PTR_PTR);
+void *C_GetModuleSymbol(void *module, const char *symbol);
 CK_RV C_UnloadModule(void *module);
 #endif

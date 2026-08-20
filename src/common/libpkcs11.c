@@ -105,6 +105,16 @@ failed:
 	return NULL;
 }
 
+void *
+C_GetModuleSymbol(void *module, const char *symbol)
+{
+	sc_pkcs11_module_t *mod = (sc_pkcs11_module_t *) module;
+
+	if (!mod || mod->_magic != MAGIC || !symbol)
+		return NULL;
+	return sc_dlsym(mod->handle, symbol);
+}
+
 /*
  * Unload a pkcs11 module.
  * The calling application is responsible for cleaning up
