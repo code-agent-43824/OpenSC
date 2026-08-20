@@ -20,5 +20,11 @@ the desired log path, and pass the bundled spy module to pkcs11-tool:
   bin/pkcs11-tool --module lib/pkcs11-spy.so --show-info
 
 Use the corresponding environment-variable syntax and .dll name on Windows.
+Alternatively, edit lib/pkcs11-spy.conf beside the spy module and uncomment
+both variables. A complete recognized file takes precedence over environment
+variables (and the Windows Registry); relative paths are resolved from the lib
+directory. If the file is absent, incomplete, or contains an unknown setting,
+pkcs11-spy keeps the previous environment/Registry behavior.
+
 The spy log can include PINs and object contents passed to PKCS #11 functions;
 treat it as sensitive diagnostic data.

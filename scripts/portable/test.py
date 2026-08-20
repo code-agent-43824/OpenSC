@@ -152,6 +152,49 @@ def verify_rutoken_extensions(
         raise RuntimeError("Rutoken spy log did not redact sensitive input")
 
 
+def verify_spy_config(
+    tool: Path,
+    spy: Path,
+    module: Path,
+    work_dir: Path,
+    env: Dict[str, str],
+) -> None:
+    config = spy.parent / "pkcs11-spy.conf"
+    if not config.is_file():
+        raise RuntimeError(f"pkcs11-spy config template is missing: {config}")
+    template = config.read_bytes()
+    config_log = spy.parent / "pkcs11-spy-config-test.log"
+    fallback_log = work_dir / "pkcs11-spy-config-fallback.log"
+    relative_module = os.path.relpath(module, spy.parent)
+    invalid_module = work_dir / "missing-pkcs11-module"
+
+    try:
+        config.write_text(
+            f"PKCS11SPY={relative_module}\n"
+            f"PKCS11SPY_OUTPUT={config_log.name}\n",
+            encoding="utf-8",
+        )
+        config_env = env.copy()
+        config_env["PKCS11SPY"] = str(invalid_module)
+        config_env["PKCS11SPY_OUTPUT"] = str(work_dir / "wrong-environment.log")
+        run(tool, spy, ["--show-info"], config_env)
+        config_text = config_log.read_text(encoding="utf-8", errors="replace")
+        if "Loaded:" not in config_text or module.name not in config_text:
+            raise RuntimeError("pkcs11-spy did not prefer its local config file")
+
+        config.write_text("UNKNOWN_SETTING=value\n", encoding="utf-8")
+        fallback_env = env.copy()
+        fallback_env["PKCS11SPY"] = str(module)
+        fallback_env["PKCS11SPY_OUTPUT"] = str(fallback_log)
+        run(tool, spy, ["--show-info"], fallback_env)
+        fallback_text = fallback_log.read_text(encoding="utf-8", errors="replace")
+        if "Loaded:" not in fallback_text or str(module) not in fallback_text:
+            raise RuntimeError("pkcs11-spy did not fall back to environment variables")
+    finally:
+        config.write_bytes(template)
+        config_log.unlink(missing_ok=True)
+
+
 def main() -> None:
     if len(sys.argv) == 1:
         testkit_dir = Path(__file__).resolve().parent
@@ -198,6 +241,7 @@ def main() -> None:
 
         if rutoken_test_dir is not None:
             verify_rutoken_extensions(rutoken_test_dir, spy, platform, work_dir)
+            verify_spy_config(tool, spy, softhsm, work_dir, env)
 
         scenario(tool, softhsm, work_dir, "direct", env)
 

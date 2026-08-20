@@ -22,5 +22,8 @@ sequence. It first checks the extended table layout and every Rutoken function
 pointer, return value and spy-log entry against the bundled harmless stub. The
 temporary token store and spy logs are removed after the run.
 
+The commented opensc-package/lib/pkcs11-spy.conf template is also tested for
+configuration-file priority and fallback to environment variables.
+
 Do not replace softhsm-package with a hardware or production module: the test
 deliberately calls C_InitToken and would erase the selected token.

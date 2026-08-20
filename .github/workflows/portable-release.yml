@@ -6,7 +6,7 @@ on:
       release_tag:
         description: Release tag to create or update
         required: true
-        default: 0.27.1-portable.3
+        default: 0.27.1-portable.4
 
 permissions:
   contents: read
@@ -315,19 +315,23 @@ jobs:
                 zipinfo -1 "$archive" | grep -Fx 'bin/pkcs11-tool.exe' >/dev/null
                 zipinfo -1 "$archive" | grep -Fx 'bin/opensc.dll' >/dev/null
                 zipinfo -1 "$archive" | grep -Fx 'lib/pkcs11-spy.dll' >/dev/null
+                zipinfo -1 "$archive" | grep -Fx 'lib/pkcs11-spy.conf' >/dev/null
                 ;;
               opensc-portable-macos-*.zip)
                 zipinfo -1 "$archive" | grep -Fx 'bin/pkcs11-tool' >/dev/null
                 zipinfo -1 "$archive" | grep -Fx 'lib/pkcs11-spy.dylib' >/dev/null
+                zipinfo -1 "$archive" | grep -Fx 'lib/pkcs11-spy.conf' >/dev/null
                 ;;
               opensc-portable-linux-*.zip)
                 zipinfo -1 "$archive" | grep -Fx 'bin/pkcs11-tool' >/dev/null
                 zipinfo -1 "$archive" | grep -Fx 'lib/pkcs11-spy.so' >/dev/null
+                zipinfo -1 "$archive" | grep -Fx 'lib/pkcs11-spy.conf' >/dev/null
                 ;;
               opensc-testkit-*.zip)
                 zipinfo -1 "$archive" | grep -Fx 'test.py' >/dev/null
                 zipinfo -1 "$archive" | grep -Fx 'platform.txt' >/dev/null
                 zipinfo -1 "$archive" | grep -E '^opensc-package/(bin|lib)/pkcs11-(tool|spy)' >/dev/null
+                zipinfo -1 "$archive" | grep -Fx 'opensc-package/lib/pkcs11-spy.conf' >/dev/null
                 zipinfo -1 "$archive" | grep -E '^softhsm-package/(libsofthsm2|softhsm2)' >/dev/null
                 zipinfo -1 "$archive" | grep -E '^rutoken-test/rutoken-driver(\.exe)?$' >/dev/null
                 zipinfo -1 "$archive" | grep -E '^rutoken-test/rutoken-stub\.(so|dylib|dll)$' >/dev/null
@@ -339,7 +343,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
-          notes='Portable pkcs11-tool and pkcs11-spy packages plus independently downloadable test kits for Linux x64/ARM64, Windows x86/x64/ARM64, and macOS universal. Each clean runner assembles and executes the exact test kit later uploaded to Actions and the release. The kit includes the OpenSC tools, the matching ordinary module archive from the latest code-agent-43824/SoftHSMv2 release, and a harmless Rutoken ABI stub. Verification invokes every one of the 33 Rutoken C_EX_* operations through pkcs11-spy, checks the complete 34-field table, return values, logging and redaction, then runs the ordinary direct and spy data-object scenarios.'
+          notes='Portable pkcs11-tool and pkcs11-spy packages plus independently downloadable test kits for Linux x64/ARM64, Windows x86/x64/ARM64, and macOS universal. pkcs11-spy now reads the commented pkcs11-spy.conf template beside its module before environment variables, with safe fallback for absent or invalid files; every clean runner checks both precedence paths. The kit also includes the matching ordinary SoftHSM module and a harmless Rutoken ABI stub. Verification invokes every one of the 33 Rutoken C_EX_* operations through pkcs11-spy, checks the complete 34-field table, logging and redaction, then runs the ordinary direct and spy data-object scenarios.'
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" release-assets/* --clobber
           else

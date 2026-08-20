@@ -105,6 +105,8 @@ codesign --force --sign - "$stage_dir/bin/pkcs11-tool" "$stage_dir/lib/pkcs11-sp
 codesign --force --sign - "$rutoken_test_dir/rutoken-stub.dylib" \
   "$rutoken_test_dir/rutoken-driver"
 cp "$root_dir/packaging/portable/README.txt" "$stage_dir/README.txt"
+cp "$root_dir/packaging/portable/pkcs11-spy.conf" \
+  "$stage_dir/lib/pkcs11-spy.conf"
 cp "$root_dir/COPYING" "$stage_dir/LICENSE-OpenSC.txt"
 cp "$openssl_source/LICENSE.txt" "$stage_dir/LICENSE-OpenSSL.txt"
 

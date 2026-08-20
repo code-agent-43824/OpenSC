@@ -40,6 +40,7 @@ Copy-Item (Join-Path $RootDir "src/tools/pkcs11-tool.exe") $Tool
 Copy-Item (Join-Path $RootDir "src/libopensc/opensc.dll") $OpenSCLibrary
 Copy-Item (Join-Path $RootDir "src/pkcs11/pkcs11-spy.dll") $Spy
 Copy-Item (Join-Path $RootDir "packaging/portable/README.txt") (Join-Path $StageDir "README.txt")
+Copy-Item (Join-Path $RootDir "packaging/portable/pkcs11-spy.conf") (Join-Path $StageDir "lib/pkcs11-spy.conf")
 Copy-Item (Join-Path $RootDir "COPYING") (Join-Path $StageDir "LICENSE-OpenSC.txt")
 $OpenSSLCopyright = Join-Path $env:VCPKG_INSTALLED "$($env:VCPKG_DEFAULT_TRIPLET)/share/openssl/copyright"
 Copy-Item $OpenSSLCopyright (Join-Path $StageDir "LICENSE-OpenSSL.txt")

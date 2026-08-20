@@ -65,6 +65,8 @@ cp "$static_build/src/tools/pkcs11-tool" "$stage_dir/bin/pkcs11-tool"
 cp "$shared_build/src/pkcs11/.libs/pkcs11-spy.so" "$stage_dir/lib/pkcs11-spy.so"
 strip --strip-unneeded "$stage_dir/bin/pkcs11-tool" "$stage_dir/lib/pkcs11-spy.so"
 cp "$root_dir/packaging/portable/README.txt" "$stage_dir/README.txt"
+cp "$root_dir/packaging/portable/pkcs11-spy.conf" \
+  "$stage_dir/lib/pkcs11-spy.conf"
 cp "$root_dir/COPYING" "$stage_dir/LICENSE-OpenSC.txt"
 cp "$openssl_source/LICENSE.txt" "$stage_dir/LICENSE-OpenSSL.txt"
 

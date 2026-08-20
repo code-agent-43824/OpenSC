@@ -17,8 +17,14 @@
  * USA
  */
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include "config.h"
 
+#include <ctype.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,8 +33,10 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <winreg.h>
-#include <limits.h>
 #else
+#ifdef HAVE_DLADDR
+#include <dlfcn.h>
+#endif
 #ifdef HAVE_SYS_TIME_H
 #include <sys/time.h>
 #endif
@@ -221,12 +229,168 @@ CK_INTERFACE compat_interfaces[NUM_INTERFACES] = {
 
 CK_INTERFACE spy_interface = {(CK_UTF8CHAR_PTR) "PKCS 11", NULL, 0};
 
+#define SPY_CONFIG_FILENAME "pkcs11-spy.conf"
+
+static int spy_config_anchor;
+
+static char *
+spy_trim(char *value)
+{
+	char *end;
+
+	while (isspace((unsigned char)*value))
+		value++;
+	end = value + strlen(value);
+	while (end > value && isspace((unsigned char)end[-1]))
+		*--end = '\0';
+	return value;
+}
+
+static int
+spy_module_directory(char *directory, size_t size)
+{
+	char path[PATH_MAX];
+	char *separator;
+#ifdef _WIN32
+	HMODULE module;
+	DWORD length;
+
+	if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+			GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+			(LPCSTR)&spy_config_anchor, &module))
+		return 0;
+	length = GetModuleFileNameA(module, path, sizeof(path));
+	if (!length || length >= (DWORD)sizeof(path))
+		return 0;
+	separator = strrchr(path, '\\');
+	if (!separator)
+		separator = strrchr(path, '/');
+#elif defined(HAVE_DLADDR)
+	Dl_info info;
+	char resolved[PATH_MAX];
+
+	if (!dladdr(&spy_config_anchor, &info) || !info.dli_fname)
+		return 0;
+	if (realpath(info.dli_fname, resolved))
+		info.dli_fname = resolved;
+	if (strlen(info.dli_fname) >= sizeof(path))
+		return 0;
+	strcpy(path, info.dli_fname);
+	separator = strrchr(path, '/');
+#else
+	(void)directory;
+	(void)size;
+	return 0;
+#endif
+	if (!separator)
+		return 0;
+	if (separator == path)
+		separator[1] = '\0';
+	else
+		*separator = '\0';
+	if (strlen(path) >= size)
+		return 0;
+	strcpy(directory, path);
+	return 1;
+}
+
+static int
+spy_absolute_path(const char *path)
+{
+#ifdef _WIN32
+	return path[0] == '/' || path[0] == '\\' ||
+		(isalpha((unsigned char)path[0]) && path[1] == ':');
+#else
+	return path[0] == '/';
+#endif
+}
+
+static int
+spy_resolve_path(const char *directory, const char *value,
+		char *result, size_t size)
+{
+	int length;
+
+	if (spy_absolute_path(value))
+		length = snprintf(result, size, "%s", value);
+	else {
+#ifdef _WIN32
+		length = snprintf(result, size, "%s\\%s", directory, value);
+#else
+		length = snprintf(result, size, "%s/%s", directory, value);
+#endif
+	}
+	return length >= 0 && (size_t)length < size;
+}
+
+static int
+spy_read_config(char *module, size_t module_size,
+		char *output, size_t output_size)
+{
+	char directory[PATH_MAX], config_path[PATH_MAX];
+	char module_value[PATH_MAX] = "", output_value[PATH_MAX] = "";
+	char line[PATH_MAX + 64];
+	int have_module = 0, have_output = 0;
+	FILE *config;
+
+	if (!spy_module_directory(directory, sizeof(directory)) ||
+			!spy_resolve_path(directory, SPY_CONFIG_FILENAME,
+			config_path, sizeof(config_path)))
+		return 0;
+	config = fopen(config_path, "r");
+	if (!config)
+		return 0;
+
+	while (fgets(line, sizeof(line), config)) {
+		int complete = strchr(line, '\n') != NULL || feof(config);
+		char *key = spy_trim(line);
+		char *separator, *value;
+
+		if (!complete)
+			goto invalid;
+		if (!*key || *key == '#')
+			continue;
+		separator = strchr(key, '=');
+		if (!separator)
+			goto invalid;
+		*separator = '\0';
+		value = spy_trim(separator + 1);
+		key = spy_trim(key);
+		if (!*value)
+			goto invalid;
+		if (!strcmp(key, "PKCS11SPY") && !have_module) {
+			if (strlen(value) >= sizeof(module_value))
+				goto invalid;
+			strcpy(module_value, value);
+			have_module = 1;
+		} else if (!strcmp(key, "PKCS11SPY_OUTPUT") && !have_output) {
+			if (strlen(value) >= sizeof(output_value))
+				goto invalid;
+			strcpy(output_value, value);
+			have_output = 1;
+		} else {
+			goto invalid;
+		}
+	}
+	if (ferror(config) || !have_module || !have_output)
+		goto invalid;
+	fclose(config);
+	return spy_resolve_path(directory, module_value, module, module_size) &&
+		spy_resolve_path(directory, output_value, output, output_size);
+
+invalid:
+	fclose(config);
+	return 0;
+}
+
 /* Inits the spy. If successful, po != NULL */
 static CK_RV
 init_spy(void)
 {
 	CK_FUNCTION_LIST_PTR po_v2 = NULL;
-	const char *output, *module;
+	char config_module[PATH_MAX], config_output[PATH_MAX];
+	const char *output = NULL, *module = NULL;
+	int have_config;
 	CK_RV rv = CKR_GENERAL_ERROR;
 #ifdef _WIN32
         char temp_path[PATH_MAX], expanded_path[PATH_MAX];
@@ -245,19 +409,19 @@ init_spy(void)
 	}
 
 	compat_interfaces[0].pFunctionList = pkcs11_spy;
+	have_config = spy_read_config(config_module, sizeof(config_module),
+			config_output, sizeof(config_output));
 
-	/*
-	 * Don't use getenv() as the last parameter for scconf_get_str(),
-	 * as we want to be able to override configuration file via
-	 * environment variables
-	 */
-	output = getenv("PKCS11SPY_OUTPUT");
+	/* A complete local file takes priority; legacy sources remain fallback. */
+	output = have_config ? config_output : getenv("PKCS11SPY_OUTPUT");
 	if (output)
 		spy_output = fopen(output, "a");
-
-
-
-
+	if (have_config && !spy_output) {
+		have_config = 0;
+		output = getenv("PKCS11SPY_OUTPUT");
+		if (output)
+			spy_output = fopen(output, "a");
+	}
 #ifdef _WIN32
 	if (!spy_output) {
 		/* try for the machine version first, as we may be running
@@ -284,7 +448,8 @@ init_spy(void)
 			RegCloseKey( hKey );
 		}
 
-		spy_output = fopen(output, "a");
+		if (output)
+			spy_output = fopen(output, "a");
 	}
 #endif
 	if (!spy_output)
@@ -292,7 +457,7 @@ init_spy(void)
 
 	fprintf(spy_output, "\n\n*************** OpenSC PKCS#11 spy *****************\n");
 
-	module = getenv("PKCS11SPY");
+	module = have_config ? config_module : getenv("PKCS11SPY");
 #ifdef _WIN32
 	if (!module) {
 		/* try for the machine version first, as we may be running

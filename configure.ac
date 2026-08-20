@@ -512,6 +512,10 @@ if test "${WIN32}" = "no"; then
 			)
 		)
 	fi
+	saved_LIBS="${LIBS}"
+	LIBS="${LIBS} ${LDL_LIBS}"
+	AC_CHECK_FUNCS([dladdr])
+	LIBS="${saved_LIBS}"
 
 	dnl Special check for pthread support.
 	AX_PTHREAD(
@@ -1281,4 +1285,3 @@ FUZZING_LIBS:            ${FUZZING_LIBS}
 PCSCLITE_PATH:           ${PCSCLITE_PATH}
 
 EOF
-
