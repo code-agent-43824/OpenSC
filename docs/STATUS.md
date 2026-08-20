@@ -4,9 +4,9 @@
 
 Каждый архив перед публикацией передается на отдельный чистый runner. Проверка скачивает соответствующий обычный архив последнего релиза `code-agent-43824/SoftHSMv2`, собирает плоский автономный `opensc-testkit-<platform>` и запускает сценарий именно из него. В test kit входят portable-инструменты OpenSC, модуль SoftHSM, `test.py`, manifest платформы и инструкция. Сценарий выполняется напрямую и через `pkcs11-spy` с проверкой лога.
 
-Полный GitHub Actions прогон [`32304930879`](https://github.com/code-agent-43824/OpenSC/actions/runs/32304930879) успешен: шесть build, шесть clean-runner verify и release job завершились с `PASS`. Все 12 Actions artifacts доступны напрямую, без вложенных ZIP. Дополнительный workflow тестов `pkcs11-tool` с внешними модулями [`32305704510`](https://github.com/code-agent-43824/OpenSC/actions/runs/32305704510) также успешен.
+Полный GitHub Actions прогон [`32347619229`](https://github.com/code-agent-43824/OpenSC/actions/runs/32347619229) успешен: шесть build, шесть clean-runner verify и release job завершились с `PASS`. Все 12 Actions artifacts доступны напрямую, без вложенных ZIP.
 
-Релиз [`0.27.1-portable.2`](https://github.com/code-agent-43824/OpenSC/releases/tag/0.27.1-portable.2) содержит шесть product ZIP, шесть test-kit ZIP и общий `SHA256SUMS`. Все assets скачаны заново: 12 хэшей совпали, вложенных ZIP нет, Linux x64 test kit повторно прошел вне CI.
+Релиз [`0.27.1-portable.3`](https://github.com/code-agent-43824/OpenSC/releases/tag/0.27.1-portable.3) содержит шесть product ZIP, шесть test-kit ZIP и общий `SHA256SUMS`. Все assets скачаны заново: 12 хэшей совпали, вложенных ZIP нет, Linux x64 test kit повторно прошел вне CI.
 
 Из GitHub Actions выключены 14 общих upstream-workflow. Активны только portable release для обеих утилит и `Tests of external pkcs11 modules`, который непосредственно проверяет `pkcs11-tool`; его push-trigger ограничен изменениями исходного кода и build-файлов.
 
@@ -17,8 +17,6 @@
 указателя ABI 2.19.0.0 с редактированием секретов, а `pkcs11-tool` предоставляет
 первые read-only команды `--rutoken-info` и `--rutoken-name`. Локально сверены
 ABI-размеры и смещения, spy проверен через свежую сборку portable SoftHSM;
-автоматический прогон
-[`32339312692`](https://github.com/code-agent-43824/OpenSC/actions/runs/32339312692)
-успешно собрал проект и выполнил штатные тесты четырех внешних модулей, включая
-новый автономный Rutoken stub-тест обеих команд через spy. Отдельный полный
-portable-прогон на шести платформах остается следующим этапом приемки.
+автоматический Rutoken driver проверяет все 34 поля таблицы и вызывает через
+spy все 33 операции. Он входит во все шесть test kit и успешно выполнен в
+прогоне `32347619229`.
