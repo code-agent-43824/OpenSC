@@ -41,6 +41,7 @@
 
 #define CRYPTOKI_EXPORTS
 #include "pkcs11-display.h"
+#include "pkcs11-rutoken.h"
 #include "common/libpkcs11.h"
 
 #define __PASTE(x,y)      x##y
@@ -56,6 +57,9 @@ static CK_FUNCTION_LIST_3_2_PTR pkcs11_spy_3_2 = NULL;
  *
  * If this pointer is `NULL`, then PKCS#11 Spy was not yet initialized. */
 static CK_FUNCTION_LIST_3_2_PTR po = NULL;
+static CK_FUNCTION_LIST_EXTENDED_PTR po_ex = NULL;
+static CK_RV po_ex_status = CKR_FUNCTION_NOT_SUPPORTED;
+static CK_FUNCTION_LIST_EXTENDED pkcs11_spy_ex;
 /* Real module interface list */
 static CK_INTERFACE_PTR orig_interfaces = NULL;
 static unsigned long num_orig_interfaces = 0;
@@ -342,12 +346,26 @@ init_spy(void)
 	}
 
 	memcpy(po, po_v2, sizeof(CK_FUNCTION_LIST));
+	{
+		CK_C_EX_GetFunctionListExtended get_ex = NULL;
+		void *symbol = C_GetModuleSymbol(modhandle,
+				"C_EX_GetFunctionListExtended");
+
+		if (symbol) {
+			memcpy(&get_ex, &symbol, sizeof(get_ex));
+			po_ex_status = get_ex(&po_ex);
+			if (po_ex_status == CKR_OK && po_ex == NULL)
+				po_ex_status = CKR_GENERAL_ERROR;
+		}
+	}
 	fprintf(spy_output, "Loaded: \"%s\"\n", module);
 
 	return CKR_OK;
 
 err:
 	po = NULL;
+	po_ex = NULL;
+	po_ex_status = CKR_FUNCTION_NOT_SUPPORTED;
 	C_UnloadModule(modhandle);
 	modhandle = NULL;
 	free(pkcs11_spy);
@@ -689,6 +707,361 @@ do {\
                 }\
         }\
 } while(0)
+
+static void
+spy_ex_dump_redacted(const char *name, CK_ULONG size)
+{
+	fprintf(spy_output, "[in] %s = <redacted>, length = %lu\n", name, size);
+}
+
+static void
+spy_ex_dump_ulong_out(const char *name, CK_ULONG_PTR value, CK_RV rv)
+{
+	if (value && (rv == CKR_OK || rv == CKR_BUFFER_TOO_SMALL))
+		fprintf(spy_output, "[out] %s = %lu\n", name, *value);
+	else
+		fprintf(spy_output, "[out] %s = %p\n", name, (void *)value);
+}
+
+#define SPY_EX_PROXY(name, parameters, arguments, log_inputs, log_outputs) \
+CK_RV name parameters \
+{ \
+	CK_RV rv; \
+	enter(#name); \
+	do { log_inputs; } while (0); \
+	if (!po_ex || !po_ex->name) \
+		return retne(CKR_FUNCTION_NOT_SUPPORTED); \
+	rv = po_ex->name arguments; \
+	do { log_outputs; } while (0); \
+	return retne(rv); \
+}
+
+SPY_EX_PROXY(C_EX_InitToken,
+		(CK_SLOT_ID slotID, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen,
+		 CK_RUTOKEN_INIT_PARAM_PTR pInitInfo),
+		(slotID, pPin, ulPinLen, pInitInfo),
+		spy_dump_ulong_in("slotID", slotID);
+		spy_ex_dump_redacted("pPin", ulPinLen);
+		print_ptr_in("pInitInfo", pInitInfo),
+		(void)rv)
+
+SPY_EX_PROXY(C_EX_GetTokenInfoExtended,
+		(CK_SLOT_ID slotID, CK_TOKEN_INFO_EXTENDED_PTR pInfo),
+		(slotID, pInfo),
+		spy_dump_ulong_in("slotID", slotID);
+		print_ptr_in("pInfo", pInfo),
+		if (rv == CKR_OK && pInfo) {
+			fprintf(spy_output, "[out] pInfo->ulTokenType = %lu\n", pInfo->ulTokenType);
+			fprintf(spy_output, "[out] pInfo->ulTokenClass = %lu\n", pInfo->ulTokenClass);
+			fprintf(spy_output, "[out] pInfo->flags = 0x%lx\n", pInfo->flags);
+		})
+
+SPY_EX_PROXY(C_EX_UnblockUserPIN, (CK_SESSION_HANDLE hSession), (hSession),
+		spy_dump_ulong_in("hSession", hSession), (void)rv)
+SPY_EX_PROXY(C_EX_SetTokenName,
+		(CK_SESSION_HANDLE hSession, CK_CHAR_PTR pLabel, CK_ULONG ulLabelLen),
+		(hSession, pLabel, ulLabelLen),
+		spy_dump_ulong_in("hSession", hSession);
+		spy_dump_string_in("pLabel[ulLabelLen]", pLabel, ulLabelLen), (void)rv)
+SPY_EX_PROXY(C_EX_SetLicense,
+		(CK_SESSION_HANDLE hSession, CK_ULONG ulLicenseNum,
+		 CK_BYTE_PTR pLicense, CK_ULONG ulLicenseLen),
+		(hSession, ulLicenseNum, pLicense, ulLicenseLen),
+		spy_dump_ulong_in("hSession", hSession);
+		spy_dump_ulong_in("ulLicenseNum", ulLicenseNum);
+		spy_ex_dump_redacted("pLicense", ulLicenseLen), (void)rv)
+SPY_EX_PROXY(C_EX_GetLicense,
+		(CK_SESSION_HANDLE hSession, CK_ULONG ulLicenseNum,
+		 CK_BYTE_PTR pLicense, CK_ULONG_PTR pulLicenseLen),
+		(hSession, ulLicenseNum, pLicense, pulLicenseLen),
+		spy_dump_ulong_in("hSession", hSession);
+		spy_dump_ulong_in("ulLicenseNum", ulLicenseNum);
+		print_ptr_in("pLicense", pLicense),
+		spy_ex_dump_ulong_out("*pulLicenseLen", pulLicenseLen, rv))
+SPY_EX_PROXY(C_EX_GetCertificateInfoText,
+		(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hCert,
+		 CK_CHAR_PTR *pInfo, CK_ULONG_PTR pulInfoLen),
+		(hSession, hCert, pInfo, pulInfoLen),
+		spy_dump_ulong_in("hSession", hSession);
+		spy_dump_ulong_in("hCert", hCert),
+		spy_ex_dump_ulong_out("*pulInfoLen", pulInfoLen, rv))
+SPY_EX_PROXY(C_EX_PKCS7Sign,
+		(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen,
+		 CK_OBJECT_HANDLE hCert, CK_BYTE_PTR *ppEnvelope,
+		 CK_ULONG_PTR pEnvelopeLen, CK_OBJECT_HANDLE hPrivKey,
+		 CK_OBJECT_HANDLE_PTR phCertificates, CK_ULONG ulCertificatesLen,
+		 CK_ULONG flags),
+		(hSession, pData, ulDataLen, hCert, ppEnvelope, pEnvelopeLen,
+		 hPrivKey, phCertificates, ulCertificatesLen, flags),
+		spy_dump_ulong_in("hSession", hSession);
+		spy_dump_ulong_in("ulDataLen", ulDataLen);
+		spy_dump_ulong_in("hCert", hCert);
+		spy_dump_ulong_in("hPrivKey", hPrivKey);
+		spy_dump_ulong_in("ulCertificatesLen", ulCertificatesLen);
+		spy_dump_ulong_in("flags", flags),
+		spy_ex_dump_ulong_out("*pEnvelopeLen", pEnvelopeLen, rv))
+SPY_EX_PROXY(C_EX_CreateCSR,
+		(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hPublicKey,
+		 CK_CHAR_PTR *dn, CK_ULONG dnLength, CK_BYTE_PTR *pCsr,
+		 CK_ULONG_PTR pulCsrLength, CK_OBJECT_HANDLE hPrivKey,
+		 CK_CHAR_PTR *pAttributes, CK_ULONG ulAttributesLength,
+		 CK_CHAR_PTR *pExtensions, CK_ULONG ulExtensionsLength),
+		(hSession, hPublicKey, dn, dnLength, pCsr, pulCsrLength, hPrivKey,
+		 pAttributes, ulAttributesLength, pExtensions, ulExtensionsLength),
+		spy_dump_ulong_in("hSession", hSession);
+		spy_dump_ulong_in("hPublicKey", hPublicKey);
+		spy_dump_ulong_in("dnLength", dnLength);
+		spy_dump_ulong_in("hPrivKey", hPrivKey);
+		spy_dump_ulong_in("ulAttributesLength", ulAttributesLength);
+		spy_dump_ulong_in("ulExtensionsLength", ulExtensionsLength),
+		spy_ex_dump_ulong_out("*pulCsrLength", pulCsrLength, rv))
+SPY_EX_PROXY(C_EX_FreeBuffer, (CK_BYTE_PTR pBuffer), (pBuffer),
+		print_ptr_in("pBuffer", pBuffer), (void)rv)
+SPY_EX_PROXY(C_EX_GetTokenName,
+		(CK_SESSION_HANDLE hSession, CK_CHAR_PTR pLabel,
+		 CK_ULONG_PTR pulLabelLen),
+		(hSession, pLabel, pulLabelLen),
+		spy_dump_ulong_in("hSession", hSession);
+		print_ptr_in("pLabel", pLabel),
+		spy_ex_dump_ulong_out("*pulLabelLen", pulLabelLen, rv);
+		if (rv == CKR_OK && pLabel && pulLabelLen)
+			spy_dump_string_out("pLabel[*pulLabelLen]", pLabel, *pulLabelLen))
+SPY_EX_PROXY(C_EX_SetLocalPIN,
+		(CK_SLOT_ID slotID, CK_UTF8CHAR_PTR pUserPin, CK_ULONG ulUserPinLen,
+		 CK_UTF8CHAR_PTR pNewLocalPin, CK_ULONG ulNewLocalPinLen,
+		 CK_ULONG ulLocalID),
+		(slotID, pUserPin, ulUserPinLen, pNewLocalPin, ulNewLocalPinLen,
+		 ulLocalID),
+		spy_dump_ulong_in("slotID", slotID);
+		spy_ex_dump_redacted("pUserPin", ulUserPinLen);
+		spy_ex_dump_redacted("pNewLocalPin", ulNewLocalPinLen);
+		spy_dump_ulong_in("ulLocalID", ulLocalID), (void)rv)
+SPY_EX_PROXY(C_EX_LoadActivationKey,
+		(CK_SESSION_HANDLE hSession, CK_BYTE_PTR key, CK_ULONG keySize),
+		(hSession, key, keySize),
+		spy_dump_ulong_in("hSession", hSession);
+		spy_ex_dump_redacted("key", keySize), (void)rv)
+SPY_EX_PROXY(C_EX_SetActivationPassword,
+		(CK_SLOT_ID slotID, CK_UTF8CHAR_PTR password), (slotID, password),
+		spy_dump_ulong_in("slotID", slotID);
+		fprintf(spy_output, "[in] password = <redacted>\n"), (void)rv)
+SPY_EX_PROXY(C_EX_GetVolumesInfo,
+		(CK_SLOT_ID slotID, CK_VOLUME_INFO_EXTENDED_PTR pInfo,
+		 CK_ULONG_PTR pulInfoCount),
+		(slotID, pInfo, pulInfoCount),
+		spy_dump_ulong_in("slotID", slotID);
+		print_ptr_in("pInfo", pInfo),
+		spy_ex_dump_ulong_out("*pulInfoCount", pulInfoCount, rv))
+SPY_EX_PROXY(C_EX_GetDriveSize,
+		(CK_SLOT_ID slotID, CK_ULONG_PTR pulDriveSize),
+		(slotID, pulDriveSize), spy_dump_ulong_in("slotID", slotID),
+		spy_ex_dump_ulong_out("*pulDriveSize", pulDriveSize, rv))
+SPY_EX_PROXY(C_EX_ChangeVolumeAttributes,
+		(CK_SLOT_ID slotID, CK_USER_TYPE userType, CK_UTF8CHAR_PTR pPin,
+		 CK_ULONG ulPinLen, CK_VOLUME_ID_EXTENDED idVolume,
+		 CK_ACCESS_MODE_EXTENDED newAccessMode, CK_BBOOL bPermanent),
+		(slotID, userType, pPin, ulPinLen, idVolume, newAccessMode, bPermanent),
+		spy_dump_ulong_in("slotID", slotID);
+		spy_dump_ulong_in("userType", userType);
+		spy_ex_dump_redacted("pPin", ulPinLen);
+		spy_dump_ulong_in("idVolume", idVolume);
+		spy_dump_ulong_in("newAccessMode", newAccessMode);
+		spy_dump_ulong_in("bPermanent", bPermanent), (void)rv)
+SPY_EX_PROXY(C_EX_FormatDrive,
+		(CK_SLOT_ID slotID, CK_USER_TYPE userType, CK_UTF8CHAR_PTR pPin,
+		 CK_ULONG ulPinLen, CK_VOLUME_FORMAT_INFO_EXTENDED_PTR pInitParams,
+		 CK_ULONG ulInitParamsCount),
+		(slotID, userType, pPin, ulPinLen, pInitParams, ulInitParamsCount),
+		spy_dump_ulong_in("slotID", slotID);
+		spy_dump_ulong_in("userType", userType);
+		spy_ex_dump_redacted("pPin", ulPinLen);
+		print_ptr_in("pInitParams", pInitParams);
+		spy_dump_ulong_in("ulInitParamsCount", ulInitParamsCount), (void)rv)
+SPY_EX_PROXY(C_EX_TokenManage,
+		(CK_SESSION_HANDLE hSession, CK_ULONG ulMode, CK_VOID_PTR pValue),
+		(hSession, ulMode, pValue),
+		spy_dump_ulong_in("hSession", hSession);
+		spy_dump_ulong_in("ulMode", ulMode);
+		print_ptr_in("pValue", pValue), (void)rv)
+SPY_EX_PROXY(C_EX_GenerateActivationPassword,
+		(CK_SESSION_HANDLE hSession, CK_ULONG ulPasswordNumber,
+		 CK_UTF8CHAR_PTR pPassword, CK_ULONG_PTR pulPasswordSize,
+		 CK_ULONG ulPasswordCharacterSet),
+		(hSession, ulPasswordNumber, pPassword, pulPasswordSize,
+		 ulPasswordCharacterSet),
+		spy_dump_ulong_in("hSession", hSession);
+		spy_dump_ulong_in("ulPasswordNumber", ulPasswordNumber);
+		print_ptr_in("pPassword", pPassword);
+		spy_dump_ulong_in("ulPasswordCharacterSet", ulPasswordCharacterSet),
+		spy_ex_dump_ulong_out("*pulPasswordSize", pulPasswordSize, rv);
+		fprintf(spy_output, "[out] pPassword = <redacted>\n"))
+SPY_EX_PROXY(C_EX_GetJournal,
+		(CK_SLOT_ID slotID, CK_BYTE_PTR pJournal, CK_ULONG_PTR pulJournalSize),
+		(slotID, pJournal, pulJournalSize),
+		spy_dump_ulong_in("slotID", slotID);
+		print_ptr_in("pJournal", pJournal),
+		spy_ex_dump_ulong_out("*pulJournalSize", pulJournalSize, rv))
+SPY_EX_PROXY(C_EX_SignInvisibleInit,
+		(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
+		 CK_OBJECT_HANDLE hKey),
+		(hSession, pMechanism, hKey),
+		spy_dump_ulong_in("hSession", hSession);
+		print_ptr_in("pMechanism", pMechanism);
+		spy_dump_ulong_in("hKey", hKey), (void)rv)
+SPY_EX_PROXY(C_EX_SignInvisible,
+		(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen,
+		 CK_BYTE_PTR pSignature, CK_ULONG_PTR pulSignatureLen),
+		(hSession, pData, ulDataLen, pSignature, pulSignatureLen),
+		spy_dump_ulong_in("hSession", hSession);
+		spy_dump_ulong_in("ulDataLen", ulDataLen);
+		print_ptr_in("pSignature", pSignature),
+		spy_ex_dump_ulong_out("*pulSignatureLen", pulSignatureLen, rv))
+SPY_EX_PROXY(C_EX_SlotManage,
+		(CK_SLOT_ID slotID, CK_ULONG ulMode, CK_VOID_PTR pValue),
+		(slotID, ulMode, pValue),
+		spy_dump_ulong_in("slotID", slotID);
+		spy_dump_ulong_in("ulMode", ulMode);
+		print_ptr_in("pValue", pValue), (void)rv)
+SPY_EX_PROXY(C_EX_WrapKey,
+		(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pGenerationMechanism,
+		 CK_ATTRIBUTE_PTR pKeyTemplate, CK_ULONG ulKeyAttributeCount,
+		 CK_MECHANISM_PTR pDerivationMechanism, CK_OBJECT_HANDLE hBaseKey,
+		 CK_MECHANISM_PTR pWrappingMechanism, CK_BYTE_PTR pWrappedKey,
+		 CK_ULONG_PTR pulWrappedKeyLen, CK_OBJECT_HANDLE_PTR phKey),
+		(hSession, pGenerationMechanism, pKeyTemplate, ulKeyAttributeCount,
+		 pDerivationMechanism, hBaseKey, pWrappingMechanism, pWrappedKey,
+		 pulWrappedKeyLen, phKey),
+		spy_dump_ulong_in("hSession", hSession);
+		spy_dump_ulong_in("ulKeyAttributeCount", ulKeyAttributeCount);
+		spy_dump_ulong_in("hBaseKey", hBaseKey);
+		print_ptr_in("pWrappedKey", pWrappedKey),
+		spy_ex_dump_ulong_out("*pulWrappedKeyLen", pulWrappedKeyLen, rv);
+		if (rv == CKR_OK && phKey) spy_dump_ulong_out("*phKey", *phKey))
+SPY_EX_PROXY(C_EX_UnwrapKey,
+		(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pDerivationMechanism,
+		 CK_OBJECT_HANDLE hBaseKey, CK_MECHANISM_PTR pUnwrappingMechanism,
+		 CK_BYTE_PTR pWrappedKey, CK_ULONG ulWrappedKeyLen,
+		 CK_ATTRIBUTE_PTR pKeyTemplate, CK_ULONG ulKeyAttributeCount,
+		 CK_OBJECT_HANDLE_PTR phKey),
+		(hSession, pDerivationMechanism, hBaseKey, pUnwrappingMechanism,
+		 pWrappedKey, ulWrappedKeyLen, pKeyTemplate, ulKeyAttributeCount, phKey),
+		spy_dump_ulong_in("hSession", hSession);
+		spy_dump_ulong_in("hBaseKey", hBaseKey);
+		spy_ex_dump_redacted("pWrappedKey", ulWrappedKeyLen);
+		spy_dump_ulong_in("ulKeyAttributeCount", ulKeyAttributeCount),
+		if (rv == CKR_OK && phKey) spy_dump_ulong_out("*phKey", *phKey))
+SPY_EX_PROXY(C_EX_PKCS7VerifyInit,
+		(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pCms, CK_ULONG ulCmsSize,
+		 CK_VENDOR_X509_STORE_PTR pStore, CK_VENDOR_CRL_MODE ckMode,
+		 CK_FLAGS flags),
+		(hSession, pCms, ulCmsSize, pStore, ckMode, flags),
+		spy_dump_ulong_in("hSession", hSession);
+		spy_dump_ulong_in("ulCmsSize", ulCmsSize);
+		print_ptr_in("pStore", pStore);
+		spy_dump_ulong_in("ckMode", ckMode);
+		spy_dump_ulong_in("flags", flags), (void)rv)
+SPY_EX_PROXY(C_EX_PKCS7Verify,
+		(CK_SESSION_HANDLE hSession, CK_BYTE_PTR_PTR ppData,
+		 CK_ULONG_PTR pulDataSize, CK_VENDOR_BUFFER_PTR_PTR ppSignerCertificates,
+		 CK_ULONG_PTR pulSignerCertificatesCount),
+		(hSession, ppData, pulDataSize, ppSignerCertificates,
+		 pulSignerCertificatesCount),
+		spy_dump_ulong_in("hSession", hSession);
+		print_ptr_in("ppData", ppData);
+		print_ptr_in("ppSignerCertificates", ppSignerCertificates),
+		spy_ex_dump_ulong_out("*pulDataSize", pulDataSize, rv);
+		spy_ex_dump_ulong_out("*pulSignerCertificatesCount",
+				pulSignerCertificatesCount, rv))
+SPY_EX_PROXY(C_EX_PKCS7VerifyUpdate,
+		(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataSize),
+		(hSession, pData, ulDataSize),
+		spy_dump_ulong_in("hSession", hSession);
+		spy_dump_ulong_in("ulDataSize", ulDataSize), (void)rv)
+SPY_EX_PROXY(C_EX_PKCS7VerifyFinal,
+		(CK_SESSION_HANDLE hSession,
+		 CK_VENDOR_BUFFER_PTR_PTR ppSignerCertificates,
+		 CK_ULONG_PTR pulSignerCertificatesCount),
+		(hSession, ppSignerCertificates, pulSignerCertificatesCount),
+		spy_dump_ulong_in("hSession", hSession);
+		print_ptr_in("ppSignerCertificates", ppSignerCertificates),
+		spy_ex_dump_ulong_out("*pulSignerCertificatesCount",
+				pulSignerCertificatesCount, rv))
+SPY_EX_PROXY(C_EX_Authenticate,
+		(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hAuthObject,
+		 CK_BYTE_PTR pData, CK_ULONG ulDataSize),
+		(hSession, hAuthObject, pData, ulDataSize),
+		spy_dump_ulong_in("hSession", hSession);
+		spy_dump_ulong_in("hAuthObject", hAuthObject);
+		spy_ex_dump_redacted("pData", ulDataSize), (void)rv)
+SPY_EX_PROXY(C_EX_Deauthenticate,
+		(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hAuthObject),
+		(hSession, hAuthObject),
+		spy_dump_ulong_in("hSession", hSession);
+		spy_dump_ulong_in("hAuthObject", hAuthObject), (void)rv)
+SPY_EX_PROXY(C_EX_UnblockAuthenticator,
+		(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hAuthObject),
+		(hSession, hAuthObject),
+		spy_dump_ulong_in("hSession", hSession);
+		spy_dump_ulong_in("hAuthObject", hAuthObject), (void)rv)
+
+#undef SPY_EX_PROXY
+
+static CK_FUNCTION_LIST_EXTENDED pkcs11_spy_ex = {
+	{ 2, 19 },
+	C_EX_GetFunctionListExtended,
+	C_EX_InitToken,
+	C_EX_GetTokenInfoExtended,
+	C_EX_UnblockUserPIN,
+	C_EX_SetTokenName,
+	C_EX_SetLicense,
+	C_EX_GetLicense,
+	C_EX_GetCertificateInfoText,
+	C_EX_PKCS7Sign,
+	C_EX_CreateCSR,
+	C_EX_FreeBuffer,
+	C_EX_GetTokenName,
+	C_EX_SetLocalPIN,
+	C_EX_LoadActivationKey,
+	C_EX_SetActivationPassword,
+	C_EX_GetVolumesInfo,
+	C_EX_GetDriveSize,
+	C_EX_ChangeVolumeAttributes,
+	C_EX_FormatDrive,
+	C_EX_TokenManage,
+	C_EX_GenerateActivationPassword,
+	C_EX_GetJournal,
+	C_EX_SignInvisibleInit,
+	C_EX_SignInvisible,
+	C_EX_SlotManage,
+	C_EX_WrapKey,
+	C_EX_UnwrapKey,
+	C_EX_PKCS7VerifyInit,
+	C_EX_PKCS7Verify,
+	C_EX_PKCS7VerifyUpdate,
+	C_EX_PKCS7VerifyFinal,
+	C_EX_Authenticate,
+	C_EX_Deauthenticate,
+	C_EX_UnblockAuthenticator
+};
+
+CK_RV
+C_EX_GetFunctionListExtended(CK_FUNCTION_LIST_EXTENDED_PTR_PTR ppFunctionList)
+{
+	CK_RV rv;
+
+	if (po == NULL) {
+		rv = init_spy();
+		if (rv != CKR_OK)
+			return rv;
+	}
+	enter("C_EX_GetFunctionListExtended");
+	if (!ppFunctionList)
+		return retne(CKR_ARGUMENTS_BAD);
+	if (po_ex_status != CKR_OK)
+		return retne(po_ex_status);
+	*ppFunctionList = &pkcs11_spy_ex;
+	return retne(CKR_OK);
+}
 
 CK_RV C_GetFunctionList
 (CK_FUNCTION_LIST_PTR_PTR ppFunctionList)

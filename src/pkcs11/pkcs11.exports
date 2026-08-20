@@ -2,6 +2,7 @@ C_Initialize
 C_Finalize
 C_GetInfo
 C_GetFunctionList
+C_EX_GetFunctionListExtended
 C_GetSlotList
 C_GetSlotInfo
 C_GetTokenInfo
