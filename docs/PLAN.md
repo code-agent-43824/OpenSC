@@ -39,10 +39,10 @@
 
 ### Этап 3 — безопасный read-only CLI `pkcs11-tool`
 
-- [~] Добавить обнаружение расширения и первые команды для
-  `GetTokenInfoExtended` и `GetTokenName`; затем команды для
-  `GetTokenInfoExtended`, `GetTokenName`, `GetLicense`, `GetJournal`,
-  `GetVolumesInfo`, `GetDriveSize`, `GetCertificateInfoText`.
+- [x] Добавить обнаружение расширения и первые команды для
+  `GetTokenInfoExtended` и `GetTokenName`.
+- [ ] Добавить команды для `GetLicense`, `GetJournal`, `GetVolumesInfo`,
+  `GetDriveSize` и `GetCertificateInfoText`.
 - [ ] Добавить текстовый и JSON-вывод с фиксированными тестами сериализации.
 
 ### Этап 4 — криптография и аутентификация

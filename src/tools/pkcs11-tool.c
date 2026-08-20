@@ -73,6 +73,7 @@
 #include "libopensc/sc-ossl-compat.h"
 #include "pkcs11/pkcs11-opensc.h"
 #include "pkcs11/pkcs11.h"
+#include "pkcs11/pkcs11-rutoken.h"
 #include "pkcs11_uri.h"
 #include "util.h"
 
@@ -248,6 +249,8 @@ enum {
 	OPT_SALT_FILE,
 	OPT_INFO_FILE,
 	OPT_PUBLIC_KEY_INFO,
+	OPT_RUTOKEN_INFO,
+	OPT_RUTOKEN_NAME,
 	OPT_URI,
 	OPT_URI_WITH_SLOT_ID
 };
@@ -344,6 +347,8 @@ static const struct option options[] = {
 	{ "salt-file", 		1, NULL,		OPT_SALT_FILE},
 	{ "info-file",		1, NULL,		OPT_INFO_FILE},
 	{ "public-key-info",	0, NULL,		OPT_PUBLIC_KEY_INFO},
+	{ "rutoken-info",	0, NULL,		OPT_RUTOKEN_INFO},
+	{ "rutoken-name",	0, NULL,		OPT_RUTOKEN_NAME},
 	{ "uri",		1, NULL,		OPT_URI},
 	{ "uri-with-slot-id",	0, NULL,		OPT_URI_WITH_SLOT_ID},
 	{ NULL, 0, NULL, 0 },
@@ -441,6 +446,8 @@ static const char *option_help[] = {
 		"Specify the file containing the salt for HKDF (optional)",
 		"Specify the file containing the info for HKDF (optional)",
 		"When reading a public key, try to read PUBLIC_KEY_INFO (DER encoding of SPKI)",
+		"Show extended Rutoken token information",
+		"Show the extended Rutoken token name",
 		"Specify the PKCS#11 URI for module, slot, token or object",
 		"Include SlotId in PKCS#11 URI",
 		"",
@@ -515,6 +522,7 @@ static int opt_uri_with_slot_id = 0; /* include slot-id in PKCS#11 URI */
 
 static void *module = NULL;
 static CK_FUNCTION_LIST_3_0_PTR p11 = NULL;
+static CK_FUNCTION_LIST_EXTENDED_PTR p11_ex = NULL;
 static CK_SLOT_ID_PTR p11_slots = NULL;
 static CK_ULONG p11_num_slots = 0;
 static int suppress_warn = 0;
@@ -615,6 +623,9 @@ static void		show_token(CK_SLOT_ID);
 static void		list_mechs(CK_SLOT_ID);
 static void		list_objects(CK_SESSION_HANDLE);
 static void		list_interfaces(void);
+static void load_rutoken_extension(void);
+static void show_rutoken_info(CK_SLOT_ID slot);
+static void show_rutoken_name(CK_SESSION_HANDLE session);
 static int		login(CK_SESSION_HANDLE, int);
 static void		init_token(CK_SLOT_ID);
 static void		init_pin(CK_SLOT_ID, CK_SESSION_HANDLE);
@@ -810,6 +821,8 @@ int main(int argc, char * argv[])
 	int do_list_mechs = 0;
 	int do_list_objects = 0;
 	int do_list_interfaces = 0;
+	int do_rutoken_info = 0;
+	int do_rutoken_name = 0;
 	int do_sign = 0;
 	int do_verify = 0;
 	int do_decrypt = 0;
@@ -1281,6 +1294,15 @@ int main(int argc, char * argv[])
 		case OPT_PUBLIC_KEY_INFO:
 			opt_public_key_info = 1;
 			break;
+		case OPT_RUTOKEN_INFO:
+			do_rutoken_info = 1;
+			action_count++;
+			break;
+		case OPT_RUTOKEN_NAME:
+			do_rutoken_name = 1;
+			need_session |= NEED_SESSION_RO;
+			action_count++;
+			break;
 		case OPT_URI_WITH_SLOT_ID:
 			opt_uri_with_slot_id = 1;
 			break;
@@ -1371,6 +1393,8 @@ int main(int argc, char * argv[])
 			util_fatal("Failed to load pkcs11 module");
 		p11 = (CK_FUNCTION_LIST_3_0_PTR) p11_v2;
 	}
+	if (do_rutoken_info || do_rutoken_name)
+		load_rutoken_extension();
 
 	/* This can be done even before initialization */
 	if (do_list_interfaces)
@@ -1464,6 +1488,8 @@ int main(int argc, char * argv[])
 
 	if (do_list_mechs)
 		list_mechs(opt_slot);
+	if (do_rutoken_info)
+		show_rutoken_info(opt_slot);
 
 	if (do_sign || do_decrypt || do_encrypt || do_unwrap || do_wrap) {
 		CK_TOKEN_INFO info;
@@ -1521,6 +1547,8 @@ int main(int argc, char * argv[])
 		* the User PIN, we now have to exit. */
 		goto end;
 	}
+	if (do_rutoken_name)
+		show_rutoken_name(session);
 
 	uint16_t mf_flags = MF_UNKNOWN;
 	if (opt_mechanism_used) {
@@ -1783,6 +1811,90 @@ end:
 		C_UnloadModule(module);
 
 	return err;
+}
+
+static void
+load_rutoken_extension(void)
+{
+	CK_C_EX_GetFunctionListExtended get_ex = NULL;
+	void *symbol;
+	CK_RV rv;
+
+	if (!module)
+		util_fatal("Rutoken extension is unavailable in the built-in module");
+	symbol = C_GetModuleSymbol(module, "C_EX_GetFunctionListExtended");
+	if (!symbol)
+		util_fatal("Module does not export C_EX_GetFunctionListExtended");
+	memcpy(&get_ex, &symbol, sizeof(get_ex));
+	rv = get_ex(&p11_ex);
+	if (rv != CKR_OK)
+		p11_fatal("C_EX_GetFunctionListExtended", rv);
+	if (!p11_ex)
+		util_fatal("C_EX_GetFunctionListExtended returned a null function list");
+}
+
+static void
+show_rutoken_info(CK_SLOT_ID slot)
+{
+	CK_TOKEN_INFO_EXTENDED info;
+	CK_RV rv;
+	size_t i;
+
+	if (!p11_ex->C_EX_GetTokenInfoExtended)
+		p11_fatal("C_EX_GetTokenInfoExtended", CKR_FUNCTION_NOT_SUPPORTED);
+	memset(&info, 0, sizeof(info));
+	info.ulSizeofThisStructure = sizeof(info);
+	rv = p11_ex->C_EX_GetTokenInfoExtended(slot, &info);
+	if (rv != CKR_OK)
+		p11_fatal("C_EX_GetTokenInfoExtended", rv);
+
+	printf("Rutoken extended information:\n");
+	printf("  token type         : 0x%lx\n", info.ulTokenType);
+	printf("  token class        : 0x%lx\n", info.ulTokenClass);
+	printf("  protocol           : %lu\n", info.ulProtocolNumber);
+	printf("  microcode          : %lu\n", info.ulMicrocodeNumber);
+	printf("  order number       : %lu\n", info.ulOrderNumber);
+	printf("  flags              : 0x%lx\n", info.flags);
+	printf("  serial             : ");
+	for (i = 0; i < sizeof(info.serialNumber); i++)
+		printf("%02x", info.serialNumber[i]);
+	printf("\n");
+	printf("  memory             : %lu free / %lu total\n",
+			info.ulFreeMemory, info.ulTotalMemory);
+	printf("  admin PIN length   : %lu..%lu\n",
+			info.ulMinAdminPinLen, info.ulMaxAdminPinLen);
+	printf("  user PIN length    : %lu..%lu\n",
+			info.ulMinUserPinLen, info.ulMaxUserPinLen);
+	printf("  admin retries      : %lu / %lu\n",
+			info.ulAdminRetryCountLeft, info.ulMaxAdminRetryCount);
+	printf("  user retries       : %lu / %lu\n",
+			info.ulUserRetryCountLeft, info.ulMaxUserRetryCount);
+}
+
+static void
+show_rutoken_name(CK_SESSION_HANDLE session)
+{
+	CK_ULONG label_len = 0;
+	CK_CHAR_PTR label;
+	CK_RV rv;
+
+	if (!p11_ex->C_EX_GetTokenName)
+		p11_fatal("C_EX_GetTokenName", CKR_FUNCTION_NOT_SUPPORTED);
+	rv = p11_ex->C_EX_GetTokenName(session, NULL, &label_len);
+	if (rv != CKR_OK)
+		p11_fatal("C_EX_GetTokenName(size inquire)", rv);
+	if (label_len == ~(CK_ULONG)0)
+		util_fatal("C_EX_GetTokenName returned an invalid length");
+	label = calloc((size_t)label_len + 1, 1);
+	if (!label)
+		util_fatal("Out of memory");
+	rv = p11_ex->C_EX_GetTokenName(session, label, &label_len);
+	if (rv != CKR_OK) {
+		free(label);
+		p11_fatal("C_EX_GetTokenName", rv);
+	}
+	printf("Rutoken name: %.*s\n", (int)MIN(label_len, INT_MAX), label);
+	free(label);
 }
 
 static void show_cryptoki_info(void)
