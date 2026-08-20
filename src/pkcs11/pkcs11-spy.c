@@ -1007,7 +1007,7 @@ SPY_EX_PROXY(C_EX_UnblockAuthenticator,
 #undef SPY_EX_PROXY
 
 static CK_FUNCTION_LIST_EXTENDED pkcs11_spy_ex = {
-	{ 2, 19 },
+	{ 0, 0 },
 	C_EX_GetFunctionListExtended,
 	C_EX_InitToken,
 	C_EX_GetTokenInfoExtended,
@@ -1059,6 +1059,7 @@ C_EX_GetFunctionListExtended(CK_FUNCTION_LIST_EXTENDED_PTR_PTR ppFunctionList)
 		return retne(CKR_ARGUMENTS_BAD);
 	if (po_ex_status != CKR_OK)
 		return retne(po_ex_status);
+	pkcs11_spy_ex.version = po_ex->version;
 	*ppFunctionList = &pkcs11_spy_ex;
 	return retne(CKR_OK);
 }
