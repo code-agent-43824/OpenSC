@@ -2,6 +2,12 @@ include $(top_srcdir)/win32/ltrc.inc
 
 MAINTAINERCLEANFILES = $(srcdir)/Makefile.in
 EXTRA_DIST = Makefile.mak versioninfo-pkcs11.rc versioninfo-pkcs11-spy.rc opensc-pkcs11.pc.in opensc.module.in
+BUILT_SOURCES = pkcs11-spy.exports
+CLEANFILES = pkcs11-spy.exports
+
+pkcs11-spy.exports: $(srcdir)/pkcs11.exports
+	cp $(srcdir)/pkcs11.exports $@
+	echo C_EX_GetFunctionListExtended >> $@
 
 if ENABLE_SHARED
 lib_LTLIBRARIES = opensc-pkcs11.la pkcs11-spy.la
@@ -56,7 +62,7 @@ pkcs11_spy_la_LIBADD = \
 	$(top_builddir)/src/common/libcompat.la \
 	$(OPTIONAL_OPENSSL_LIBS) $(PTHREAD_LIBS)
 pkcs11_spy_la_LDFLAGS = $(AM_LDFLAGS) \
-	-export-symbols "$(srcdir)/pkcs11.exports" \
+	-export-symbols "$(builddir)/pkcs11-spy.exports" \
 	-module -shared -avoid-version -no-undefined
 
 if WIN32

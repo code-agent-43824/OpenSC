@@ -27,5 +27,9 @@ all: $(TARGET1) $(TARGET3)
 $(TARGET1): $(OBJECTS) $(LIBS) pkcs11.def
 	link /dll $(LINKFLAGS) /out:$@ /def:pkcs11.def /implib:$*.lib $(OBJECTS) $(LIBS) $(OPENPACE_LIB) $(OPENSSL_LIB) $(ZLIB_LIB) gdi32.lib Comctl32.lib Shell32.lib user32.lib advapi32.lib ws2_32.lib Shell32.lib Comctl32.lib shlwapi.lib
 
-$(TARGET3): $(OBJECTS3) $(LIBS3) pkcs11.def
-	link /dll $(LINKFLAGS) /out:$@ /def:pkcs11.def /implib:$*.lib $(OBJECTS3) $(LIBS3) $(OPENSSL_LIB) gdi32.lib advapi32.lib shlwapi.lib
+pkcs11-spy.def: pkcs11.def
+	copy /Y pkcs11.def pkcs11-spy.def
+	echo C_EX_GetFunctionListExtended >> pkcs11-spy.def
+
+$(TARGET3): $(OBJECTS3) $(LIBS3) pkcs11-spy.def
+	link /dll $(LINKFLAGS) /out:$@ /def:pkcs11-spy.def /implib:$*.lib $(OBJECTS3) $(LIBS3) $(OPENSSL_LIB) gdi32.lib advapi32.lib shlwapi.lib
