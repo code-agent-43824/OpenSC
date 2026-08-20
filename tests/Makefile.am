@@ -37,8 +37,10 @@ dist_noinst_SCRIPTS = common.sh \
                       test-pkcs11-tool-allowed-mechanisms.sh \
                       test-pkcs11-tool-sym-crypt-test.sh \
                       test-pkcs11-tool-unwrap-wrap-test.sh \
-                      test-pkcs11-tool-import.sh \
-                      test-pkcs11-tool-uri-with-slot-id.sh
+			      test-pkcs11-tool-import.sh \
+			      test-pkcs11-tool-uri-with-slot-id.sh \
+			      test-rutoken-extensions.sh \
+			      rutoken-stub.c
 
 .NOTPARALLEL:
 TESTS = \
@@ -46,7 +48,10 @@ TESTS = \
         test-duplicate-symbols.sh \
         test-pkcs11-tool-test-threads.sh \
         test-pkcs11-tool-allowed-mechanisms.sh \
-        test-pkcs11-tool-sym-crypt-test.sh
+		test-pkcs11-tool-sym-crypt-test.sh
+if ENABLE_SHARED
+TESTS += test-rutoken-extensions.sh
+endif
 if ENABLE_OPENSSL
 TESTS += \
         test-pkcs11-tool-test.sh \
