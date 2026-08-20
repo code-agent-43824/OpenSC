@@ -27,6 +27,21 @@ test-kit artifacts и выпустить `0.27.1-portable.4`.
 свежесобранный spy и полный опубликованный Linux x64 test kit. Остаются полный
 CI и выпуск portable.4.
 
+Финальная приемка: внешний workflow
+<https://github.com/code-agent-43824/OpenSC/actions/runs/32369830473> успешен во
+всех четырех jobs, portable workflow
+<https://github.com/code-agent-43824/OpenSC/actions/runs/32370121050> — во всех
+шести build, шести verify и release jobs. На каждом Windows, Linux и macOS
+runner отдельно прошли приоритет валидного локального файла и fallback при
+неизвестной строке.
+
+Релиз `0.27.1-portable.4` опубликован:
+<https://github.com/code-agent-43824/OpenSC/releases/tag/0.27.1-portable.4>.
+Все 12 ZIP повторно скачаны, хэши из `SHA256SUMS` совпали, вложенных ZIP нет,
+шаблон с обеими закомментированными переменными присутствует во всех шести
+product и test-kit archives. Опубликованный Linux x64 test kit повторно
+выполнен целиком и завершился `PASS`.
+
 ## 2026-08-20 — полная stub-приемка и portable.3
 
 План: расширить автономный модуль-заглушку до всех 34 полей расширенной
