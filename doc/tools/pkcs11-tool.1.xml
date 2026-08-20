@@ -351,6 +351,24 @@
 
 				<varlistentry>
 					<term>
+						<option>--rutoken-info</option>
+					</term>
+					<listitem><para>Show extended token information returned by
+					<option>C_EX_GetTokenInfoExtended</option>. The selected PKCS #11
+					module must support the Rutoken extension.</para></listitem>
+				</varlistentry>
+
+				<varlistentry>
+					<term>
+						<option>--rutoken-name</option>
+					</term>
+					<listitem><para>Show the extended token name returned by
+					<option>C_EX_GetTokenName</option>. A read-only session is opened
+					for the selected token.</para></listitem>
+				</varlistentry>
+
+				<varlistentry>
+					<term>
 						<option>--puk</option> <replaceable>puk</replaceable>
 					</term>
 					<listitem><para>Supply User PUK on the command line.</para></listitem>
