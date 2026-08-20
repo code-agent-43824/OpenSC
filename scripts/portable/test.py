@@ -8,6 +8,23 @@ from pathlib import Path
 from typing import Dict, List
 
 
+RUTOKEN_FUNCTIONS = [
+    "C_EX_GetFunctionListExtended", "C_EX_InitToken",
+    "C_EX_GetTokenInfoExtended", "C_EX_UnblockUserPIN",
+    "C_EX_SetTokenName", "C_EX_SetLicense", "C_EX_GetLicense",
+    "C_EX_GetCertificateInfoText", "C_EX_PKCS7Sign", "C_EX_CreateCSR",
+    "C_EX_FreeBuffer", "C_EX_GetTokenName", "C_EX_SetLocalPIN",
+    "C_EX_LoadActivationKey", "C_EX_SetActivationPassword",
+    "C_EX_GetVolumesInfo", "C_EX_GetDriveSize",
+    "C_EX_ChangeVolumeAttributes", "C_EX_FormatDrive", "C_EX_TokenManage",
+    "C_EX_GenerateActivationPassword", "C_EX_GetJournal",
+    "C_EX_SignInvisibleInit", "C_EX_SignInvisible", "C_EX_SlotManage",
+    "C_EX_WrapKey", "C_EX_UnwrapKey", "C_EX_PKCS7VerifyInit",
+    "C_EX_PKCS7Verify", "C_EX_PKCS7VerifyUpdate", "C_EX_PKCS7VerifyFinal",
+    "C_EX_Authenticate", "C_EX_Deauthenticate", "C_EX_UnblockAuthenticator",
+]
+
+
 def run(tool: Path, module: Path, arguments: List[str], env: Dict[str, str]) -> str:
     command = [str(tool), "--module", str(module), *arguments]
     result = subprocess.run(
@@ -90,15 +107,62 @@ def verify_spy_log(log_path: Path) -> None:
         raise RuntimeError("spy log function order does not match the test scenario")
 
 
+def verify_rutoken_extensions(
+    test_dir: Path,
+    spy: Path,
+    platform: str,
+    work_dir: Path,
+) -> None:
+    if platform.startswith("windows-"):
+        driver = test_dir / "rutoken-driver.exe"
+        stub = test_dir / "rutoken-stub.dll"
+    elif platform == "macos-universal":
+        driver = test_dir / "rutoken-driver"
+        stub = test_dir / "rutoken-stub.dylib"
+    else:
+        driver = test_dir / "rutoken-driver"
+        stub = test_dir / "rutoken-stub.so"
+    for path in (driver, stub):
+        if not path.is_file():
+            raise RuntimeError(f"Rutoken acceptance binary is missing: {path}")
+    if not platform.startswith("windows-"):
+        driver.chmod(driver.stat().st_mode | 0o111)
+
+    log_path = work_dir / "rutoken-spy.log"
+    result = subprocess.run(
+        [str(driver), str(spy), str(stub), str(log_path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        errors="replace",
+    )
+    print(result.stdout, end="")
+    if result.returncode:
+        raise RuntimeError(
+            f"Rutoken extension acceptance failed with exit code {result.returncode}"
+        )
+    if "PASS: all Rutoken extended spy wrappers" not in result.stdout:
+        raise RuntimeError("Rutoken extension driver did not report success")
+
+    log = log_path.read_text(encoding="utf-8", errors="replace")
+    for function in RUTOKEN_FUNCTIONS:
+        if not re.search(rf"(?m)^\d+: {re.escape(function)}\r?$", log):
+            raise RuntimeError(f"Rutoken spy log has no {function} call")
+    if "<redacted>" not in log:
+        raise RuntimeError("Rutoken spy log did not redact sensitive input")
+
+
 def main() -> None:
     if len(sys.argv) == 1:
         testkit_dir = Path(__file__).resolve().parent
         package_dir = testkit_dir / "opensc-package"
         softhsm_dir = testkit_dir / "softhsm-package"
+        rutoken_test_dir = testkit_dir / "rutoken-test"
         platform = (testkit_dir / "platform.txt").read_text(encoding="ascii").strip()
     elif len(sys.argv) == 4:
         package_dir = Path(sys.argv[1]).resolve()
         softhsm_dir = Path(sys.argv[2]).resolve()
+        rutoken_test_dir = None
         platform = sys.argv[3]
     else:
         raise SystemExit("usage: test.py [<OpenSC package dir> <SoftHSM package dir> <platform>]")
@@ -132,6 +196,9 @@ def main() -> None:
         env.pop("PKCS11SPY", None)
         env.pop("PKCS11SPY_OUTPUT", None)
 
+        if rutoken_test_dir is not None:
+            verify_rutoken_extensions(rutoken_test_dir, spy, platform, work_dir)
+
         scenario(tool, softhsm, work_dir, "direct", env)
 
         spy_log = work_dir / "pkcs11-spy.log"
@@ -140,7 +207,7 @@ def main() -> None:
         scenario(tool, spy, work_dir, "spy", env)
         verify_spy_log(spy_log)
 
-    print("PASS: direct and pkcs11-spy data-object scenarios completed")
+    print("PASS: Rutoken extension and data-object scenarios completed")
 
 
 if __name__ == "__main__":

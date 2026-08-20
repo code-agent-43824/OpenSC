@@ -10,6 +10,7 @@ $WorkRoot = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { Join-Path $RootDir
 $WorkDir = Join-Path $WorkRoot "windows-$($env:PORTABLE_ARCH)"
 $StageDir = Join-Path $WorkDir "stage"
 $OutputDir = Join-Path $RootDir "dist"
+$RutokenTestDir = Join-Path $OutputDir "rutoken-test-windows-$($env:PORTABLE_ARCH)"
 $ArchiveName = "opensc-portable-windows-$($env:PORTABLE_ARCH).zip"
 
 switch ($env:PORTABLE_ARCH.ToLowerInvariant()) {
@@ -20,7 +21,8 @@ switch ($env:PORTABLE_ARCH.ToLowerInvariant()) {
 }
 
 Remove-Item $WorkDir -Recurse -Force -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Force -Path (Join-Path $StageDir "bin"), (Join-Path $StageDir "lib"), $OutputDir | Out-Null
+Remove-Item $RutokenTestDir -Recurse -Force -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force -Path (Join-Path $StageDir "bin"), (Join-Path $StageDir "lib"), $OutputDir, $RutokenTestDir | Out-Null
 
 Push-Location $RootDir
 try {
@@ -42,6 +44,16 @@ Copy-Item (Join-Path $RootDir "COPYING") (Join-Path $StageDir "LICENSE-OpenSC.tx
 $OpenSSLCopyright = Join-Path $env:VCPKG_INSTALLED "$($env:VCPKG_DEFAULT_TRIPLET)/share/openssl/copyright"
 Copy-Item $OpenSSLCopyright (Join-Path $StageDir "LICENSE-OpenSSL.txt")
 
+$Stub = Join-Path $RutokenTestDir "rutoken-stub.dll"
+$Driver = Join-Path $RutokenTestDir "rutoken-driver.exe"
+& cl /nologo /LD "/I$RootDir\src" "/Fo$RutokenTestDir\rutoken-stub.obj" "/Fe$Stub" "$RootDir\tests\rutoken-stub.c"
+if ($LASTEXITCODE -ne 0) { throw "Rutoken stub build failed" }
+& cl /nologo "/I$RootDir\src" "/Fo$RutokenTestDir\rutoken-driver.obj" "/Fe$Driver" "$RootDir\tests\rutoken-driver.c"
+if ($LASTEXITCODE -ne 0) { throw "Rutoken driver build failed" }
+Remove-Item (Join-Path $RutokenTestDir "*.obj") -Force
+Remove-Item (Join-Path $RutokenTestDir "*.lib") -Force -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $RutokenTestDir "*.exp") -Force -ErrorAction SilentlyContinue
+
 foreach ($Binary in $Tool, $OpenSCLibrary, $Spy) {
     if (-not (& dumpbin /headers $Binary | Select-String -Pattern $ExpectedMachine)) {
         throw "$Binary does not have the expected $($env:PORTABLE_ARCH) machine type"
@@ -51,6 +63,12 @@ foreach ($Binary in $Tool, $OpenSCLibrary, $Spy) {
     if ($Unexpected) {
         $Unexpected | Write-Error
         throw "$Binary has an unexpected runtime dependency"
+    }
+}
+
+foreach ($Binary in $Stub, $Driver) {
+    if (-not (& dumpbin /headers $Binary | Select-String -Pattern $ExpectedMachine)) {
+        throw "$Binary does not have the expected $($env:PORTABLE_ARCH) machine type"
     }
 }
 

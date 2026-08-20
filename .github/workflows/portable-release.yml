@@ -6,7 +6,7 @@ on:
       release_tag:
         description: Release tag to create or update
         required: true
-        default: 0.27.1-portable.2
+        default: 0.27.1-portable.3
 
 permissions:
   contents: read
@@ -45,6 +45,12 @@ jobs:
         with:
           name: opensc-portable-linux-${{ matrix.arch }}
           path: artifact/opensc-portable-linux-${{ matrix.arch }}/
+          if-no-files-found: error
+          retention-days: 90
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rutoken-test-linux-${{ matrix.arch }}
+          path: dist/rutoken-test-linux-${{ matrix.arch }}/
           if-no-files-found: error
           retention-days: 90
 
@@ -97,6 +103,12 @@ jobs:
           path: artifact/opensc-portable-windows-${{ matrix.arch }}/
           if-no-files-found: error
           retention-days: 90
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rutoken-test-windows-${{ matrix.arch }}
+          path: dist/rutoken-test-windows-${{ matrix.arch }}/
+          if-no-files-found: error
+          retention-days: 90
 
   build-macos:
     name: Build macOS universal
@@ -116,6 +128,12 @@ jobs:
         with:
           name: opensc-portable-macos-universal
           path: artifact/opensc-portable-macos-universal/
+          if-no-files-found: error
+          retention-days: 90
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rutoken-test-macos-universal
+          path: dist/rutoken-test-macos-universal/
           if-no-files-found: error
           retention-days: 90
 
@@ -139,6 +157,10 @@ jobs:
         with:
           name: opensc-portable-linux-${{ matrix.arch }}
           path: opensc-package
+      - uses: actions/download-artifact@v8
+        with:
+          name: rutoken-test-linux-${{ matrix.arch }}
+          path: rutoken-test
       - name: Download latest matching SoftHSM portable library
         run: |
           curl --fail --location --retry 5 \
@@ -148,9 +170,10 @@ jobs:
           unzip -q softhsm-portable-linux-${{ matrix.arch }}.zip -d softhsm-package
       - name: Prepare and test downloadable test kit
         run: |
-          mkdir -p artifact-testkit/opensc-package artifact-testkit/softhsm-package
+          mkdir -p artifact-testkit/opensc-package artifact-testkit/softhsm-package artifact-testkit/rutoken-test
           cp -a opensc-package/. artifact-testkit/opensc-package/
           cp -a softhsm-package/. artifact-testkit/softhsm-package/
+          cp -a rutoken-test/. artifact-testkit/rutoken-test/
           cp scripts/portable/test.py artifact-testkit/test.py
           cp packaging/portable/TEST-KIT-README.txt artifact-testkit/README.txt
           printf '%s\n' 'linux-${{ matrix.arch }}' > artifact-testkit/platform.txt
@@ -182,6 +205,10 @@ jobs:
         with:
           name: opensc-portable-windows-${{ matrix.arch }}
           path: opensc-package
+      - uses: actions/download-artifact@v8
+        with:
+          name: rutoken-test-windows-${{ matrix.arch }}
+          path: rutoken-test
       - name: Download latest matching SoftHSM portable library
         run: |
           Invoke-WebRequest `
@@ -190,9 +217,10 @@ jobs:
           Expand-Archive -LiteralPath softhsm.zip -DestinationPath softhsm-package
       - name: Prepare and test downloadable test kit
         run: |
-          New-Item -ItemType Directory -Force artifact-testkit\opensc-package, artifact-testkit\softhsm-package | Out-Null
+          New-Item -ItemType Directory -Force artifact-testkit\opensc-package, artifact-testkit\softhsm-package, artifact-testkit\rutoken-test | Out-Null
           Copy-Item opensc-package\* artifact-testkit\opensc-package -Recurse
           Copy-Item softhsm-package\* artifact-testkit\softhsm-package -Recurse
+          Copy-Item rutoken-test\* artifact-testkit\rutoken-test -Recurse
           Copy-Item scripts\portable\test.py artifact-testkit\test.py
           Copy-Item packaging\portable\TEST-KIT-README.txt artifact-testkit\README.txt
           Set-Content -LiteralPath artifact-testkit\platform.txt -Value 'windows-${{ matrix.arch }}' -NoNewline
@@ -214,6 +242,10 @@ jobs:
         with:
           name: opensc-portable-macos-universal
           path: opensc-package
+      - uses: actions/download-artifact@v8
+        with:
+          name: rutoken-test-macos-universal
+          path: rutoken-test
       - name: Download latest matching SoftHSM portable library
         run: |
           curl --fail --location --retry 5 \
@@ -223,9 +255,10 @@ jobs:
           unzip -q softhsm.zip -d softhsm-package
       - name: Prepare and test downloadable test kit
         run: |
-          mkdir -p artifact-testkit/opensc-package artifact-testkit/softhsm-package
+          mkdir -p artifact-testkit/opensc-package artifact-testkit/softhsm-package artifact-testkit/rutoken-test
           cp -a opensc-package/. artifact-testkit/opensc-package/
           cp -a softhsm-package/. artifact-testkit/softhsm-package/
+          cp -a rutoken-test/. artifact-testkit/rutoken-test/
           cp scripts/portable/test.py artifact-testkit/test.py
           cp packaging/portable/TEST-KIT-README.txt artifact-testkit/README.txt
           printf '%s\n' macos-universal > artifact-testkit/platform.txt
@@ -259,7 +292,10 @@ jobs:
               opensc-portable-windows-*) ;;
               opensc-portable-*) chmod +x "$source/bin/pkcs11-tool" ;;
               opensc-testkit-windows-*) ;;
-              opensc-testkit-*) chmod +x "$source/opensc-package/bin/pkcs11-tool" ;;
+              opensc-testkit-*)
+                chmod +x "$source/opensc-package/bin/pkcs11-tool" \
+                  "$source/rutoken-test/rutoken-driver"
+                ;;
             esac
             (cd "$source" && zip -X -9 -r "$GITHUB_WORKSPACE/release-assets/$name.zip" .)
             count=$((count + 1))
@@ -293,6 +329,8 @@ jobs:
                 zipinfo -1 "$archive" | grep -Fx 'platform.txt' >/dev/null
                 zipinfo -1 "$archive" | grep -E '^opensc-package/(bin|lib)/pkcs11-(tool|spy)' >/dev/null
                 zipinfo -1 "$archive" | grep -E '^softhsm-package/(libsofthsm2|softhsm2)' >/dev/null
+                zipinfo -1 "$archive" | grep -E '^rutoken-test/rutoken-driver(\.exe)?$' >/dev/null
+                zipinfo -1 "$archive" | grep -E '^rutoken-test/rutoken-stub\.(so|dylib|dll)$' >/dev/null
                 ;;
             esac
           done
@@ -301,7 +339,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
-          notes='Portable pkcs11-tool and pkcs11-spy packages plus independently downloadable test kits for Linux x64/ARM64, Windows x86/x64/ARM64, and macOS universal. Each clean runner assembles and executes the exact test kit later uploaded to Actions and the release. The kit includes the OpenSC tools, the matching ordinary module archive from the latest code-agent-43824/SoftHSMv2 release, and the integration scenario. Verification initializes and changes token PINs, writes, reads, compares and deletes a data object directly and through pkcs11-spy, then validates the corresponding successful function sequence in the spy log.'
+          notes='Portable pkcs11-tool and pkcs11-spy packages plus independently downloadable test kits for Linux x64/ARM64, Windows x86/x64/ARM64, and macOS universal. Each clean runner assembles and executes the exact test kit later uploaded to Actions and the release. The kit includes the OpenSC tools, the matching ordinary module archive from the latest code-agent-43824/SoftHSMv2 release, and a harmless Rutoken ABI stub. Verification invokes every one of the 33 Rutoken C_EX_* operations through pkcs11-spy, checks the complete 34-field table, return values, logging and redaction, then runs the ordinary direct and spy data-object scenarios.'
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" release-assets/* --clobber
           else

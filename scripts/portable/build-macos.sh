@@ -9,12 +9,14 @@ work_dir="${RUNNER_TEMP:-$root_dir/.portable-work}/macos-universal"
 openssl_archive="$work_dir/openssl.tar.gz"
 openssl_source="$work_dir/openssl-$OPENSSL_VERSION"
 stage_dir="$work_dir/stage"
+rutoken_test_dir="$root_dir/dist/rutoken-test-macos-universal"
 archive_name=opensc-portable-macos-universal.zip
 deployment_target=11.0
 export MACOSX_DEPLOYMENT_TARGET="$deployment_target"
 
-rm -rf -- "$work_dir"
-mkdir -p "$work_dir" "$root_dir/dist" "$stage_dir/bin" "$stage_dir/lib"
+rm -rf -- "$work_dir" "$rutoken_test_dir"
+mkdir -p "$work_dir" "$root_dir/dist" "$stage_dir/bin" "$stage_dir/lib" \
+  "$rutoken_test_dir"
 curl --fail --location --retry 5 --output "$openssl_archive" \
   "https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VERSION/openssl-$OPENSSL_VERSION.tar.gz"
 printf '%s  %s\n' "$OPENSSL_SHA256" "$openssl_archive" | shasum -a 256 --check
@@ -78,14 +80,30 @@ for arch in arm64 x86_64; do
     -name 'pkcs11-spy.*' ! -name '*.la' ! -name '*.lai' -print -quit)
   test -n "$spy_module"
   cp "$spy_module" "$work_dir/pkcs11-spy-$arch.dylib"
+  # shellcheck disable=SC2086
+  clang $arch_flags -dynamiclib -I"$root_dir/src" \
+    "$root_dir/tests/rutoken-stub.c" \
+    -o "$work_dir/rutoken-stub-$arch.dylib"
+  # shellcheck disable=SC2086
+  clang $arch_flags -I"$root_dir/src" "$root_dir/tests/rutoken-driver.c" \
+    -o "$work_dir/rutoken-driver-$arch"
 done
 
 lipo -create "$work_dir/pkcs11-tool-arm64" "$work_dir/pkcs11-tool-x86_64" \
   -output "$stage_dir/bin/pkcs11-tool"
 lipo -create "$work_dir/pkcs11-spy-arm64.dylib" "$work_dir/pkcs11-spy-x86_64.dylib" \
   -output "$stage_dir/lib/pkcs11-spy.dylib"
+lipo -create "$work_dir/rutoken-stub-arm64.dylib" \
+  "$work_dir/rutoken-stub-x86_64.dylib" \
+  -output "$rutoken_test_dir/rutoken-stub.dylib"
+lipo -create "$work_dir/rutoken-driver-arm64" "$work_dir/rutoken-driver-x86_64" \
+  -output "$rutoken_test_dir/rutoken-driver"
 strip -x "$stage_dir/bin/pkcs11-tool" "$stage_dir/lib/pkcs11-spy.dylib"
+strip -x "$rutoken_test_dir/rutoken-stub.dylib" \
+  "$rutoken_test_dir/rutoken-driver"
 codesign --force --sign - "$stage_dir/bin/pkcs11-tool" "$stage_dir/lib/pkcs11-spy.dylib"
+codesign --force --sign - "$rutoken_test_dir/rutoken-stub.dylib" \
+  "$rutoken_test_dir/rutoken-driver"
 cp "$root_dir/packaging/portable/README.txt" "$stage_dir/README.txt"
 cp "$root_dir/COPYING" "$stage_dir/LICENSE-OpenSC.txt"
 cp "$openssl_source/LICENSE.txt" "$stage_dir/LICENSE-OpenSSL.txt"
@@ -97,6 +115,11 @@ for binary in "$stage_dir/bin/pkcs11-tool" "$stage_dir/lib/pkcs11-spy.dylib"; do
     otool -L "$binary" >&2
     exit 1
   fi
+done
+
+for binary in "$rutoken_test_dir/rutoken-stub.dylib" \
+  "$rutoken_test_dir/rutoken-driver"; do
+  lipo "$binary" -verify_arch arm64 x86_64
 done
 
 rm -f "$root_dir/dist/$archive_name"

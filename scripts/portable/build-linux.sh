@@ -13,10 +13,12 @@ openssl_prefix="$work_dir/openssl-install"
 static_build="$work_dir/opensc-static"
 shared_build="$work_dir/opensc-shared"
 stage_dir="$work_dir/stage"
+rutoken_test_dir="$root_dir/dist/rutoken-test-linux-$PORTABLE_ARCH"
 archive_name="opensc-portable-linux-$PORTABLE_ARCH.zip"
 
-rm -rf -- "$work_dir"
-mkdir -p "$work_dir" "$root_dir/dist" "$stage_dir/bin" "$stage_dir/lib"
+rm -rf -- "$work_dir" "$rutoken_test_dir"
+mkdir -p "$work_dir" "$root_dir/dist" "$stage_dir/bin" "$stage_dir/lib" \
+  "$rutoken_test_dir"
 curl --fail --location --retry 5 --output "$openssl_archive" \
   "https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VERSION/openssl-$OPENSSL_VERSION.tar.gz"
 printf '%s  %s\n' "$OPENSSL_SHA256" "$openssl_archive" | sha256sum --check
@@ -65,6 +67,13 @@ strip --strip-unneeded "$stage_dir/bin/pkcs11-tool" "$stage_dir/lib/pkcs11-spy.s
 cp "$root_dir/packaging/portable/README.txt" "$stage_dir/README.txt"
 cp "$root_dir/COPYING" "$stage_dir/LICENSE-OpenSC.txt"
 cp "$openssl_source/LICENSE.txt" "$stage_dir/LICENSE-OpenSSL.txt"
+
+cc -shared -fPIC -I"$root_dir/src" "$root_dir/tests/rutoken-stub.c" \
+  -o "$rutoken_test_dir/rutoken-stub.so"
+cc -I"$root_dir/src" "$root_dir/tests/rutoken-driver.c" \
+  -o "$rutoken_test_dir/rutoken-driver" -ldl
+strip --strip-unneeded "$rutoken_test_dir/rutoken-stub.so" \
+  "$rutoken_test_dir/rutoken-driver"
 
 for binary in "$stage_dir/bin/pkcs11-tool" "$stage_dir/lib/pkcs11-spy.so"; do
   if ldd "$binary" | grep -Eq 'lib(crypto|ssl|opensc|pkcs11)'; then
