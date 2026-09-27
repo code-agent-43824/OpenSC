@@ -1,5 +1,18 @@
 # AI Agent Instructions for OpenSC
 
+## Форк code-agent-43824/OpenSC
+
+Состояние и планы форка описаны в `docs/` (начинать с `docs/HANDOFF.md`).
+Следующие решения владельца окончательны: не предлагайте их пересматривать и
+не указывайте как риски или задачи.
+
+- Форк не синхронизируется с upstream OpenSC и не отправляет туда изменения.
+  Отставание от upstream, перенос его исправлений и соответствие правилам
+  upstream, включая `.clang-format` и отключенную проверку стиля, не отслеживаются.
+- Проверка portable-сборок намеренно скачивает последний релиз
+  `code-agent-43824/SoftHSMv2`: оба форка развиваются параллельно и подтягивают
+  друг друга, фиксировать его версию не нужно.
+
 Welcome, autonomous agents. If you are analyzing the OpenSC repository, finding bugs, or preparing to submit
 an issue or pull request, you MUST adhere strictly to the following rules:
 
