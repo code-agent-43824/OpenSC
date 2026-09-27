@@ -30,6 +30,41 @@ ABI_ASSERT(function_list_info_offset,
 		offsetof(CK_FUNCTION_LIST_EXTENDED, C_EX_GetTokenInfoExtended) == 24);
 #endif
 
+/* Windows packs these structures and Unix targets are LP64, so neither has
+ * padding and both layouts follow from the CK_ULONG and pointer widths. */
+#define ABI_U sizeof(CK_ULONG)
+#define ABI_P sizeof(void *)
+ABI_ASSERT(init_param_size,
+		sizeof(CK_RUTOKEN_INIT_PARAM) == 11 * ABI_U + 3 * ABI_P);
+ABI_ASSERT(init_param_user_pin_offset,
+		offsetof(CK_RUTOKEN_INIT_PARAM, pNewUserPin) == 3 * ABI_U + ABI_P);
+ABI_ASSERT(init_param_sm_mode_offset,
+		offsetof(CK_RUTOKEN_INIT_PARAM, ulSmMode) == 10 * ABI_U + 3 * ABI_P);
+ABI_ASSERT(imit_data_size, sizeof(CK_TOKEN_IMIT_DATA) == 41);
+ABI_ASSERT(imit_data_imit_offset, offsetof(CK_TOKEN_IMIT_DATA, pbImit) == 33);
+ABI_ASSERT(local_pin_info_size, sizeof(CK_LOCAL_PIN_INFO) == 6 * ABI_U);
+ABI_ASSERT(restore_defaults_size,
+		sizeof(CK_VENDOR_RESTORE_FACTORY_DEFAULTS_PARAMS) ==
+		5 * ABI_U + 3 * ABI_P);
+ABI_ASSERT(restore_defaults_key_type_offset,
+		offsetof(CK_VENDOR_RESTORE_FACTORY_DEFAULTS_PARAMS, newEmitentKeyType) ==
+		4 * ABI_U + 3 * ABI_P);
+ABI_ASSERT(pin_params_size, sizeof(CK_VENDOR_PIN_PARAMS) == 2 * ABI_U + ABI_P);
+ABI_ASSERT(pin_params_length_offset,
+		offsetof(CK_VENDOR_PIN_PARAMS, ulPinLength) == ABI_U + ABI_P);
+ABI_ASSERT(volume_info_size, sizeof(CK_VOLUME_INFO_EXTENDED) == 5 * ABI_U);
+ABI_ASSERT(volume_format_size,
+		sizeof(CK_VOLUME_FORMAT_INFO_EXTENDED) == 4 * ABI_U);
+ABI_ASSERT(vendor_buffer_size, sizeof(CK_VENDOR_BUFFER) == ABI_U + ABI_P);
+ABI_ASSERT(vendor_buffer_size_offset,
+		offsetof(CK_VENDOR_BUFFER, ulSize) == ABI_P);
+ABI_ASSERT(x509_store_size,
+		sizeof(CK_VENDOR_X509_STORE) == 3 * ABI_U + 3 * ABI_P);
+ABI_ASSERT(x509_store_crl_count_offset,
+		offsetof(CK_VENDOR_X509_STORE, ulCrlCount) == 2 * ABI_U + 3 * ABI_P);
+#undef ABI_P
+#undef ABI_U
+
 #undef ABI_ASSERT
 
 #define EXPECT_VENDOR(call, number) \
