@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Release tag to create or update
+        description: New release tag, for example 0.27.1-portable.5; existing tags and releases are refused
         required: true
-        default: 0.27.1-portable.4
+        type: string
 
 permissions:
   contents: read
@@ -16,8 +16,20 @@ env:
   OPENSSL_SHA256: a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8
 
 jobs:
+  check-release-tag:
+    name: Check that the release tag is unused
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Refuse malformed or existing release tags
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: scripts/portable/check-release-tag.sh
+
   build-linux:
     name: Build Linux ${{ matrix.arch }} (glibc 2.31)
+    needs: check-release-tag
     strategy:
       fail-fast: false
       matrix:
@@ -56,6 +68,7 @@ jobs:
 
   build-windows:
     name: Build Windows ${{ matrix.arch }}
+    needs: check-release-tag
     strategy:
       fail-fast: false
       matrix:
@@ -112,6 +125,7 @@ jobs:
 
   build-macos:
     name: Build macOS universal
+    needs: check-release-tag
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
@@ -344,11 +358,8 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           notes='Portable pkcs11-tool and pkcs11-spy packages plus independently downloadable test kits for Linux x64/ARM64, Windows x86/x64/ARM64, and macOS universal. pkcs11-spy now reads the commented pkcs11-spy.conf template beside its module before environment variables, with safe fallback for absent or invalid files; every clean runner checks both precedence paths. The kit also includes the matching ordinary SoftHSM module and a harmless Rutoken ABI stub. Verification invokes every one of the 33 Rutoken C_EX_* operations through pkcs11-spy, checks the complete 34-field table, logging and redaction, then runs the ordinary direct and spy data-object scenarios.'
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" release-assets/* --clobber
-          else
-            gh release create "$RELEASE_TAG" release-assets/* \
-              --target "$GITHUB_SHA" \
-              --title "OpenSC portable $RELEASE_TAG" \
-              --notes "$notes"
-          fi
+          scripts/portable/check-release-tag.sh
+          gh release create "$RELEASE_TAG" release-assets/* \
+            --target "$GITHUB_SHA" \
+            --title "OpenSC portable $RELEASE_TAG" \
+            --notes "$notes"
