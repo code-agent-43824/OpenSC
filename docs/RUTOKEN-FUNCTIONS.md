@@ -255,7 +255,7 @@
 запись журнала и увеличивает счетчик подписей.
 
 ```sh
-git clone -b claude/nice-einstein-yq1c5e https://github.com/code-agent-43824/OpenSC
+git clone https://github.com/code-agent-43824/OpenSC
 cd OpenSC
 cc -I src -o rutoken-hw-probe tests/rutoken-hw-probe.c -ldl
 
