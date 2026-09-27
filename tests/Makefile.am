@@ -41,7 +41,8 @@ dist_noinst_SCRIPTS = common.sh \
 			      test-pkcs11-tool-uri-with-slot-id.sh \
 			      test-rutoken-extensions.sh \
 			      rutoken-stub.c \
-			      rutoken-driver.c
+			      rutoken-driver.c \
+			      rutoken-hw-probe.c
 
 .NOTPARALLEL:
 TESTS = \

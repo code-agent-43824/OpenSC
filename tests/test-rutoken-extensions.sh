@@ -37,6 +37,20 @@ $CC -I"$SOURCE_PATH/src" "$SOURCE_PATH/tests/rutoken-driver.c" \
 
 "$driver" "$spy" "$stub" "$log"
 
+# The hardware probe must run to the end against a module that provides only
+# part of the standard table.
+probe="$test_dir/rutoken-hw-probe"
+# shellcheck disable=SC2086
+$CC -I"$SOURCE_PATH/src" "$SOURCE_PATH/tests/rutoken-hw-probe.c" \
+	-o "$probe" $driver_libs
+if ! "$probe" --pause-ms 0 "$stub" > "$test_dir/probe.log" ||
+		! grep -q '^PROBE COMPLETE' "$test_dir/probe.log" ||
+		! grep -q '34 of 34 function pointers are set' "$test_dir/probe.log" ||
+		! grep -q '^  name: "Test Rutoken"$' "$test_dir/probe.log"; then
+	cat "$test_dir/probe.log"
+	exit 1
+fi
+
 info=$(PKCS11SPY="$stub" PKCS11SPY_OUTPUT="$log" \
 	"$tool" --module "$spy" --slot 7 --rutoken-info)
 name=$(PKCS11SPY="$stub" PKCS11SPY_OUTPUT="$log" \
@@ -50,3 +64,4 @@ grep -q 'C_EX_GetTokenInfoExtended' "$log"
 test "$(grep -c 'C_EX_GetTokenName' "$log")" -ge 4
 
 echo "PASS: all Rutoken wrappers plus extended info and name commands through pkcs11-spy"
+echo "PASS: Rutoken hardware probe runs against the stub module"
