@@ -19,8 +19,10 @@
 ## Расширенные функции PKCS #11 Рутокен
 
 Полный перечень, ABI, требования к CLI, spy и тестам зафиксированы в
-[`RUTOKEN-EXTENSIONS.md`](RUTOKEN-EXTENSIONS.md). Основа — официальные
-заголовки Aktiv для `rtPKCS11ECP` 2.19.0.0.
+[`RUTOKEN-EXTENSIONS.md`](RUTOKEN-EXTENSIONS.md), поведение и команды для
+этапов 3–5 — в [`RUTOKEN-FUNCTIONS.md`](RUTOKEN-FUNCTIONS.md). Основа —
+официальные заголовки Aktiv для `rtPKCS11ECP` 2.19.0.0; в 2.21.3.0 таблица
+функций та же.
 
 ### Этап 1 — ABI и обнаружение
 
@@ -41,13 +43,16 @@
   функций; секретные значения по умолчанию редактировать.
 - [x] Проверить каждый указатель таблицы модулем-заглушкой, включая ошибки,
   двухпроходные буферы и вызовы до `C_Initialize`.
+- [ ] Экспортировать и проксировать BIO-расширение библиотеки 2.21:
+  `C_BIO_GetFunctionListBio` и 15 функций `C_BIO_*`.
 
 ### Этап 3 — безопасный read-only CLI `pkcs11-tool`
 
 - [x] Добавить обнаружение расширения и первые команды для
   `GetTokenInfoExtended` и `GetTokenName`.
 - [ ] Добавить команды для `GetLicense`, `GetJournal`, `GetVolumesInfo`,
-  `GetDriveSize` и `GetCertificateInfoText`.
+  `GetDriveSize`, `GetCertificateInfoText` и режимов чтения `SlotManage`
+  (принудительная смена PIN, локальные PIN).
 - [ ] Добавить текстовый и JSON-вывод с фиксированными тестами сериализации.
 
 ### Этап 4 — криптография и аутентификация
@@ -60,8 +65,9 @@
 ### Этап 5 — изменяющие и разрушительные операции
 
 - [ ] Добавить `InitToken`, `UnblockUserPIN`, `SetTokenName`, `SetLicense`,
-  `SetLocalPIN`, `TokenManage`, `SlotManage`, `ChangeVolumeAttributes` и
-  `FormatDrive` с обязательным явным подтверждением разрушительных режимов.
+  `SetLocalPIN`, `TokenManage`, режимы записи `SlotManage`,
+  `ChangeVolumeAttributes` и `FormatDrive` с обязательным явным
+  подтверждением разрушительных режимов.
 - [ ] Добавить явно помеченные legacy-команды для семи устаревших функций,
   сохранив полную совместимость spy и таблицы.
 
@@ -69,6 +75,11 @@
 
 - [x] Включить ABI/stub-тесты расширения во все шесть portable build/verify
   пар и в публикуемые test kit.
+- [x] Подготовить read-only программу `tests/rutoken-hw-probe.c` для
+  реального Рутокена; она запускается в `make check` на заглушке и проверена
+  с библиотекой 2.21.3.0 без токена напрямую и через spy.
+- [ ] Получить прогон probe на реальном Рутокене с APDU-трассой pcscd и
+  закрыть вопросы из `RUTOKEN-FUNCTIONS.md`.
 - [ ] Проверить доступный профиль на portable SoftHSM fork, затем выполнить
   отдельную аппаратную приемку flash, лицензий, журнала и аутентификаторов на
   совместимом Рутокене; hardware skip должен быть видимым.
