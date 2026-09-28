@@ -13,8 +13,13 @@ Portable CI для `pkcs11-tool` и `pkcs11-spy` завершен и наход�
 - Базовые команды `--rutoken-info` и `--rutoken-name` готовы. Этап 1 завершен:
   все типы и константы расширения сверены с заголовками 2.19.0.0 и 2.21.3.0.
 - Поведение и команды этапов 3–5 описаны в `docs/RUTOKEN-FUNCTIONS.md`.
-  Read-only программа `tests/rutoken-hw-probe.c` ждет прогона на реальном
-  Рутокене; после него — команды этапа 3 и JSON-вывод.
+  Программа `tests/rutoken-hw-probe.c` прогнана на Рутокен ЭЦП 3.0 5100
+  Flash; команды токена за каждой функцией расширения — в
+  `docs/RUTOKEN-APDU.md`.
+- Этап 3 реализован: `--rutoken-license`, `--rutoken-journal`,
+  `--rutoken-volumes`, `--rutoken-cert-text`, `--rutoken-pin-status` и
+  `--rutoken-json`; spy логирует их результаты без содержимого лицензий.
+  Следующий этап — 4 (PKCS#7, CSR, аутентификаторы).
 - Workflow выпуска требует новый тег и не перезаписывает существующие теги и
   релизы.
 - Локальный `pkcs11-spy.conf` имеет приоритет над environment/Registry;
