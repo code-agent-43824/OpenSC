@@ -24,6 +24,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -251,6 +252,12 @@ enum {
 	OPT_PUBLIC_KEY_INFO,
 	OPT_RUTOKEN_INFO,
 	OPT_RUTOKEN_NAME,
+	OPT_RUTOKEN_LICENSE,
+	OPT_RUTOKEN_JOURNAL,
+	OPT_RUTOKEN_VOLUMES,
+	OPT_RUTOKEN_CERT_TEXT,
+	OPT_RUTOKEN_PIN_STATUS,
+	OPT_RUTOKEN_JSON,
 	OPT_URI,
 	OPT_URI_WITH_SLOT_ID
 };
@@ -349,6 +356,12 @@ static const struct option options[] = {
 	{ "public-key-info",	0, NULL,		OPT_PUBLIC_KEY_INFO},
 	{ "rutoken-info",	0, NULL,		OPT_RUTOKEN_INFO},
 	{ "rutoken-name",	0, NULL,		OPT_RUTOKEN_NAME},
+	{ "rutoken-license",	1, NULL,		OPT_RUTOKEN_LICENSE},
+	{ "rutoken-journal",	0, NULL,		OPT_RUTOKEN_JOURNAL},
+	{ "rutoken-volumes",	0, NULL,		OPT_RUTOKEN_VOLUMES},
+	{ "rutoken-cert-text",	0, NULL,		OPT_RUTOKEN_CERT_TEXT},
+	{ "rutoken-pin-status",	0, NULL,		OPT_RUTOKEN_PIN_STATUS},
+	{ "rutoken-json",	0, NULL,		OPT_RUTOKEN_JSON},
 	{ "uri",		1, NULL,		OPT_URI},
 	{ "uri-with-slot-id",	0, NULL,		OPT_URI_WITH_SLOT_ID},
 	{ NULL, 0, NULL, 0 },
@@ -448,6 +461,12 @@ static const char *option_help[] = {
 		"When reading a public key, try to read PUBLIC_KEY_INFO (DER encoding of SPKI)",
 		"Show extended Rutoken token information",
 		"Show the extended Rutoken token name",
+		"Show the length of Rutoken license <arg>; write it with --output-file",
+		"Show the Rutoken signature journal; write it with --output-file",
+		"Show the Rutoken flash drive size and volumes",
+		"Show Rutoken certificate descriptions (select with --id or --label)",
+		"Show Rutoken PIN change requirements and local PINs",
+		"Print the --rutoken-* results as one JSON object",
 		"Specify the PKCS#11 URI for module, slot, token or object",
 		"Include SlotId in PKCS#11 URI",
 		"",
@@ -458,6 +477,7 @@ static const char *	app_name = "pkcs11-tool"; /* for utils.c */
 static int		verbose = 0;
 static const char *	opt_input = NULL;
 static const char *	opt_output = NULL;
+static int		opt_rutoken_json = 0;
 static const char *	opt_signature_file = NULL;
 static const char *opt_module = NULL;
 static int		opt_slot_set = 0;
@@ -623,9 +643,19 @@ static void		show_token(CK_SLOT_ID);
 static void		list_mechs(CK_SLOT_ID);
 static void		list_objects(CK_SESSION_HANDLE);
 static void		list_interfaces(void);
+struct rutoken_request {
+	int info;
+	int name;
+	CK_ULONG license;	/* license number, 0 if not requested */
+	int journal;
+	int volumes;
+	int cert_text;
+	int pin_status;
+};
 static void load_rutoken_extension(void);
-static void show_rutoken_info(CK_SLOT_ID slot);
-static void show_rutoken_name(CK_SESSION_HANDLE session);
+static int run_rutoken_actions(CK_SLOT_ID slot, CK_SESSION_HANDLE session,
+		const struct rutoken_request *request);
+static const char *rutoken_rv_name(CK_RV rv);
 static int		login(CK_SESSION_HANDLE, int);
 static void		init_token(CK_SLOT_ID);
 static void		init_pin(CK_SLOT_ID, CK_SESSION_HANDLE);
@@ -821,8 +851,8 @@ int main(int argc, char * argv[])
 	int do_list_mechs = 0;
 	int do_list_objects = 0;
 	int do_list_interfaces = 0;
-	int do_rutoken_info = 0;
-	int do_rutoken_name = 0;
+	struct rutoken_request rutoken = { 0 };
+	int rutoken_action_count = 0;
 	int do_sign = 0;
 	int do_verify = 0;
 	int do_decrypt = 0;
@@ -1295,13 +1325,57 @@ int main(int argc, char * argv[])
 			opt_public_key_info = 1;
 			break;
 		case OPT_RUTOKEN_INFO:
-			do_rutoken_info = 1;
+			rutoken.info = 1;
+			rutoken_action_count++;
 			action_count++;
 			break;
 		case OPT_RUTOKEN_NAME:
-			do_rutoken_name = 1;
+			rutoken.name = 1;
 			need_session |= NEED_SESSION_RO;
+			rutoken_action_count++;
 			action_count++;
+			break;
+		case OPT_RUTOKEN_LICENSE: {
+			char *end = NULL;
+			unsigned long number;
+
+			errno = 0;
+			number = strtoul(optarg, &end, 10);
+			if (errno || !end || *end || optarg[0] < '1' || optarg[0] > '9' ||
+					number > 0xFFFFFFFFUL)
+				util_fatal("Invalid Rutoken license number \"%s\"", optarg);
+			rutoken.license = number;
+			need_session |= NEED_SESSION_RO;
+			rutoken_action_count++;
+			action_count++;
+			break;
+		}
+		case OPT_RUTOKEN_JOURNAL:
+			rutoken.journal = 1;
+			rutoken_action_count++;
+			action_count++;
+			break;
+		case OPT_RUTOKEN_VOLUMES:
+			rutoken.volumes = 1;
+			rutoken_action_count++;
+			action_count++;
+			break;
+		case OPT_RUTOKEN_CERT_TEXT:
+			rutoken.cert_text = 1;
+			need_session |= NEED_SESSION_RO;
+			rutoken_action_count++;
+			action_count++;
+			break;
+		case OPT_RUTOKEN_PIN_STATUS:
+			rutoken.pin_status = 1;
+			/* An open session keeps the token connected between the
+			 * 31 C_EX_SlotManage calls. */
+			need_session |= NEED_SESSION_RO;
+			rutoken_action_count++;
+			action_count++;
+			break;
+		case OPT_RUTOKEN_JSON:
+			opt_rutoken_json = 1;
 			break;
 		case OPT_URI_WITH_SLOT_ID:
 			opt_uri_with_slot_id = 1;
@@ -1316,6 +1390,14 @@ int main(int argc, char * argv[])
 
 	if (action_count == 0)
 		util_print_usage_and_die(app_name, options, option_help, NULL);
+
+	if (opt_rutoken_json && rutoken_action_count == 0)
+		util_fatal("--rutoken-json requires a --rutoken-* command");
+	if (opt_rutoken_json && action_count != rutoken_action_count)
+		util_fatal("--rutoken-json cannot be combined with other commands");
+	if (opt_output && rutoken.license && rutoken.journal)
+		util_fatal("--output-file can be used with only one of "
+				"--rutoken-license and --rutoken-journal");
 
 	if (opt_uri) {
 		/* Check that no interfering options were set */
@@ -1393,7 +1475,7 @@ int main(int argc, char * argv[])
 			util_fatal("Failed to load pkcs11 module");
 		p11 = (CK_FUNCTION_LIST_3_0_PTR) p11_v2;
 	}
-	if (do_rutoken_info || do_rutoken_name)
+	if (rutoken_action_count)
 		load_rutoken_extension();
 
 	/* This can be done even before initialization */
@@ -1488,8 +1570,6 @@ int main(int argc, char * argv[])
 
 	if (do_list_mechs)
 		list_mechs(opt_slot);
-	if (do_rutoken_info)
-		show_rutoken_info(opt_slot);
 
 	if (do_sign || do_decrypt || do_encrypt || do_unwrap || do_wrap) {
 		CK_TOKEN_INFO info;
@@ -1547,8 +1627,9 @@ int main(int argc, char * argv[])
 		* the User PIN, we now have to exit. */
 		goto end;
 	}
-	if (do_rutoken_name)
-		show_rutoken_name(session);
+	if (rutoken_action_count &&
+			run_rutoken_actions(opt_slot, session, &rutoken))
+		err = 1;
 
 	uint16_t mf_flags = MF_UNKNOWN;
 	if (opt_mechanism_used) {
@@ -1813,6 +1894,425 @@ end:
 	return err;
 }
 
+/*
+ * Rutoken extension commands (--rutoken-*)
+ *
+ * Every command reports a failed call on stderr and goes on with the next
+ * one; the exit status is 1 if any of them failed. With --rutoken-json the
+ * results form one JSON object that is printed after the last command.
+ */
+
+#define RUTOKEN_MAX_LENGTH	(16UL * 1024 * 1024)
+#define RUTOKEN_LOCAL_PIN_FIRST	3
+#define RUTOKEN_LOCAL_PIN_LAST	31
+
+#define RUTOKEN_CALL(name, arguments) \
+	(p11_ex->name ? p11_ex->name arguments : CKR_FUNCTION_NOT_SUPPORTED)
+
+/* Fields after ulATRLen are absent in older structure versions. */
+#define RUTOKEN_HAS(info, field) \
+	((info)->ulSizeofThisStructure >= \
+	 offsetof(CK_TOKEN_INFO_EXTENDED, field) + sizeof((info)->field))
+
+struct rutoken_name {
+	CK_ULONG value;
+	const char *name;
+};
+
+static const struct rutoken_name rutoken_token_types[] = {
+	{ TOKEN_TYPE_RUTOKEN_ECP, "RUTOKEN_ECP" },
+	{ TOKEN_TYPE_RUTOKEN_LITE, "RUTOKEN_LITE" },
+	{ TOKEN_TYPE_RUTOKEN, "RUTOKEN" },
+	{ TOKEN_TYPE_RUTOKEN_PINPAD_FAMILY, "RUTOKEN_PINPAD_FAMILY" },
+	{ TOKEN_TYPE_RUTOKEN_MIKRON, "RUTOKEN_MIKRON" },
+	{ TOKEN_TYPE_RUTOKEN_ECPDUAL_USB, "RUTOKEN_ECPDUAL_USB" },
+	{ TOKEN_TYPE_RUTOKEN_WEB, "RUTOKEN_WEB" },
+	{ TOKEN_TYPE_RUTOKEN_ECP_SC, "RUTOKEN_ECP_SC" },
+	{ TOKEN_TYPE_RUTOKEN_LITE_SC_JC, "RUTOKEN_LITE_SC_JC" },
+	{ TOKEN_TYPE_RUTOKEN_MIKRON_SC, "RUTOKEN_MIKRON_SC" },
+	{ TOKEN_TYPE_RUTOKEN_SCDUAL, "RUTOKEN_SCDUAL" },
+	{ TOKEN_TYPE_RUTOKEN_MIKRON_SCDUAL, "RUTOKEN_MIKRON_SCDUAL" },
+	{ TOKEN_TYPE_RUTOKEN_ECPDUAL_BT, "RUTOKEN_ECPDUAL_BT" },
+	{ TOKEN_TYPE_RUTOKEN_ECP_SD, "RUTOKEN_ECP_SD" },
+	{ TOKEN_TYPE_RUTOKEN_LITE_SD, "RUTOKEN_LITE_SD" },
+	{ TOKEN_TYPE_RUTOKEN_ECPDUAL_UART, "RUTOKEN_ECPDUAL_UART" },
+	{ TOKEN_TYPE_RUTOKEN_ECP_NFC, "RUTOKEN_ECP_NFC" },
+	{ TOKEN_TYPE_RUTOKEN_SCDUAL_NFC, "RUTOKEN_SCDUAL_NFC" },
+	{ TOKEN_TYPE_RUTOKEN_MIKRON_SCDUAL_NFC, "RUTOKEN_MIKRON_SCDUAL_NFC" },
+	{ TOKEN_TYPE_UNKNOWN, "UNKNOWN" },
+	{ 0, NULL }
+};
+
+static const struct rutoken_name rutoken_token_classes[] = {
+	{ TOKEN_CLASS_S, "S" },
+	{ TOKEN_CLASS_ECP, "ECP" },
+	{ TOKEN_CLASS_LITE, "LITE" },
+	{ TOKEN_CLASS_WEB, "WEB" },
+	{ TOKEN_CLASS_PINPAD, "PINPAD" },
+	{ TOKEN_CLASS_ECPDUAL, "ECPDUAL" },
+	{ TOKEN_CLASS_UNKNOWN, "UNKNOWN" },
+	{ 0, NULL }
+};
+
+static const struct rutoken_name rutoken_body_colors[] = {
+	{ TOKEN_BODY_COLOR_UNKNOWN, "UNKNOWN" },
+	{ TOKEN_BODY_COLOR_WHITE, "WHITE" },
+	{ TOKEN_BODY_COLOR_BLACK, "BLACK" },
+	{ 0, NULL }
+};
+
+static const struct rutoken_name rutoken_token_flags[] = {
+	{ TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN, "ADMIN_CHANGE_USER_PIN" },
+	{ TOKEN_FLAGS_USER_CHANGE_USER_PIN, "USER_CHANGE_USER_PIN" },
+	{ TOKEN_FLAGS_ADMIN_PIN_NOT_DEFAULT, "ADMIN_PIN_NOT_DEFAULT" },
+	{ TOKEN_FLAGS_USER_PIN_NOT_DEFAULT, "USER_PIN_NOT_DEFAULT" },
+	{ TOKEN_FLAGS_SUPPORT_FKN, "SUPPORT_FKN" },
+	{ TOKEN_FLAGS_SUPPORT_SM, "SUPPORT_SM" },
+	{ TOKEN_FLAGS_HAS_FLASH_DRIVE, "HAS_FLASH_DRIVE" },
+	{ TOKEN_FLAGS_SUPPORT_SECURE_MESSAGING, "SUPPORT_SECURE_MESSAGING" },
+	{ TOKEN_FLAGS_HAS_BUTTON, "HAS_BUTTON" },
+	{ TOKEN_FLAGS_SUPPORT_JOURNAL, "SUPPORT_JOURNAL" },
+	{ TOKEN_FLAGS_USER_PIN_UTF8, "USER_PIN_UTF8" },
+	{ TOKEN_FLAGS_ADMIN_PIN_UTF8, "ADMIN_PIN_UTF8" },
+	{ TOKEN_FLAGS_FW_CHECKSUM_UNAVAILIBLE, "FW_CHECKSUM_UNAVAILIBLE" },
+	{ TOKEN_FLAGS_FW_CHECKSUM_INVALID, "FW_CHECKSUM_INVALID" },
+	{ 0, NULL }
+};
+
+static const struct rutoken_name rutoken_access_modes[] = {
+	{ ACCESS_MODE_HIDDEN, "HIDDEN" },
+	{ ACCESS_MODE_RO, "RO" },
+	{ ACCESS_MODE_RW, "RW" },
+	{ ACCESS_MODE_CD, "CD" },
+	{ 0, NULL }
+};
+
+static const struct rutoken_name rutoken_local_pin_flags[] = {
+	{ LOCAL_PIN_FLAGS_NOT_DEFAULT, "NOT_DEFAULT" },
+	{ LOCAL_PIN_FLAGS_FROM_SCREEN, "FROM_SCREEN" },
+	{ LOCAL_PIN_FLAGS_IS_UTF8, "IS_UTF8" },
+	{ 0, NULL }
+};
+
+static const struct rutoken_name rutoken_return_values[] = {
+	{ CKR_CORRUPTED_MAPFILE, "CKR_CORRUPTED_MAPFILE" },
+	{ CKR_WRONG_VERSION_FIELD, "CKR_WRONG_VERSION_FIELD" },
+	{ CKR_WRONG_PKCS1_ENCODING, "CKR_WRONG_PKCS1_ENCODING" },
+	{ CKR_RTPKCS11_DATA_CORRUPTED, "CKR_RTPKCS11_DATA_CORRUPTED" },
+	{ CKR_RTPKCS11_RSF_DATA_CORRUPTED, "CKR_RTPKCS11_RSF_DATA_CORRUPTED" },
+	{ CKR_SM_PASSWORD_INVALID, "CKR_SM_PASSWORD_INVALID" },
+	{ CKR_LICENSE_READ_ONLY, "CKR_LICENSE_READ_ONLY" },
+	{ CKR_VENDOR_EMITENT_KEY_BLOCKED, "CKR_VENDOR_EMITENT_KEY_BLOCKED" },
+	{ CKR_CERT_CHAIN_NOT_VERIFIED, "CKR_CERT_CHAIN_NOT_VERIFIED" },
+	{ CKR_INAPPROPRIATE_PIN, "CKR_INAPPROPRIATE_PIN" },
+	{ CKR_PIN_IN_HISTORY, "CKR_PIN_IN_HISTORY" },
+	{ CKR_VENDOR_INTERFACE_NOT_INITIALIZED,
+		"CKR_VENDOR_INTERFACE_NOT_INITIALIZED" },
+	{ 0, NULL }
+};
+
+static const char *
+rutoken_lookup(const struct rutoken_name *names, CK_ULONG value)
+{
+	for (; names->name; names++)
+		if (names->value == value)
+			return names->name;
+	return NULL;
+}
+
+static const char *
+rutoken_rv_name(CK_RV rv)
+{
+	return rutoken_lookup(rutoken_return_values, rv);
+}
+
+/* JSON document of --rutoken-json */
+static struct {
+	char *data;
+	size_t length;
+	size_t size;
+	unsigned int depth;
+	int has_members[16];
+} rutoken_json;
+
+static void
+json_put(const char *text, size_t length)
+{
+	if (rutoken_json.length + length + 1 > rutoken_json.size) {
+		size_t size = rutoken_json.size ? rutoken_json.size : 1024;
+		char *data;
+
+		while (rutoken_json.length + length + 1 > size)
+			size *= 2;
+		data = realloc(rutoken_json.data, size);
+		if (!data)
+			util_fatal("Out of memory");
+		rutoken_json.data = data;
+		rutoken_json.size = size;
+	}
+	memcpy(rutoken_json.data + rutoken_json.length, text, length);
+	rutoken_json.length += length;
+	rutoken_json.data[rutoken_json.length] = '\0';
+}
+
+static void
+json_puts(const char *text)
+{
+	json_put(text, strlen(text));
+}
+
+/* Length of the valid UTF-8 sequence at the start of text, or 0. */
+static size_t
+utf8_sequence_length(const unsigned char *text, size_t length)
+{
+	unsigned long code;
+	size_t need, i;
+
+	if (text[0] < 0x80)
+		return 1;
+	if (text[0] >= 0xC2 && text[0] <= 0xDF) {
+		need = 2;
+		code = text[0] & 0x1F;
+	} else if (text[0] >= 0xE0 && text[0] <= 0xEF) {
+		need = 3;
+		code = text[0] & 0x0F;
+	} else if (text[0] >= 0xF0 && text[0] <= 0xF4) {
+		need = 4;
+		code = text[0] & 0x07;
+	} else {
+		return 0;
+	}
+	if (length < need)
+		return 0;
+	for (i = 1; i < need; i++) {
+		if ((text[i] & 0xC0) != 0x80)
+			return 0;
+		code = (code << 6) | (text[i] & 0x3F);
+	}
+	if ((need == 3 && (code < 0x800 || (code >= 0xD800 && code <= 0xDFFF))) ||
+			(need == 4 && (code < 0x10000 || code > 0x10FFFF)))
+		return 0;
+	return need;
+}
+
+/* Bytes that are not UTF-8 are written as the Latin-1 characters with the
+ * same codes, so that the document stays valid. */
+static void
+json_quoted(const unsigned char *text, size_t length)
+{
+	char escaped[8];
+	size_t i = 0, n;
+
+	json_puts("\"");
+	while (i < length) {
+		n = utf8_sequence_length(text + i, length - i);
+		if (n > 1 || (n == 1 && text[i] >= 0x20 && text[i] != '"' &&
+				text[i] != '\\')) {
+			json_put((const char *)text + i, n);
+			i += n;
+			continue;
+		}
+		if (text[i] == '"')
+			json_puts("\\\"");
+		else if (text[i] == '\\')
+			json_puts("\\\\");
+		else if (text[i] == '\n')
+			json_puts("\\n");
+		else if (text[i] == '\r')
+			json_puts("\\r");
+		else if (text[i] == '\t')
+			json_puts("\\t");
+		else {
+			snprintf(escaped, sizeof(escaped), "\\u%04x", text[i]);
+			json_puts(escaped);
+		}
+		i++;
+	}
+	json_puts("\"");
+}
+
+/* Starts a member of the current object (key) or array (NULL). */
+static void
+json_member(const char *key)
+{
+	if (rutoken_json.depth > 0) {
+		if (rutoken_json.has_members[rutoken_json.depth - 1])
+			json_puts(",");
+		rutoken_json.has_members[rutoken_json.depth - 1] = 1;
+	}
+	if (key) {
+		json_quoted((const unsigned char *)key, strlen(key));
+		json_puts(":");
+	}
+}
+
+static void
+json_begin(const char *key, const char *bracket)
+{
+	if (rutoken_json.depth >= sizeof(rutoken_json.has_members) /
+			sizeof(rutoken_json.has_members[0]))
+		util_fatal("JSON output is nested too deeply");
+	json_member(key);
+	json_puts(bracket);
+	rutoken_json.has_members[rutoken_json.depth++] = 0;
+}
+
+static void
+json_end(const char *bracket)
+{
+	rutoken_json.depth--;
+	json_puts(bracket);
+}
+
+static void
+json_string(const char *key, const void *text, size_t length)
+{
+	json_member(key);
+	json_quoted(text, length);
+}
+
+static void
+json_text(const char *key, const char *text)
+{
+	json_string(key, text, strlen(text));
+}
+
+static void
+json_ulong(const char *key, CK_ULONG value)
+{
+	char number[24];
+
+	json_member(key);
+	snprintf(number, sizeof(number), "%lu", (unsigned long)value);
+	json_puts(number);
+}
+
+static void
+json_bool(const char *key, int value)
+{
+	json_member(key);
+	json_puts(value ? "true" : "false");
+}
+
+static void
+json_null(const char *key)
+{
+	json_member(key);
+	json_puts("null");
+}
+
+static void
+json_hex(const char *key, const unsigned char *data, size_t length)
+{
+	char byte[3];
+	size_t i;
+
+	json_member(key);
+	json_puts("\"");
+	for (i = 0; i < length; i++) {
+		snprintf(byte, sizeof(byte), "%02x", data[i]);
+		json_puts(byte);
+	}
+	json_puts("\"");
+}
+
+/* Names of the set bits; unknown bits are written in hex. */
+static void
+json_flag_names(const char *key, const struct rutoken_name *names,
+		CK_FLAGS flags)
+{
+	char unknown[24];
+
+	json_begin(key, "[");
+	for (; names->name; names++) {
+		if (flags & names->value) {
+			json_text(NULL, names->name);
+			flags &= ~names->value;
+		}
+	}
+	if (flags) {
+		snprintf(unknown, sizeof(unknown), "0x%lx", (unsigned long)flags);
+		json_text(NULL, unknown);
+	}
+	json_end("]");
+}
+
+static void
+rutoken_print_flags(const struct rutoken_name *names, CK_FLAGS flags)
+{
+	const char *separator = " (";
+
+	for (; names->name; names++) {
+		if (flags & names->value) {
+			printf("%s%s", separator, names->name);
+			separator = " ";
+			flags &= ~names->value;
+		}
+	}
+	if (flags) {
+		printf("%s0x%lx", separator, (unsigned long)flags);
+		separator = " ";
+	}
+	if (separator[0] == ' ' && separator[1] == '\0')
+		printf(")");
+}
+
+static void
+rutoken_print_hex(const unsigned char *data, size_t length)
+{
+	size_t i;
+
+	for (i = 0; i < length; i++)
+		printf("%02x", data[i]);
+}
+
+static int
+rutoken_error(const char *function, CK_RV rv)
+{
+	fprintf(stderr, "Rutoken: %s failed: rv = %s (0x%lx)\n", function,
+			CKR2Str(rv), (unsigned long)rv);
+	if (opt_rutoken_json) {
+		json_begin("error", "{");
+		json_text("function", function);
+		json_text("rv", CKR2Str(rv));
+		json_ulong("code", rv);
+		json_end("}");
+	}
+	return 1;
+}
+
+static int
+rutoken_bad_length(const char *function, CK_ULONG length)
+{
+	fprintf(stderr, "Rutoken: %s returned an invalid length %lu\n", function,
+			(unsigned long)length);
+	if (opt_rutoken_json) {
+		json_begin("error", "{");
+		json_text("function", function);
+		json_text("message", "invalid length");
+		json_ulong("length", length);
+		json_end("}");
+	}
+	return 1;
+}
+
+static void
+rutoken_write_output(const CK_BYTE *data, CK_ULONG length)
+{
+	int fd;
+
+	fd = open(opt_output, O_CREAT | O_TRUNC | O_WRONLY | O_BINARY,
+			S_IRUSR | S_IWUSR);
+	if (fd < 0)
+		util_fatal("failed to open %s: %m", opt_output);
+	if (length && write(fd, data, length) != (ssize_t)length) {
+		close(fd);
+		util_fatal("failed to write to %s: %m", opt_output);
+	}
+	if (close(fd) != 0)
+		util_fatal("failed to write to %s: %m", opt_output);
+}
+
 static void
 load_rutoken_extension(void)
 {
@@ -1833,31 +2333,107 @@ load_rutoken_extension(void)
 		util_fatal("C_EX_GetFunctionListExtended returned a null function list");
 }
 
-static void
-show_rutoken_info(CK_SLOT_ID slot)
+static int
+rutoken_show_info(CK_SLOT_ID slot)
 {
 	CK_TOKEN_INFO_EXTENDED info;
+	CK_ULONG atr_len;
+	const char *name;
+	int battery;
 	CK_RV rv;
-	size_t i;
 
-	if (!p11_ex->C_EX_GetTokenInfoExtended)
-		p11_fatal("C_EX_GetTokenInfoExtended", CKR_FUNCTION_NOT_SUPPORTED);
 	memset(&info, 0, sizeof(info));
 	info.ulSizeofThisStructure = sizeof(info);
-	rv = p11_ex->C_EX_GetTokenInfoExtended(slot, &info);
-	if (rv != CKR_OK)
-		p11_fatal("C_EX_GetTokenInfoExtended", rv);
+	rv = RUTOKEN_CALL(C_EX_GetTokenInfoExtended, (slot, &info));
+	if (opt_rutoken_json)
+		json_begin("info", "{");
+	if (rv != CKR_OK) {
+		rutoken_error("C_EX_GetTokenInfoExtended", rv);
+		if (opt_rutoken_json)
+			json_end("}");
+		return 1;
+	}
+	atr_len = MIN(info.ulATRLen, (CK_ULONG)sizeof(info.ATR));
+	battery = RUTOKEN_HAS(&info, ulBatteryVoltage) &&
+		(info.ulBatteryVoltage != 0 ||
+		 (RUTOKEN_HAS(&info, ulBatteryPercentage) &&
+		  info.ulBatteryPercentage != (CK_ULONG)-1));
+
+	if (opt_rutoken_json) {
+		json_ulong("structure_size", info.ulSizeofThisStructure);
+		json_ulong("token_type", info.ulTokenType);
+		if ((name = rutoken_lookup(rutoken_token_types, info.ulTokenType)))
+			json_text("token_type_name", name);
+		if (RUTOKEN_HAS(&info, ulTokenClass)) {
+			json_ulong("token_class", info.ulTokenClass);
+			if ((name = rutoken_lookup(rutoken_token_classes,
+					info.ulTokenClass)))
+				json_text("token_class_name", name);
+		}
+		json_ulong("protocol", info.ulProtocolNumber);
+		json_ulong("microcode", info.ulMicrocodeNumber);
+		json_ulong("order_number", info.ulOrderNumber);
+		json_ulong("flags", info.flags);
+		json_flag_names("flag_names", rutoken_token_flags, info.flags);
+		json_hex("serial", info.serialNumber, sizeof(info.serialNumber));
+		json_ulong("total_memory", info.ulTotalMemory);
+		json_ulong("free_memory", info.ulFreeMemory);
+		json_ulong("admin_pin_min_length", info.ulMinAdminPinLen);
+		json_ulong("admin_pin_max_length", info.ulMaxAdminPinLen);
+		json_ulong("user_pin_min_length", info.ulMinUserPinLen);
+		json_ulong("user_pin_max_length", info.ulMaxUserPinLen);
+		json_ulong("admin_retries_left", info.ulAdminRetryCountLeft);
+		json_ulong("admin_retries_max", info.ulMaxAdminRetryCount);
+		json_ulong("user_retries_left", info.ulUserRetryCountLeft);
+		json_ulong("user_retries_max", info.ulMaxUserRetryCount);
+		json_hex("atr", info.ATR, atr_len);
+		if (battery) {
+			json_begin("battery", "{");
+			json_ulong("voltage_mv", info.ulBatteryVoltage);
+			if (RUTOKEN_HAS(&info, ulBatteryPercentage))
+				json_ulong("percentage", info.ulBatteryPercentage);
+			if (RUTOKEN_HAS(&info, ulBatteryFlags))
+				json_ulong("flags", info.ulBatteryFlags);
+			json_end("}");
+		} else {
+			json_null("battery");
+		}
+		if (RUTOKEN_HAS(&info, ulBodyColor)) {
+			json_ulong("body_color", info.ulBodyColor);
+			if ((name = rutoken_lookup(rutoken_body_colors, info.ulBodyColor)))
+				json_text("body_color_name", name);
+		}
+		if (RUTOKEN_HAS(&info, ulFirmwareChecksum) &&
+				!(info.flags & TOKEN_FLAGS_FW_CHECKSUM_UNAVAILIBLE)) {
+			json_ulong("firmware_checksum", info.ulFirmwareChecksum);
+			json_bool("firmware_checksum_valid",
+					!(info.flags & TOKEN_FLAGS_FW_CHECKSUM_INVALID));
+		} else {
+			json_null("firmware_checksum");
+		}
+		json_end("}");
+		return 0;
+	}
 
 	printf("Rutoken extended information:\n");
-	printf("  token type         : 0x%lx\n", info.ulTokenType);
-	printf("  token class        : 0x%lx\n", info.ulTokenClass);
+	printf("  token type         : 0x%lx", info.ulTokenType);
+	if ((name = rutoken_lookup(rutoken_token_types, info.ulTokenType)))
+		printf(" (%s)", name);
+	printf("\n");
+	if (RUTOKEN_HAS(&info, ulTokenClass)) {
+		printf("  token class        : 0x%lx", info.ulTokenClass);
+		if ((name = rutoken_lookup(rutoken_token_classes, info.ulTokenClass)))
+			printf(" (%s)", name);
+		printf("\n");
+	}
 	printf("  protocol           : %lu\n", info.ulProtocolNumber);
 	printf("  microcode          : %lu\n", info.ulMicrocodeNumber);
 	printf("  order number       : %lu\n", info.ulOrderNumber);
-	printf("  flags              : 0x%lx\n", info.flags);
+	printf("  flags              : 0x%lx", info.flags);
+	rutoken_print_flags(rutoken_token_flags, info.flags);
+	printf("\n");
 	printf("  serial             : ");
-	for (i = 0; i < sizeof(info.serialNumber); i++)
-		printf("%02x", info.serialNumber[i]);
+	rutoken_print_hex(info.serialNumber, sizeof(info.serialNumber));
 	printf("\n");
 	printf("  memory             : %lu free / %lu total\n",
 			info.ulFreeMemory, info.ulTotalMemory);
@@ -1869,32 +2445,686 @@ show_rutoken_info(CK_SLOT_ID slot)
 			info.ulAdminRetryCountLeft, info.ulMaxAdminRetryCount);
 	printf("  user retries       : %lu / %lu\n",
 			info.ulUserRetryCountLeft, info.ulMaxUserRetryCount);
+	printf("  ATR                : ");
+	rutoken_print_hex(info.ATR, atr_len);
+	printf("\n");
+	if (battery) {
+		printf("  battery            : %lu mV", info.ulBatteryVoltage);
+		if (RUTOKEN_HAS(&info, ulBatteryPercentage))
+			printf(", %lu%%", info.ulBatteryPercentage);
+		if (RUTOKEN_HAS(&info, ulBatteryFlags))
+			printf(", flags 0x%lx", info.ulBatteryFlags);
+		printf("\n");
+	} else {
+		printf("  battery            : not reported\n");
+	}
+	if (RUTOKEN_HAS(&info, ulBodyColor)) {
+		printf("  body color         : %lu", info.ulBodyColor);
+		if ((name = rutoken_lookup(rutoken_body_colors, info.ulBodyColor)))
+			printf(" (%s)", name);
+		printf("\n");
+	}
+	if (RUTOKEN_HAS(&info, ulFirmwareChecksum) &&
+			!(info.flags & TOKEN_FLAGS_FW_CHECKSUM_UNAVAILIBLE))
+		printf("  firmware checksum  : 0x%08lx%s\n", info.ulFirmwareChecksum,
+				(info.flags & TOKEN_FLAGS_FW_CHECKSUM_INVALID) ?
+				" (invalid)" : "");
+	else
+		printf("  firmware checksum  : not reported\n");
+	return 0;
+}
+
+static int
+rutoken_show_name(CK_SESSION_HANDLE session)
+{
+	CK_ULONG length = 0;
+	CK_CHAR_PTR label = NULL;
+	int failed = 0;
+	CK_RV rv;
+
+	if (opt_rutoken_json)
+		json_begin("name", "{");
+	rv = RUTOKEN_CALL(C_EX_GetTokenName, (session, NULL, &length));
+	if (rv != CKR_OK) {
+		failed = rutoken_error("C_EX_GetTokenName", rv);
+		goto out;
+	}
+	if (length > RUTOKEN_MAX_LENGTH) {
+		failed = rutoken_bad_length("C_EX_GetTokenName", length);
+		goto out;
+	}
+	label = calloc((size_t)length + 1, 1);
+	if (!label)
+		util_fatal("Out of memory");
+	rv = RUTOKEN_CALL(C_EX_GetTokenName, (session, label, &length));
+	if (rv != CKR_OK) {
+		failed = rutoken_error("C_EX_GetTokenName", rv);
+		goto out;
+	}
+	if (opt_rutoken_json)
+		json_string("label", label, length);
+	else
+		printf("Rutoken name: %.*s\n", (int)MIN(length, INT_MAX), label);
+out:
+	free(label);
+	if (opt_rutoken_json)
+		json_end("}");
+	return failed;
+}
+
+static int
+rutoken_show_license(CK_SESSION_HANDLE session, CK_ULONG number)
+{
+	CK_ULONG length = 0, i;
+	CK_BYTE_PTR license = NULL;
+	int empty = 1, failed = 0;
+	CK_RV rv;
+
+	if (opt_rutoken_json) {
+		json_begin("license", "{");
+		json_ulong("number", number);
+	}
+	rv = RUTOKEN_CALL(C_EX_GetLicense, (session, number, NULL, &length));
+	if (rv != CKR_OK) {
+		failed = rutoken_error("C_EX_GetLicense", rv);
+		goto out;
+	}
+	if (length > RUTOKEN_MAX_LENGTH) {
+		failed = rutoken_bad_length("C_EX_GetLicense", length);
+		goto out;
+	}
+	license = calloc((size_t)length + 1, 1);
+	if (!license)
+		util_fatal("Out of memory");
+	if (length) {
+		rv = RUTOKEN_CALL(C_EX_GetLicense, (session, number, license, &length));
+		if (rv != CKR_OK) {
+			failed = rutoken_error("C_EX_GetLicense", rv);
+			goto out;
+		}
+	}
+	for (i = 0; i < length; i++)
+		if (license[i])
+			empty = 0;
+	/* The license is written only to a file, never to stdout. */
+	if (opt_output)
+		rutoken_write_output(license, length);
+	if (opt_rutoken_json) {
+		json_ulong("length", length);
+		json_bool("empty", empty);
+		if (opt_output)
+			json_text("output_file", opt_output);
+	} else {
+		printf("Rutoken license %lu: %lu bytes, %s\n", number, length,
+				empty ? "empty" : "not empty");
+		if (opt_output)
+			printf("  written to %s\n", opt_output);
+		else if (!empty)
+			printf("  the content is written only with --output-file\n");
+	}
+out:
+	if (license) {
+		sc_mem_clear(license, (size_t)length);
+		free(license);
+	}
+	if (opt_rutoken_json)
+		json_end("}");
+	return failed;
+}
+
+/* A BER-TLV with a one-byte tag and a length of up to two bytes. */
+static int
+rutoken_next_tlv(const CK_BYTE *data, size_t length, size_t *offset,
+		CK_BYTE *tag, const CK_BYTE **value, size_t *value_length)
+{
+	size_t i = *offset, n;
+
+	if (length - i < 2)
+		return 0;
+	*tag = data[i++];
+	n = data[i++];
+	if (n == 0x81) {
+		if (length - i < 1)
+			return 0;
+		n = data[i++];
+	} else if (n == 0x82) {
+		if (length - i < 2)
+			return 0;
+		n = ((size_t)data[i] << 8) | data[i + 1];
+		i += 2;
+	} else if (n > 0x7F) {
+		return 0;
+	}
+	if (n > length - i)
+		return 0;
+	*value = data + i;
+	*value_length = n;
+	*offset = i + n;
+	return 1;
+}
+
+/* One journal record: TLV 0x80 with the last GOST signature. */
+static int
+rutoken_show_journal_record(const CK_BYTE *record, size_t length,
+		unsigned long number)
+{
+	static const struct {
+		CK_BYTE tag;
+		const char *key;
+		const char *label;
+	} values[] = {
+		{ 0xAA, "hash", "hash" },
+		{ 0xB6, "signature", "signature" },
+		{ 0x83, "device_id", "device ID" },
+	};
+	const CK_BYTE *value;
+	size_t offset = 0, value_length, i;
+	int known;
+	CK_BYTE tag;
+
+	if (opt_rutoken_json)
+		json_begin(NULL, "{");
+	else
+		printf("  record %lu\n", number);
+	while (offset < length) {
+		if (!rutoken_next_tlv(record, length, &offset, &tag, &value,
+				&value_length))
+			break;
+		if (tag == 0x85 && value_length == 12) {
+			CK_ULONG key_id = ((CK_ULONG)value[6] << 8) | value[7];
+			CK_ULONG counter = ((CK_ULONG)value[8] << 24) |
+				((CK_ULONG)value[9] << 16) | ((CK_ULONG)value[10] << 8) |
+				value[11];
+
+			if (opt_rutoken_json) {
+				json_ulong("operation", value[0]);
+				json_ulong("key_type", value[1]);
+				json_ulong("key_purpose", value[2]);
+				json_ulong("flags", value[3]);
+				json_ulong("key_id", key_id);
+				json_ulong("signature_counter", counter);
+			} else {
+				printf("    operation          : 0x%02x\n", value[0]);
+				printf("    key type           : 0x%02x\n", value[1]);
+				printf("    key purpose        : 0x%02x\n", value[2]);
+				printf("    flags              : 0x%02x\n", value[3]);
+				printf("    key ID             : 0x%04lx\n", key_id);
+				printf("    signature counter  : %lu\n", counter);
+			}
+			continue;
+		}
+		known = 0;
+		for (i = 0; i < sizeof(values) / sizeof(values[0]); i++) {
+			if (tag != values[i].tag)
+				continue;
+			known = 1;
+			if (opt_rutoken_json) {
+				json_hex(values[i].key, value, value_length);
+			} else {
+				printf("    %-19s: ", values[i].label);
+				rutoken_print_hex(value, value_length);
+				printf("\n");
+			}
+		}
+		if (!known) {
+			if (opt_rutoken_json) {
+				char key[16];
+
+				snprintf(key, sizeof(key), "tag_%02x", tag);
+				json_hex(key, value, value_length);
+			} else {
+				printf("    tag 0x%02x           : ", tag);
+				rutoken_print_hex(value, value_length);
+				printf("\n");
+			}
+		}
+	}
+	if (opt_rutoken_json)
+		json_end("}");
+	return offset == length;
+}
+
+static int
+rutoken_show_journal(CK_SLOT_ID slot)
+{
+	CK_ULONG length = 0;
+	CK_BYTE_PTR journal = NULL;
+	const CK_BYTE *record;
+	size_t offset = 0, record_length;
+	unsigned long records = 0;
+	int failed = 0, valid = 1;
+	CK_BYTE tag;
+	CK_RV rv;
+
+	if (opt_rutoken_json)
+		json_begin("journal", "{");
+	rv = RUTOKEN_CALL(C_EX_GetJournal, (slot, NULL, &length));
+	if (rv != CKR_OK) {
+		failed = rutoken_error("C_EX_GetJournal", rv);
+		goto out;
+	}
+	if (length > RUTOKEN_MAX_LENGTH) {
+		failed = rutoken_bad_length("C_EX_GetJournal", length);
+		goto out;
+	}
+	journal = calloc((size_t)length + 1, 1);
+	if (!journal)
+		util_fatal("Out of memory");
+	if (length) {
+		rv = RUTOKEN_CALL(C_EX_GetJournal, (slot, journal, &length));
+		if (rv != CKR_OK) {
+			failed = rutoken_error("C_EX_GetJournal", rv);
+			goto out;
+		}
+	}
+	if (opt_output)
+		rutoken_write_output(journal, length);
+	if (opt_rutoken_json) {
+		json_ulong("length", length);
+		json_hex("raw", journal, length);
+		json_begin("records", "[");
+	} else if (length == 0) {
+		printf("Rutoken journal: empty\n");
+	} else {
+		printf("Rutoken journal: %lu bytes\n", length);
+	}
+	while (offset < length) {
+		if (!rutoken_next_tlv(journal, length, &offset, &tag, &record,
+				&record_length) || tag != 0x80) {
+			valid = 0;
+			break;
+		}
+		if (!rutoken_show_journal_record(record, record_length, ++records))
+			valid = 0;
+	}
+	if (opt_rutoken_json) {
+		json_end("]");
+		json_bool("format_valid", valid);
+		if (opt_output)
+			json_text("output_file", opt_output);
+	} else {
+		if (!valid) {
+			printf("  unrecognized format, raw data: ");
+			rutoken_print_hex(journal, length);
+			printf("\n");
+		}
+		if (opt_output)
+			printf("  written to %s\n", opt_output);
+	}
+out:
+	free(journal);
+	if (opt_rutoken_json)
+		json_end("}");
+	return failed;
 }
 
 static void
-show_rutoken_name(CK_SESSION_HANDLE session)
+rutoken_show_volume(const CK_VOLUME_INFO_EXTENDED *volume)
 {
-	CK_ULONG label_len = 0;
-	CK_CHAR_PTR label;
+	const char *mode = rutoken_lookup(rutoken_access_modes, volume->accessMode);
+
+	if (opt_rutoken_json) {
+		json_begin(NULL, "{");
+		json_ulong("id", volume->idVolume);
+		json_ulong("size_mb", volume->ulVolumeSize);
+		json_ulong("access_mode", volume->accessMode);
+		if (mode)
+			json_text("access_mode_name", mode);
+		json_ulong("owner", volume->volumeOwner);
+		if (volume->volumeOwner == CKU_SO)
+			json_text("owner_name", "SO");
+		else if (volume->volumeOwner == CKU_USER)
+			json_text("owner_name", "USER");
+		else if (volume->volumeOwner >= RUTOKEN_LOCAL_PIN_FIRST &&
+				volume->volumeOwner <= RUTOKEN_LOCAL_PIN_LAST)
+			json_text("owner_name", "LOCAL_PIN");
+		json_ulong("flags", volume->flags);
+		json_end("}");
+		return;
+	}
+	printf("  volume %lu: %lu MB, ", volume->idVolume, volume->ulVolumeSize);
+	if (mode)
+		printf("%s", mode);
+	else
+		printf("access mode 0x%lx", volume->accessMode);
+	if (volume->volumeOwner == CKU_SO)
+		printf(", owner SO");
+	else if (volume->volumeOwner == CKU_USER)
+		printf(", owner User");
+	else if (volume->volumeOwner >= RUTOKEN_LOCAL_PIN_FIRST &&
+			volume->volumeOwner <= RUTOKEN_LOCAL_PIN_LAST)
+		printf(", owner local PIN %lu", volume->volumeOwner);
+	else
+		printf(", owner 0x%lx", volume->volumeOwner);
+	printf(", flags 0x%lx\n", volume->flags);
+}
+
+static int
+rutoken_show_volumes(CK_SLOT_ID slot)
+{
+	CK_VOLUME_INFO_EXTENDED_PTR volumes = NULL;
+	CK_ULONG drive_size = 0, count = 0, allocated, i;
+	int failed = 0;
 	CK_RV rv;
 
-	if (!p11_ex->C_EX_GetTokenName)
-		p11_fatal("C_EX_GetTokenName", CKR_FUNCTION_NOT_SUPPORTED);
-	rv = p11_ex->C_EX_GetTokenName(session, NULL, &label_len);
-	if (rv != CKR_OK)
-		p11_fatal("C_EX_GetTokenName(size inquire)", rv);
-	if (label_len == ~(CK_ULONG)0)
-		util_fatal("C_EX_GetTokenName returned an invalid length");
-	label = calloc((size_t)label_len + 1, 1);
-	if (!label)
-		util_fatal("Out of memory");
-	rv = p11_ex->C_EX_GetTokenName(session, label, &label_len);
+	if (opt_rutoken_json)
+		json_begin("volumes", "{");
+	rv = RUTOKEN_CALL(C_EX_GetDriveSize, (slot, &drive_size));
 	if (rv != CKR_OK) {
-		free(label);
-		p11_fatal("C_EX_GetTokenName", rv);
+		failed = rutoken_error("C_EX_GetDriveSize", rv);
+		goto out;
 	}
-	printf("Rutoken name: %.*s\n", (int)MIN(label_len, INT_MAX), label);
+	if (opt_rutoken_json)
+		json_ulong("drive_size_mb", drive_size);
+	else
+		printf("Rutoken flash drive: %lu MB\n", drive_size);
+	rv = RUTOKEN_CALL(C_EX_GetVolumesInfo, (slot, NULL, &count));
+	if (rv != CKR_OK) {
+		failed = rutoken_error("C_EX_GetVolumesInfo", rv);
+		goto out;
+	}
+	if (count > 256) {
+		failed = rutoken_bad_length("C_EX_GetVolumesInfo", count);
+		goto out;
+	}
+	if (opt_rutoken_json)
+		json_ulong("count", count);
+	else
+		printf("  volumes: %lu\n", count);
+	if (!count)
+		goto out;
+	allocated = count;
+	volumes = calloc(allocated, sizeof(*volumes));
+	if (!volumes)
+		util_fatal("Out of memory");
+	rv = RUTOKEN_CALL(C_EX_GetVolumesInfo, (slot, volumes, &count));
+	if (rv != CKR_OK) {
+		failed = rutoken_error("C_EX_GetVolumesInfo", rv);
+		goto out;
+	}
+	if (opt_rutoken_json)
+		json_begin("list", "[");
+	for (i = 0; i < MIN(count, allocated); i++)
+		rutoken_show_volume(&volumes[i]);
+	if (opt_rutoken_json)
+		json_end("]");
+out:
+	free(volumes);
+	if (opt_rutoken_json)
+		json_end("}");
+	return failed;
+}
+
+static int
+rutoken_show_certificate(CK_SESSION_HANDLE session, CK_OBJECT_HANDLE cert,
+		unsigned long number)
+{
+	CK_CHAR_PTR text = NULL;
+	CK_ULONG text_length = 0, id_length = 0, label_length = 0;
+	unsigned char *id;
+	char *label;
+	int failed = 0;
+	CK_RV rv;
+
+	id = getID(session, cert, &id_length);
+	label = getLABEL(session, cert, &label_length);
+	if (opt_rutoken_json) {
+		json_begin(NULL, "{");
+		json_ulong("handle", cert);
+		if (id)
+			json_hex("id", id, id_length);
+		if (label)
+			json_string("label", label, label_length);
+	} else {
+		printf("Certificate %lu (handle 0x%lx", number, (unsigned long)cert);
+		if (id && id_length) {
+			printf(", ID ");
+			rutoken_print_hex(id, id_length);
+		}
+		if (label)
+			printf(", label \"%.*s\"", (int)MIN(label_length, INT_MAX), label);
+		printf("):\n");
+	}
+	rv = RUTOKEN_CALL(C_EX_GetCertificateInfoText,
+			(session, cert, &text, &text_length));
+	if (rv != CKR_OK) {
+		failed = rutoken_error("C_EX_GetCertificateInfoText", rv);
+		text = NULL;
+	} else if (!text) {
+		failed = rutoken_bad_length("C_EX_GetCertificateInfoText", text_length);
+	} else {
+		CK_ULONG shown = text_length;
+
+		while (shown && text[shown - 1] == '\0')
+			shown--;
+		if (opt_rutoken_json) {
+			json_string("text", text, shown);
+		} else {
+			fwrite(text, 1, shown, stdout);
+			if (!shown || text[shown - 1] != '\n')
+				printf("\n");
+		}
+	}
+	if (text) {
+		rv = RUTOKEN_CALL(C_EX_FreeBuffer, (text));
+		if (rv != CKR_OK)
+			failed = rutoken_error("C_EX_FreeBuffer", rv);
+	}
+	if (opt_rutoken_json)
+		json_end("}");
+	free(id);
 	free(label);
+	return failed;
+}
+
+static int
+rutoken_show_cert_text(CK_SESSION_HANDLE session)
+{
+	CK_OBJECT_CLASS cert_class = CKO_CERTIFICATE;
+	CK_ATTRIBUTE search[3];
+	CK_OBJECT_HANDLE *certs = NULL, cert, *grown;
+	CK_ULONG attributes = 0, found = 0, count = 0, allocated = 0, i;
+	int failed = 0;
+	CK_RV rv;
+
+	search[attributes].type = CKA_CLASS;
+	search[attributes].pValue = &cert_class;
+	search[attributes++].ulValueLen = sizeof(cert_class);
+	if (opt_object_id_len) {
+		search[attributes].type = CKA_ID;
+		search[attributes].pValue = opt_object_id;
+		search[attributes++].ulValueLen = opt_object_id_len;
+	}
+	if (opt_object_label) {
+		search[attributes].type = CKA_LABEL;
+		search[attributes].pValue = opt_object_label;
+		search[attributes++].ulValueLen = strlen(opt_object_label);
+	}
+	if (opt_rutoken_json)
+		json_begin("certificates", "{");
+	rv = p11->C_FindObjectsInit(session, search, attributes);
+	if (rv != CKR_OK) {
+		failed = rutoken_error("C_FindObjectsInit", rv);
+		goto out;
+	}
+	while ((rv = p11->C_FindObjects(session, &cert, 1, &found)) == CKR_OK &&
+			found == 1) {
+		if (count == allocated) {
+			allocated = allocated ? allocated * 2 : 16;
+			grown = realloc(certs, allocated * sizeof(*certs));
+			if (!grown)
+				util_fatal("Out of memory");
+			certs = grown;
+		}
+		certs[count++] = cert;
+	}
+	if (rv != CKR_OK)
+		failed = rutoken_error("C_FindObjects", rv);
+	p11->C_FindObjectsFinal(session);
+
+	if (opt_rutoken_json)
+		json_begin("list", "[");
+	else if (count == 0 && !failed)
+		printf("No certificates found\n");
+	for (i = 0; i < count; i++)
+		failed |= rutoken_show_certificate(session, certs[i], i + 1);
+	if (opt_rutoken_json)
+		json_end("]");
+out:
+	free(certs);
+	if (opt_rutoken_json)
+		json_end("}");
+	return failed;
+}
+
+static void
+rutoken_show_local_pin(const CK_LOCAL_PIN_INFO *pin)
+{
+	char label[32];
+
+	if (opt_rutoken_json) {
+		json_begin(NULL, "{");
+		json_ulong("id", pin->ulPinID);
+		json_ulong("min_length", pin->ulMinSize);
+		json_ulong("max_length", pin->ulMaxSize);
+		json_ulong("retries_left", pin->ulCurrentRetryCount);
+		json_ulong("retries_max", pin->ulMaxRetryCount);
+		json_ulong("flags", pin->flags);
+		json_flag_names("flag_names", rutoken_local_pin_flags, pin->flags);
+		json_end("}");
+		return;
+	}
+	snprintf(label, sizeof(label), "local PIN %lu", pin->ulPinID);
+	printf("  %-19s: length %lu..%lu, retries %lu / %lu, flags 0x%lx", label,
+			pin->ulMinSize, pin->ulMaxSize, pin->ulCurrentRetryCount,
+			pin->ulMaxRetryCount, pin->flags);
+	rutoken_print_flags(rutoken_local_pin_flags, pin->flags);
+	printf("\n");
+}
+
+static int
+rutoken_show_pin_status(CK_SLOT_ID slot)
+{
+	static const struct {
+		CK_USER_TYPE user;
+		const char *key;
+		const char *label;
+	} users[] = {
+		{ CKU_USER, "user", "User PIN change" },
+		{ CKU_SO, "so", "SO PIN change" },
+	};
+	CK_RV results[RUTOKEN_LOCAL_PIN_LAST + 1];
+	char label[32];
+	CK_LOCAL_PIN_INFO pin;
+	CK_USER_TYPE user;
+	CK_ULONG id, first;
+	int failed = 0, missing = 0;
+	size_t i;
+	CK_RV rv;
+
+	if (opt_rutoken_json)
+		json_begin("pin_status", "{");
+	else
+		printf("Rutoken PIN status:\n");
+	for (i = 0; i < sizeof(users) / sizeof(users[0]); i++) {
+		user = users[i].user;
+		rv = RUTOKEN_CALL(C_EX_SlotManage,
+				(slot, MODE_GET_PIN_SET_TO_BE_CHANGED, &user));
+		if (opt_rutoken_json)
+			json_begin(users[i].key, "{");
+		if (rv == CKR_OK || rv == CKR_PIN_EXPIRED) {
+			if (opt_rutoken_json)
+				json_bool("change_required", rv == CKR_PIN_EXPIRED);
+			else
+				printf("  %-19s: %s\n", users[i].label,
+						rv == CKR_PIN_EXPIRED ? "required" : "not required");
+		} else {
+			failed = rutoken_error("C_EX_SlotManage(MODE_GET_PIN_SET_TO_BE_CHANGED)", rv);
+			if (!opt_rutoken_json)
+				printf("  %-19s: unknown\n", users[i].label);
+		}
+		if (opt_rutoken_json)
+			json_end("}");
+	}
+
+	/* A missing local PIN is not an error; the library code is kept. */
+	if (opt_rutoken_json)
+		json_begin("local_pins", "[");
+	for (id = RUTOKEN_LOCAL_PIN_FIRST; id <= RUTOKEN_LOCAL_PIN_LAST; id++) {
+		memset(&pin, 0, sizeof(pin));
+		pin.ulPinID = id;
+		results[id] = RUTOKEN_CALL(C_EX_SlotManage,
+				(slot, MODE_GET_LOCAL_PIN_INFO, &pin));
+		if (results[id] == CKR_OK)
+			rutoken_show_local_pin(&pin);
+		else
+			missing++;
+	}
+	if (opt_rutoken_json)
+		json_end("]");
+	if (opt_rutoken_json && missing) {
+		json_begin("local_pins_not_reported", "[");
+		for (id = RUTOKEN_LOCAL_PIN_FIRST; id <= RUTOKEN_LOCAL_PIN_LAST; id++) {
+			if (results[id] == CKR_OK)
+				continue;
+			json_begin(NULL, "{");
+			json_ulong("id", id);
+			json_text("rv", CKR2Str(results[id]));
+			json_ulong("code", results[id]);
+			json_end("}");
+		}
+		json_end("]");
+	} else if (missing) {
+		/* runs of consecutive IDs with the same result */
+		for (id = RUTOKEN_LOCAL_PIN_FIRST; id <= RUTOKEN_LOCAL_PIN_LAST; id++) {
+			if (results[id] == CKR_OK)
+				continue;
+			first = id;
+			while (id < RUTOKEN_LOCAL_PIN_LAST && results[id + 1] == results[first])
+				id++;
+			if (first == id)
+				snprintf(label, sizeof(label), "local PIN %lu", first);
+			else
+				snprintf(label, sizeof(label), "local PINs %lu..%lu", first, id);
+			printf("  %-19s: not reported, %s\n", label, CKR2Str(results[first]));
+		}
+	}
+	if (opt_rutoken_json)
+		json_end("}");
+	return failed;
+}
+
+static int
+run_rutoken_actions(CK_SLOT_ID slot, CK_SESSION_HANDLE session,
+		const struct rutoken_request *request)
+{
+	int failed = 0;
+
+	if (opt_rutoken_json) {
+		json_begin(NULL, "{");
+		json_ulong("slot", slot);
+	}
+	if (request->info)
+		failed |= rutoken_show_info(slot);
+	if (request->name)
+		failed |= rutoken_show_name(session);
+	if (request->license)
+		failed |= rutoken_show_license(session, request->license);
+	if (request->journal)
+		failed |= rutoken_show_journal(slot);
+	if (request->volumes)
+		failed |= rutoken_show_volumes(slot);
+	if (request->cert_text)
+		failed |= rutoken_show_cert_text(session);
+	if (request->pin_status)
+		failed |= rutoken_show_pin_status(slot);
+	if (opt_rutoken_json) {
+		json_end("}");
+		printf("%s\n", rutoken_json.data);
+		free(rutoken_json.data);
+		memset(&rutoken_json, 0, sizeof(rutoken_json));
+	}
+	return failed;
 }
 
 static void show_cryptoki_info(void)
@@ -2217,6 +3447,8 @@ static int login(CK_SESSION_HANDLE session, int login_type)
 	CK_TOKEN_INFO	info;
 	CK_RV		rv;
 	CK_FLAGS	pin_flags;
+	/* keep stdout for the JSON document of --rutoken-json */
+	FILE		*prompt = opt_rutoken_json ? stderr : stdout;
 
 	get_token_info(opt_slot, &info);
 
@@ -2230,7 +3462,7 @@ static int login(CK_SESSION_HANDLE session, int login_type)
 		pin = opt_pin ? (char *) opt_pin : (char *) opt_puk;
 
 	if (!pin && !(info.flags & CKF_PROTECTED_AUTHENTICATION_PATH)) {
-		printf("Logging in to \"%s\".\n", p11_utf8_to_local(info.label, sizeof(info.label)));
+		fprintf(prompt, "Logging in to \"%s\".\n", p11_utf8_to_local(info.label, sizeof(info.label)));
 		if (login_type == CKU_SO)   {
 			pin_flags=info.flags & (
 				CKF_SO_PIN_COUNT_LOW |
@@ -2238,9 +3470,9 @@ static int login(CK_SESSION_HANDLE session, int login_type)
 				CKF_SO_PIN_LOCKED |
 				CKF_SO_PIN_TO_BE_CHANGED);
 			if(pin_flags)
-				printf("WARNING: %s\n",p11_token_info_flags(pin_flags));
+				fprintf(prompt, "WARNING: %s\n",p11_token_info_flags(pin_flags));
 
-			printf("Please enter SO PIN: ");
+			fprintf(prompt, "Please enter SO PIN: ");
 		}
 		else if (login_type == CKU_USER)   {
 			pin_flags=info.flags & (
@@ -2249,12 +3481,12 @@ static int login(CK_SESSION_HANDLE session, int login_type)
 				CKF_USER_PIN_LOCKED |
 				CKF_USER_PIN_TO_BE_CHANGED);
 			if(pin_flags)
-				printf("WARNING: %s\n",p11_token_info_flags(pin_flags));
+				fprintf(prompt, "WARNING: %s\n",p11_token_info_flags(pin_flags));
 
-			printf("Please enter User PIN: ");
+			fprintf(prompt, "Please enter User PIN: ");
 		}
 		else if (login_type == CKU_CONTEXT_SPECIFIC)   {
-			printf("Please enter context specific PIN: ");
+			fprintf(prompt, "Please enter context specific PIN: ");
 		}
 
 		r = util_getpass(&pin, &len, stdin);
@@ -10864,6 +12096,8 @@ static const char * CKR2Str(CK_ULONG res)
 	case CKR_VENDOR_DEFINED:
 		return "CKR_VENDOR_DEFINED";
 	}
+	if (p11_ex && rutoken_rv_name(res))
+		return rutoken_rv_name(res);
 	return "unknown PKCS11 error";
 }
 

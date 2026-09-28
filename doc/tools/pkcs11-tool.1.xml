@@ -369,6 +369,69 @@
 
 				<varlistentry>
 					<term>
+						<option>--rutoken-license</option> <replaceable>number</replaceable>
+					</term>
+					<listitem><para>Read Rutoken license <replaceable>number</replaceable>
+					with <option>C_EX_GetLicense</option> and show its length and
+					whether it is empty. The license itself is written only to the
+					file given with <option>--output-file</option>, which is created
+					readable by its owner only.</para></listitem>
+				</varlistentry>
+
+				<varlistentry>
+					<term>
+						<option>--rutoken-journal</option>
+					</term>
+					<listitem><para>Show the journal of the last GOST signature
+					returned by <option>C_EX_GetJournal</option>: operation data, key
+					ID, signature counter, hash, signature and device ID. The raw
+					data is written to the file given with
+					<option>--output-file</option>.</para></listitem>
+				</varlistentry>
+
+				<varlistentry>
+					<term>
+						<option>--rutoken-volumes</option>
+					</term>
+					<listitem><para>Show the flash drive size and the volume table
+					returned by <option>C_EX_GetDriveSize</option> and
+					<option>C_EX_GetVolumesInfo</option>.</para></listitem>
+				</varlistentry>
+
+				<varlistentry>
+					<term>
+						<option>--rutoken-cert-text</option>
+					</term>
+					<listitem><para>Show the description of each certificate
+					returned by <option>C_EX_GetCertificateInfoText</option>. Use
+					<option>--id</option> or <option>--label</option> to select
+					certificates and <option>--login</option> for private
+					ones.</para></listitem>
+				</varlistentry>
+
+				<varlistentry>
+					<term>
+						<option>--rutoken-pin-status</option>
+					</term>
+					<listitem><para>Show whether the User PIN and the SO PIN must be
+					changed and the state of the local PINs 3 to 31, using the read
+					modes of <option>C_EX_SlotManage</option>.</para></listitem>
+				</varlistentry>
+
+				<varlistentry>
+					<term>
+						<option>--rutoken-json</option>
+					</term>
+					<listitem><para>Print the results of all
+					<option>--rutoken-*</option> commands as one JSON object instead
+					of text. It cannot be combined with other commands. PIN prompts go
+					to standard error; a PIN for a redirected standard output is given
+					with <option>--pin</option> env:<replaceable>VARIABLE</replaceable>.
+					</para></listitem>
+				</varlistentry>
+
+				<varlistentry>
+					<term>
 						<option>--puk</option> <replaceable>puk</replaceable>
 					</term>
 					<listitem><para>Supply User PUK on the command line.</para></listitem>

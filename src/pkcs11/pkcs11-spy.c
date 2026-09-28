@@ -26,6 +26,7 @@
 #include <ctype.h>
 #include <limits.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -910,16 +911,63 @@ SPY_EX_PROXY(C_EX_InitToken,
 		print_ptr_in("pInitInfo", pInitInfo),
 		(void)rv)
 
+static void
+spy_ex_dump_token_info_out(CK_TOKEN_INFO_EXTENDED_PTR info)
+{
+	/* fields after ulATRLen are absent in older structure versions */
+#define SPY_EX_HAS(field) \
+	(info->ulSizeofThisStructure >= \
+	 offsetof(CK_TOKEN_INFO_EXTENDED, field) + sizeof(info->field))
+#define SPY_EX_FIELD(field, format) \
+	do { \
+		if (SPY_EX_HAS(field)) \
+			fprintf(spy_output, "[out] pInfo->" #field " = " format "\n", \
+					info->field); \
+	} while (0)
+	fprintf(spy_output, "[out] pInfo->ulSizeofThisStructure = %lu\n",
+			info->ulSizeofThisStructure);
+	SPY_EX_FIELD(ulTokenType, "0x%lx");
+	SPY_EX_FIELD(ulProtocolNumber, "%lu");
+	SPY_EX_FIELD(ulMicrocodeNumber, "%lu");
+	SPY_EX_FIELD(ulOrderNumber, "%lu");
+	SPY_EX_FIELD(flags, "0x%lx");
+	SPY_EX_FIELD(ulMaxAdminPinLen, "%lu");
+	SPY_EX_FIELD(ulMinAdminPinLen, "%lu");
+	SPY_EX_FIELD(ulMaxUserPinLen, "%lu");
+	SPY_EX_FIELD(ulMinUserPinLen, "%lu");
+	SPY_EX_FIELD(ulMaxAdminRetryCount, "%lu");
+	SPY_EX_FIELD(ulAdminRetryCountLeft, "%lu");
+	SPY_EX_FIELD(ulMaxUserRetryCount, "%lu");
+	SPY_EX_FIELD(ulUserRetryCountLeft, "%lu");
+	if (SPY_EX_HAS(serialNumber))
+		spy_dump_string_out("pInfo->serialNumber", info->serialNumber,
+				sizeof(info->serialNumber));
+	SPY_EX_FIELD(ulTotalMemory, "%lu");
+	SPY_EX_FIELD(ulFreeMemory, "%lu");
+	if (SPY_EX_HAS(ulATRLen))
+		spy_dump_string_out("pInfo->ATR[ulATRLen]", info->ATR,
+				info->ulATRLen < sizeof(info->ATR) ?
+				info->ulATRLen : sizeof(info->ATR));
+	SPY_EX_FIELD(ulTokenClass, "0x%lx");
+	SPY_EX_FIELD(ulBatteryVoltage, "%lu");
+	SPY_EX_FIELD(ulBodyColor, "%lu");
+	SPY_EX_FIELD(ulFirmwareChecksum, "0x%08lx");
+	SPY_EX_FIELD(ulBatteryPercentage, "%lu");
+	SPY_EX_FIELD(ulBatteryFlags, "0x%lx");
+#undef SPY_EX_FIELD
+#undef SPY_EX_HAS
+}
+
 SPY_EX_PROXY(C_EX_GetTokenInfoExtended,
 		(CK_SLOT_ID slotID, CK_TOKEN_INFO_EXTENDED_PTR pInfo),
 		(slotID, pInfo),
 		spy_dump_ulong_in("slotID", slotID);
-		print_ptr_in("pInfo", pInfo),
-		if (rv == CKR_OK && pInfo) {
-			fprintf(spy_output, "[out] pInfo->ulTokenType = %lu\n", pInfo->ulTokenType);
-			fprintf(spy_output, "[out] pInfo->ulTokenClass = %lu\n", pInfo->ulTokenClass);
-			fprintf(spy_output, "[out] pInfo->flags = 0x%lx\n", pInfo->flags);
-		})
+		print_ptr_in("pInfo", pInfo);
+		if (pInfo)
+			spy_dump_ulong_in("pInfo->ulSizeofThisStructure",
+					pInfo->ulSizeofThisStructure),
+		if (rv == CKR_OK && pInfo)
+			spy_ex_dump_token_info_out(pInfo))
 
 SPY_EX_PROXY(C_EX_UnblockUserPIN, (CK_SESSION_HANDLE hSession), (hSession),
 		spy_dump_ulong_in("hSession", hSession), (void)rv)
@@ -949,7 +997,9 @@ SPY_EX_PROXY(C_EX_GetCertificateInfoText,
 		(hSession, hCert, pInfo, pulInfoLen),
 		spy_dump_ulong_in("hSession", hSession);
 		spy_dump_ulong_in("hCert", hCert),
-		spy_ex_dump_ulong_out("*pulInfoLen", pulInfoLen, rv))
+		spy_ex_dump_ulong_out("*pulInfoLen", pulInfoLen, rv);
+		if (rv == CKR_OK && pInfo && *pInfo && pulInfoLen)
+			spy_dump_string_out("*pInfo[*pulInfoLen]", *pInfo, *pulInfoLen))
 SPY_EX_PROXY(C_EX_PKCS7Sign,
 		(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen,
 		 CK_OBJECT_HANDLE hCert, CK_BYTE_PTR *ppEnvelope,
@@ -1015,8 +1065,21 @@ SPY_EX_PROXY(C_EX_GetVolumesInfo,
 		 CK_ULONG_PTR pulInfoCount),
 		(slotID, pInfo, pulInfoCount),
 		spy_dump_ulong_in("slotID", slotID);
-		print_ptr_in("pInfo", pInfo),
-		spy_ex_dump_ulong_out("*pulInfoCount", pulInfoCount, rv))
+		print_ptr_in("pInfo", pInfo);
+		if (pulInfoCount)
+			spy_dump_ulong_in("*pulInfoCount", *pulInfoCount),
+		spy_ex_dump_ulong_out("*pulInfoCount", pulInfoCount, rv);
+		if (rv == CKR_OK && pInfo && pulInfoCount) {
+			CK_ULONG i;
+
+			for (i = 0; i < *pulInfoCount; i++)
+				fprintf(spy_output, "[out] pInfo[%lu]: idVolume = %lu, "
+						"ulVolumeSize = %lu, accessMode = 0x%lx, "
+						"volumeOwner = 0x%lx, flags = 0x%lx\n", i,
+						pInfo[i].idVolume, pInfo[i].ulVolumeSize,
+						pInfo[i].accessMode, pInfo[i].volumeOwner,
+						pInfo[i].flags);
+		})
 SPY_EX_PROXY(C_EX_GetDriveSize,
 		(CK_SLOT_ID slotID, CK_ULONG_PTR pulDriveSize),
 		(slotID, pulDriveSize), spy_dump_ulong_in("slotID", slotID),
@@ -1065,7 +1128,10 @@ SPY_EX_PROXY(C_EX_GetJournal,
 		(slotID, pJournal, pulJournalSize),
 		spy_dump_ulong_in("slotID", slotID);
 		print_ptr_in("pJournal", pJournal),
-		spy_ex_dump_ulong_out("*pulJournalSize", pulJournalSize, rv))
+		spy_ex_dump_ulong_out("*pulJournalSize", pulJournalSize, rv);
+		if (rv == CKR_OK && pJournal && pulJournalSize)
+			spy_dump_string_out("pJournal[*pulJournalSize]", pJournal,
+					*pulJournalSize))
 SPY_EX_PROXY(C_EX_SignInvisibleInit,
 		(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
 		 CK_OBJECT_HANDLE hKey),
@@ -1081,12 +1147,29 @@ SPY_EX_PROXY(C_EX_SignInvisible,
 		spy_dump_ulong_in("ulDataLen", ulDataLen);
 		print_ptr_in("pSignature", pSignature),
 		spy_ex_dump_ulong_out("*pulSignatureLen", pulSignatureLen, rv))
+/* Only the two reading modes are decoded: MODE_GET_IMIT carries a key and
+ * MODE_RESTORE_FACTORY_DEFAULTS the Administrator PIN. */
 SPY_EX_PROXY(C_EX_SlotManage,
 		(CK_SLOT_ID slotID, CK_ULONG ulMode, CK_VOID_PTR pValue),
 		(slotID, ulMode, pValue),
 		spy_dump_ulong_in("slotID", slotID);
 		spy_dump_ulong_in("ulMode", ulMode);
-		print_ptr_in("pValue", pValue), (void)rv)
+		print_ptr_in("pValue", pValue);
+		if (pValue && ulMode == MODE_GET_PIN_SET_TO_BE_CHANGED)
+			spy_dump_ulong_in("*(CK_USER_TYPE *)pValue",
+					*(CK_USER_TYPE *)pValue);
+		if (pValue && ulMode == MODE_GET_LOCAL_PIN_INFO)
+			spy_dump_ulong_in("pValue->ulPinID",
+					((CK_LOCAL_PIN_INFO *)pValue)->ulPinID),
+		if (rv == CKR_OK && pValue && ulMode == MODE_GET_LOCAL_PIN_INFO) {
+			CK_LOCAL_PIN_INFO *pin = pValue;
+
+			fprintf(spy_output, "[out] pValue: ulPinID = %lu, ulMinSize = %lu, "
+					"ulMaxSize = %lu, ulMaxRetryCount = %lu, "
+					"ulCurrentRetryCount = %lu, flags = 0x%lx\n",
+					pin->ulPinID, pin->ulMinSize, pin->ulMaxSize,
+					pin->ulMaxRetryCount, pin->ulCurrentRetryCount, pin->flags);
+		})
 SPY_EX_PROXY(C_EX_WrapKey,
 		(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pGenerationMechanism,
 		 CK_ATTRIBUTE_PTR pKeyTemplate, CK_ULONG ulKeyAttributeCount,

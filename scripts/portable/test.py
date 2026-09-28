@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import json
 import os
 import re
 import subprocess
@@ -152,6 +153,94 @@ def verify_rutoken_extensions(
         raise RuntimeError("Rutoken spy log did not redact sensitive input")
 
 
+def verify_rutoken_cli(
+    tool: Path,
+    spy: Path,
+    test_dir: Path,
+    platform: str,
+    work_dir: Path,
+    env: Dict[str, str],
+) -> None:
+    if platform.startswith("windows-"):
+        stub = test_dir / "rutoken-stub.dll"
+    elif platform == "macos-universal":
+        stub = test_dir / "rutoken-stub.dylib"
+    else:
+        stub = test_dir / "rutoken-stub.so"
+    log_path = work_dir / "rutoken-cli-spy.log"
+    license_path = work_dir / "rutoken-license.bin"
+    cli_env = env.copy()
+    cli_env["PKCS11SPY"] = str(stub)
+    cli_env["PKCS11SPY_OUTPUT"] = str(log_path)
+
+    def tool_output(arguments: List[str], expected_code: int = 0) -> str:
+        result = subprocess.run(
+            [str(tool), "--module", str(spy), "--slot", "7", *arguments],
+            env=cli_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        stdout = result.stdout.decode("utf-8", errors="replace")
+        stderr = result.stderr.decode("utf-8", errors="replace")
+        if result.returncode != expected_code:
+            print(stdout + stderr, end="")
+            raise RuntimeError(
+                f"pkcs11-tool {' '.join(arguments)} exited with {result.returncode}"
+            )
+        return stdout + stderr
+
+    text = tool_output([
+        "--rutoken-info", "--rutoken-name", "--rutoken-license", "2",
+        "--output-file", str(license_path), "--rutoken-volumes",
+        "--rutoken-cert-text", "--rutoken-pin-status",
+    ])
+    for expected in (
+        "flags              : 0x1c82 (USER_CHANGE_USER_PIN HAS_FLASH_DRIVE "
+        "SUPPORT_JOURNAL USER_PIN_UTF8 ADMIN_PIN_UTF8)",
+        "Rutoken name: Test Rutoken",
+        "Rutoken license 2: 72 bytes, not empty",
+        "volume 3: 256 MB, HIDDEN, owner local PIN 3, flags 0x0",
+        'Certificate 2 (handle 0x66, ID 0304, label "Test certificate 2"):',
+        "SO PIN change      : required",
+        "local PINs 6..31   : not reported, CKR_ARGUMENTS_BAD",
+    ):
+        if expected not in text:
+            print(text, end="")
+            raise RuntimeError(f"pkcs11-tool Rutoken output lacks: {expected}")
+    if license_path.read_bytes() != bytes(range(1, 73)):
+        raise RuntimeError("pkcs11-tool wrote a wrong Rutoken license file")
+
+    failure = tool_output(["--rutoken-license", "4"], expected_code=1)
+    if "CKR_RTPKCS11_DATA_CORRUPTED (0x80000004)" not in failure:
+        print(failure, end="")
+        raise RuntimeError("pkcs11-tool did not name the Rutoken return value")
+
+    document = tool_output([
+        "--rutoken-journal", "--rutoken-cert-text", "--rutoken-pin-status",
+        "--rutoken-json",
+    ])
+    result = json.loads(document)
+    record = result["journal"]["records"][0]
+    certificates = result["certificates"]["list"]
+    if (
+        record["signature_counter"] != 298
+        or record["device_id"] != "33" * 8
+        or [c["id"] for c in certificates] != ["0102", "0304", "0506"]
+        or certificates[2]["label"] != "\u00d2\u00e5\u00f1\u00f2"
+        or certificates[2]["text"] != "Subject: CN=\u0422\u0435\u0441\u0442\tTab\n"
+        or [p["id"] for p in result["pin_status"]["local_pins"]] != [3, 5]
+    ):
+        print(document, end="")
+        raise RuntimeError("pkcs11-tool Rutoken JSON has unexpected values")
+
+    log = log_path.read_text(encoding="utf-8", errors="replace")
+    if "CKR_GENERAL_ERROR" in log:
+        raise RuntimeError("a Rutoken buffer was not released through pkcs11-spy")
+    if "01 02 03 04 05 06 07 08" in log:
+        raise RuntimeError("the pkcs11-spy log contains the Rutoken license")
+    print("PASS: pkcs11-tool Rutoken commands through pkcs11-spy")
+
+
 def verify_spy_config(
     tool: Path,
     spy: Path,
@@ -241,6 +330,7 @@ def main() -> None:
 
         if rutoken_test_dir is not None:
             verify_rutoken_extensions(rutoken_test_dir, spy, platform, work_dir)
+            verify_rutoken_cli(tool, spy, rutoken_test_dir, platform, work_dir, env)
             verify_spy_config(tool, spy, softhsm, work_dir, env)
 
         scenario(tool, softhsm, work_dir, "direct", env)

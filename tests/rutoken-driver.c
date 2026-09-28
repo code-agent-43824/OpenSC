@@ -67,6 +67,10 @@ ABI_ASSERT(x509_store_crl_count_offset,
 
 #undef ABI_ASSERT
 
+/* rutoken-stub.c answers this slot or session handle with the function's
+ * CKR_VENDOR_DEFINED + number even where it implements real behavior. */
+#define ORDER_PROBE 99
+
 #define EXPECT_VENDOR(call, number) \
 do { \
 	CK_RV checked_rv = (call); \
@@ -192,8 +196,9 @@ main(int argc, char **argv)
 	EXPECT_VENDOR(functions->C_EX_UnblockUserPIN(23), 3);
 	EXPECT_VENDOR(functions->C_EX_SetTokenName(23, NULL, 0), 4);
 	EXPECT_VENDOR(functions->C_EX_SetLicense(23, 1, NULL, 0), 5);
-	EXPECT_VENDOR(functions->C_EX_GetLicense(23, 1, NULL, NULL), 6);
-	EXPECT_VENDOR(functions->C_EX_GetCertificateInfoText(23, 1, NULL, NULL), 7);
+	EXPECT_VENDOR(functions->C_EX_GetLicense(ORDER_PROBE, 1, NULL, NULL), 6);
+	EXPECT_VENDOR(functions->C_EX_GetCertificateInfoText(ORDER_PROBE, 1, NULL,
+			NULL), 7);
 	EXPECT_VENDOR(functions->C_EX_PKCS7Sign(23, NULL, 0, 1, NULL, NULL, 2,
 			NULL, 0, 0), 8);
 	EXPECT_VENDOR(functions->C_EX_CreateCSR(23, 1, NULL, 0, NULL, NULL, 2,
@@ -209,18 +214,18 @@ main(int argc, char **argv)
 	EXPECT_VENDOR(functions->C_EX_SetLocalPIN(7, NULL, 0, NULL, 0, 1), 12);
 	EXPECT_VENDOR(functions->C_EX_LoadActivationKey(23, NULL, 0), 13);
 	EXPECT_VENDOR(functions->C_EX_SetActivationPassword(7, NULL), 14);
-	EXPECT_VENDOR(functions->C_EX_GetVolumesInfo(7, NULL, NULL), 15);
-	EXPECT_VENDOR(functions->C_EX_GetDriveSize(7, NULL), 16);
+	EXPECT_VENDOR(functions->C_EX_GetVolumesInfo(ORDER_PROBE, NULL, NULL), 15);
+	EXPECT_VENDOR(functions->C_EX_GetDriveSize(ORDER_PROBE, NULL), 16);
 	EXPECT_VENDOR(functions->C_EX_ChangeVolumeAttributes(7, CKU_USER, NULL, 0,
 			1, 1, CK_FALSE), 17);
 	EXPECT_VENDOR(functions->C_EX_FormatDrive(7, CKU_USER, NULL, 0, NULL, 0), 18);
 	EXPECT_VENDOR(functions->C_EX_TokenManage(23, 1, NULL), 19);
 	EXPECT_VENDOR(functions->C_EX_GenerateActivationPassword(23, 1, NULL,
 			NULL, 0), 20);
-	EXPECT_VENDOR(functions->C_EX_GetJournal(7, NULL, NULL), 21);
+	EXPECT_VENDOR(functions->C_EX_GetJournal(ORDER_PROBE, NULL, NULL), 21);
 	EXPECT_VENDOR(functions->C_EX_SignInvisibleInit(23, NULL, 1), 22);
 	EXPECT_VENDOR(functions->C_EX_SignInvisible(23, NULL, 0, NULL, NULL), 23);
-	EXPECT_VENDOR(functions->C_EX_SlotManage(7, 1, NULL), 24);
+	EXPECT_VENDOR(functions->C_EX_SlotManage(ORDER_PROBE, 1, NULL), 24);
 	EXPECT_VENDOR(functions->C_EX_WrapKey(23, NULL, NULL, 0, NULL, 1, NULL,
 			NULL, NULL, NULL), 25);
 	EXPECT_VENDOR(functions->C_EX_UnwrapKey(23, NULL, 1, NULL, NULL, 0, NULL,
