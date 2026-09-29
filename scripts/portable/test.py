@@ -202,7 +202,8 @@ def verify_rutoken_cli(
         "volume 3: 256 MB, HIDDEN, owner local PIN 3, flags 0x0",
         'Certificate 2 (handle 0x66, ID 0304, label "Test certificate 2"):',
         "SO PIN change      : required",
-        "local PINs 6..31   : not reported, CKR_ARGUMENTS_BAD",
+        "local PIN 4        : not reported, CKR_DEVICE_ERROR",
+        "local PINs 6..31   : not reported, CKR_DEVICE_ERROR",
     ):
         if expected not in text:
             print(text, end="")

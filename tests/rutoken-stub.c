@@ -1115,13 +1115,11 @@ C_EX_GetDriveSize(CK_SLOT_ID slotID, CK_ULONG_PTR pulDriveSize)
 }
 
 /* One record in the format of the Rutoken SDK sample JournalParse.c inside
- * TLV 0x80: operation information (signature with the GOST private key RSF
- * 0x0005 that allows key exchange, hash computed by the token, 298
- * signatures), hash, signature and device ID. */
+ * TLV 0x80, in the tag order of the device: hash, signature, operation
+ * information (signature with the GOST private key RSF 0x0005 that allows
+ * key exchange, hash computed by the token, 298 signatures) and device ID. */
 static const CK_BYTE journal[] = {
 	0x80, 0x7C,
-	0x85, 0x0C, 0x01, 0x03, 0x01, 0x01, 0x00, 0x00, 0x00, 0x05,
-		0x00, 0x00, 0x01, 0x2A,
 	0xAA, 0x20,
 		0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
 		0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
@@ -1136,6 +1134,8 @@ static const CK_BYTE journal[] = {
 		0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22,
 		0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22,
 		0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22,
+	0x85, 0x0C, 0x01, 0x03, 0x01, 0x01, 0x00, 0x00, 0x00, 0x05,
+		0x00, 0x00, 0x01, 0x2A,
 	0x83, 0x08, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33,
 };
 
@@ -1181,7 +1181,8 @@ C_EX_SlotManage(CK_SLOT_ID slotID, CK_ULONG ulMode, CK_VOID_PTR pValue)
 			return CKR_OK;
 		if (*(CK_USER_TYPE *)pValue == CKU_SO)
 			return CKR_PIN_EXPIRED;
-		return CKR_USER_TYPE_INVALID;
+		/* the library answers other user types so */
+		return CKR_ARGUMENTS_BAD;
 	case MODE_GET_LOCAL_PIN_INFO:
 		if (pin->ulPinID == 3) {
 			pin->ulMinSize = 1;
@@ -1199,7 +1200,10 @@ C_EX_SlotManage(CK_SLOT_ID slotID, CK_ULONG ulMode, CK_VOID_PTR pValue)
 			pin->flags = LOCAL_PIN_FLAGS_IS_UTF8;
 			return CKR_OK;
 		}
-		return CKR_ARGUMENTS_BAD;
+		/* local PINs are 3..31; the library reports a missing one as a
+		 * device error (the token answers SELECT with 6A 82) */
+		return pin->ulPinID >= 3 && pin->ulPinID <= 31 ?
+				CKR_DEVICE_ERROR : CKR_ARGUMENTS_BAD;
 	default:
 		return CKR_FUNCTION_NOT_SUPPORTED;
 	}

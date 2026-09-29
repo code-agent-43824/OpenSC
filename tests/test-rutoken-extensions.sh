@@ -130,7 +130,8 @@ expect "$text" 'Certificate 2 (handle 0x66, ID 0304, label "Test certificate 2")
 expect "$text" 'Subject: CN="Test" 2'
 expect "$text" 'SO PIN change      : required'
 expect "$text" 'local PIN 5        : length 4..32, retries 3 / 5, flags 0x4 (IS_UTF8)'
-expect "$text" 'local PINs 6..31   : not reported, CKR_ARGUMENTS_BAD'
+expect "$text" 'local PIN 4        : not reported, CKR_DEVICE_ERROR'
+expect "$text" 'local PINs 6..31   : not reported, CKR_DEVICE_ERROR'
 
 # The license reaches only the file, which only the owner may read.
 license="$test_dir/license.bin"
