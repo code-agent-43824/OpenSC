@@ -60,6 +60,10 @@
 
 ### Этап 4 — криптография и аутентификация
 
+- [ ] Получить на устройстве результаты `PKCS7Sign`, `PKCS7Verify*`,
+  `CreateCSR`, текста сертификата и непустого журнала: probe 2 с
+  `--write-tests` на временных ключе и сертификате.
+
 - [ ] Добавить команды `PKCS7Sign`, все четыре `PKCS7Verify*`, `CreateCSR` и
   гарантированный `FreeBuffer` на успешных и ошибочных путях.
 - [ ] Добавить `Authenticate`, `Deauthenticate`, `UnblockAuthenticator` и
