@@ -1994,6 +1994,43 @@ static const struct rutoken_name rutoken_local_pin_flags[] = {
 	{ 0, NULL }
 };
 
+/* Journal operation information (tag 0x85), as named by the Rutoken SDK. */
+static const struct rutoken_name rutoken_journal_operations[] = {
+	{ 0x01, "SIGNATURE" },
+	{ 0, NULL }
+};
+
+static const struct rutoken_name rutoken_rsf_types[] = {
+	{ 0x01, "GCHV" },
+	{ 0x21, "LCHV" },
+	{ 0x02, "SGOST" },
+	{ 0x22, "AES" },
+	{ 0x42, "3DES" },
+	{ 0x03, "AGOST_PR" },
+	{ 0x23, "RSA_PR" },
+	{ 0x43, "AGOST2012_512_PR" },
+	{ 0x13, "AGOST_PU" },
+	{ 0x33, "RSA_PU" },
+	{ 0x53, "AGOST2012_512_PU" },
+	{ 0x14, "X509" },
+	{ 0x05, "ACGOST" },
+	{ 0x1F, "SE" },
+	{ 0, NULL }
+};
+
+static const struct rutoken_name rutoken_rsf_flags[] = {
+	{ 0x01, "KEY_EXCHANGE_ALLOWED" },
+	{ 0x02, "SM_KEY" },
+	{ 0x04, "JOURNAL_SIGNING_KEY" },
+	{ 0x08, "IMPORTED" },
+	{ 0, NULL }
+};
+
+static const struct rutoken_name rutoken_operation_flags[] = {
+	{ 0x01, "DEVICE_HASH" },
+	{ 0, NULL }
+};
+
 static const struct rutoken_name rutoken_return_values[] = {
 	{ CKR_CORRUPTED_MAPFILE, "CKR_CORRUPTED_MAPFILE" },
 	{ CKR_WRONG_VERSION_FIELD, "CKR_WRONG_VERSION_FIELD" },
@@ -2603,6 +2640,61 @@ rutoken_next_tlv(const CK_BYTE *data, size_t length, size_t *offset,
 	return 1;
 }
 
+/* Operation information of a journal record: 12 bytes of TLV 0x85. */
+static void
+rutoken_show_operation_info(const CK_BYTE *value)
+{
+	static const struct {
+		const char *key;
+		const char *names_key;
+		const char *label;
+		const struct rutoken_name *names;
+		int flags;
+	} fields[] = {
+		{ "operation", "operation_name", "operation",
+			rutoken_journal_operations, 0 },
+		{ "rsf_type", "rsf_type_name", "RSF type", rutoken_rsf_types, 0 },
+		{ "rsf_flags", "rsf_flag_names", "RSF flags", rutoken_rsf_flags, 1 },
+		{ "operation_flags", "operation_flag_names", "operation flags",
+			rutoken_operation_flags, 1 },
+		{ "pinpad_flags", NULL, "PINPad flags", NULL, 0 },
+		{ "reserved", NULL, "reserved", NULL, 0 },
+	};
+	CK_ULONG rsf_id = ((CK_ULONG)value[6] << 8) | value[7];
+	CK_ULONG count = ((CK_ULONG)value[8] << 24) |
+		((CK_ULONG)value[9] << 16) | ((CK_ULONG)value[10] << 8) | value[11];
+	const char *name;
+	size_t i;
+
+	for (i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
+		name = NULL;
+		if (fields[i].names && !fields[i].flags)
+			name = rutoken_lookup(fields[i].names, value[i]);
+		if (opt_rutoken_json) {
+			json_ulong(fields[i].key, value[i]);
+			if (fields[i].flags)
+				json_flag_names(fields[i].names_key, fields[i].names,
+						value[i]);
+			else if (name)
+				json_text(fields[i].names_key, name);
+			continue;
+		}
+		printf("    %-19s: 0x%02x", fields[i].label, value[i]);
+		if (fields[i].flags)
+			rutoken_print_flags(fields[i].names, value[i]);
+		else if (name)
+			printf(" (%s)", name);
+		printf("\n");
+	}
+	if (opt_rutoken_json) {
+		json_ulong("rsf_id", rsf_id);
+		json_ulong("signature_count", count);
+	} else {
+		printf("    RSF ID             : 0x%04lx\n", rsf_id);
+		printf("    signature count    : %lu\n", count);
+	}
+}
+
 /* One journal record: TLV 0x80 with the last GOST signature. */
 static int
 rutoken_show_journal_record(const CK_BYTE *record, size_t length,
@@ -2616,6 +2708,7 @@ rutoken_show_journal_record(const CK_BYTE *record, size_t length,
 		{ 0xAA, "hash", "hash" },
 		{ 0xB6, "signature", "signature" },
 		{ 0x83, "device_id", "device ID" },
+		{ 0x86, "tag_table_info", "tag table info" },
 	};
 	const CK_BYTE *value;
 	size_t offset = 0, value_length, i;
@@ -2631,26 +2724,7 @@ rutoken_show_journal_record(const CK_BYTE *record, size_t length,
 				&value_length))
 			break;
 		if (tag == 0x85 && value_length == 12) {
-			CK_ULONG key_id = ((CK_ULONG)value[6] << 8) | value[7];
-			CK_ULONG counter = ((CK_ULONG)value[8] << 24) |
-				((CK_ULONG)value[9] << 16) | ((CK_ULONG)value[10] << 8) |
-				value[11];
-
-			if (opt_rutoken_json) {
-				json_ulong("operation", value[0]);
-				json_ulong("key_type", value[1]);
-				json_ulong("key_purpose", value[2]);
-				json_ulong("flags", value[3]);
-				json_ulong("key_id", key_id);
-				json_ulong("signature_counter", counter);
-			} else {
-				printf("    operation          : 0x%02x\n", value[0]);
-				printf("    key type           : 0x%02x\n", value[1]);
-				printf("    key purpose        : 0x%02x\n", value[2]);
-				printf("    flags              : 0x%02x\n", value[3]);
-				printf("    key ID             : 0x%04lx\n", key_id);
-				printf("    signature counter  : %lu\n", counter);
-			}
+			rutoken_show_operation_info(value);
 			continue;
 		}
 		known = 0;

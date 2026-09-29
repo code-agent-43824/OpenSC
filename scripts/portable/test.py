@@ -223,7 +223,8 @@ def verify_rutoken_cli(
     record = result["journal"]["records"][0]
     certificates = result["certificates"]["list"]
     if (
-        record["signature_counter"] != 298
+        record["signature_count"] != 298
+        or record["rsf_type_name"] != "AGOST_PR"
         or record["device_id"] != "33" * 8
         or [c["id"] for c in certificates] != ["0102", "0304", "0506"]
         or certificates[2]["label"] != "\u00d2\u00e5\u00f1\u00f2"

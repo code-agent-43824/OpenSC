@@ -199,10 +199,10 @@ main(int argc, char **argv)
 	EXPECT_VENDOR(functions->C_EX_GetLicense(ORDER_PROBE, 1, NULL, NULL), 6);
 	EXPECT_VENDOR(functions->C_EX_GetCertificateInfoText(ORDER_PROBE, 1, NULL,
 			NULL), 7);
-	EXPECT_VENDOR(functions->C_EX_PKCS7Sign(23, NULL, 0, 1, NULL, NULL, 2,
-			NULL, 0, 0), 8);
-	EXPECT_VENDOR(functions->C_EX_CreateCSR(23, 1, NULL, 0, NULL, NULL, 2,
-			NULL, 0, NULL, 0), 9);
+	EXPECT_VENDOR(functions->C_EX_PKCS7Sign(ORDER_PROBE, NULL, 0, 1, NULL,
+			NULL, 2, NULL, 0, 0), 8);
+	EXPECT_VENDOR(functions->C_EX_CreateCSR(ORDER_PROBE, 1, NULL, 0, NULL,
+			NULL, 2, NULL, 0, NULL, 0), 9);
 	EXPECT_VENDOR(functions->C_EX_FreeBuffer(NULL), 10);
 	if (functions->C_EX_GetTokenName(23, NULL, &name_len) != CKR_OK ||
 			name_len != 12)
@@ -230,10 +230,12 @@ main(int argc, char **argv)
 			NULL, NULL, NULL), 25);
 	EXPECT_VENDOR(functions->C_EX_UnwrapKey(23, NULL, 1, NULL, NULL, 0, NULL,
 			0, NULL), 26);
-	EXPECT_VENDOR(functions->C_EX_PKCS7VerifyInit(23, NULL, 0, NULL, 0, 0), 27);
-	EXPECT_VENDOR(functions->C_EX_PKCS7Verify(23, NULL, NULL, NULL, NULL), 28);
-	EXPECT_VENDOR(functions->C_EX_PKCS7VerifyUpdate(23, NULL, 0), 29);
-	EXPECT_VENDOR(functions->C_EX_PKCS7VerifyFinal(23, NULL, NULL), 30);
+	EXPECT_VENDOR(functions->C_EX_PKCS7VerifyInit(ORDER_PROBE, NULL, 0, NULL, 0,
+			0), 27);
+	EXPECT_VENDOR(functions->C_EX_PKCS7Verify(ORDER_PROBE, NULL, NULL, NULL,
+			NULL), 28);
+	EXPECT_VENDOR(functions->C_EX_PKCS7VerifyUpdate(ORDER_PROBE, NULL, 0), 29);
+	EXPECT_VENDOR(functions->C_EX_PKCS7VerifyFinal(ORDER_PROBE, NULL, NULL), 30);
 	EXPECT_VENDOR(functions->C_EX_Authenticate(23, 1, NULL, 0), 31);
 	EXPECT_VENDOR(functions->C_EX_Deauthenticate(23, 1), 32);
 	EXPECT_VENDOR(functions->C_EX_UnblockAuthenticator(23, 1), 33);

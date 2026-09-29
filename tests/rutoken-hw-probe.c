@@ -1,12 +1,17 @@
 /*
- * Read-only hardware probe for the Rutoken PKCS #11 extension.
+ * Hardware probe for the Rutoken PKCS #11 extension.
  *
  * The probe loads rtPKCS11ECP, directly or through pkcs11-spy, and records
  * what the library returns for every extension function that only reads
- * token state, including buffer-size edge cases.  It never calls functions
- * that format the token or change PINs, names, licenses, volumes or token
- * modes.  The optional --pkcs7 check signs fixed test data with an existing
- * key only after typed confirmation.
+ * token state, including buffer-size edge cases and invalid arguments.  It
+ * never calls functions that format the token or change PINs, names,
+ * licenses, volumes or token modes.
+ *
+ * Two optional checks write to the token, each only after typed
+ * confirmation: --pkcs7 signs fixed test data with an existing key, and
+ * --write-tests creates a temporary GOST key pair and a self-signed
+ * certificate, runs the journal, certificate text, PKCS #7 and CSR checks
+ * with them and deletes them again.
  *
  * Build on Linux from the OpenSC source tree:
  *   cc -I src -o rutoken-hw-probe tests/rutoken-hw-probe.c -ldl
@@ -23,13 +28,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <termios.h>
 #include <time.h>
 
-#define PROBE_VERSION 1
+#define PROBE_VERSION 2
 #define SENTINEL 0xA5
 #define MAX_OBJECTS 64
 #define EXTENDED_FUNCTIONS 34
+#define MAX_VOLUMES 20
 #define CKH_VENDOR_TOKEN_INFO (CKH_VENDOR_DEFINED + 0x01UL)
 #define CKA_VENDOR_KEY_JOURNAL (CKA_VENDOR_DEFINED | 0x2002UL)
 
@@ -41,6 +48,13 @@ typedef char probe_table_layout[
 
 static const char test_data[] = "OpenSC Rutoken hardware probe test data\n";
 
+/* Objects of --write-tests carry this label and CKA_ID; only such objects
+ * are ever deleted. */
+static const char probe_label[] = "OpenSC probe temporary";
+static const CK_BYTE probe_id[] = {
+	'O', 'p', 'e', 'n', 'S', 'C', '-', 'p', 'r', 'o', 'b', 'e', '-', 't', 'm', 'p'
+};
+
 static struct {
 	const char *module;
 	CK_SLOT_ID slot;
@@ -50,7 +64,11 @@ static struct {
 	int show_text;
 	const char *pkcs7_id;
 	const char *save_dir;
-} opt = { NULL, 0, 0, 0, 1000, 0, NULL, NULL };
+	int write_tests;
+	const char *pin_env;
+	int assume_yes;
+	const char *selftest_certificate;
+} opt = { NULL, 0, 0, 0, 500, 0, NULL, NULL, 0, NULL, 0, NULL };
 
 static void *module;
 static CK_FUNCTION_LIST_PTR f;
@@ -60,6 +78,9 @@ static CK_TOKEN_INFO_EXTENDED token_info;
 static int have_token_info;
 static CK_OBJECT_HANDLE seen_certificates[MAX_OBJECTS];
 static CK_ULONG seen_certificate_count;
+/* --write-tests reads the journal after every PKCS #7 signature and CSR */
+static CK_SLOT_ID journal_slot;
+static int journal_after_signatures;
 
 static const char *const extended_names[EXTENDED_FUNCTIONS] = {
 	"C_EX_GetFunctionListExtended", "C_EX_InitToken",
@@ -401,13 +422,23 @@ parse_options(int argc, char **argv)
 			opt.pkcs7_id = argv[++i];
 		} else if (!strcmp(argv[i], "--save-dir") && i + 1 < argc) {
 			opt.save_dir = argv[++i];
+		} else if (!strcmp(argv[i], "--write-tests")) {
+			opt.write_tests = 1;
+		} else if (!strcmp(argv[i], "--pin-env") && i + 1 < argc) {
+			opt.pin_env = argv[++i];
+		} else if (!strcmp(argv[i], "--assume-yes")) {
+			opt.assume_yes = 1;
+		} else if (!strcmp(argv[i], "--selftest-certificate") && i + 1 < argc) {
+			opt.selftest_certificate = argv[++i];
 		} else if (argv[i][0] == '-' || opt.module) {
 			return 0;
 		} else {
 			opt.module = argv[i];
 		}
 	}
-	if (opt.pkcs7_id && !opt.login)
+	if (opt.selftest_certificate)
+		return 1;
+	if ((opt.pkcs7_id || opt.write_tests || opt.pin_env) && !opt.login)
 		return 0;
 	return opt.module != NULL;
 }
@@ -417,17 +448,29 @@ usage(const char *name)
 {
 	fprintf(stderr,
 		"usage: %s [--slot ID] [--login] [--pause-ms N] [--show-text]\n"
-		"          [--pkcs7 HEX_CKA_ID] [--save-dir DIR] MODULE\n\n"
+		"          [--pkcs7 HEX_CKA_ID] [--write-tests] [--save-dir DIR] MODULE\n\n"
 		"Reads Rutoken extension data through MODULE (librtpkcs11ecp.so or\n"
-		"pkcs11-spy.so) and never changes the token.\n"
+		"pkcs11-spy.so). Without --pkcs7 and --write-tests nothing on the token\n"
+		"changes.\n"
 		"  --slot ID        use this slot instead of the first one with a token\n"
 		"  --login          ask for the user PIN (hidden, single attempt)\n"
-		"  --pause-ms N     pause between steps, default 1000\n"
+		"  --pause-ms N     pause between steps, default 500\n"
 		"  --show-text      print certificate text instead of its outline\n"
 		"  --pkcs7 ID       with --login: sign and verify fixed test data and\n"
 		"                   create a CSR with the key pair and certificate\n"
 		"                   whose CKA_ID is ID; asks for confirmation\n"
-		"  --save-dir DIR   save the journal, signatures and CSR there\n",
+		"  --write-tests    with --login: create a temporary GOST key pair and\n"
+		"                   certificate, check the journal, certificate text,\n"
+		"                   PKCS #7 and CSR with them and delete them; asks for\n"
+		"                   confirmation\n"
+		"  --save-dir DIR   save the journal, signatures, certificate and CSR\n"
+		"                   into DIR, created if missing\n"
+		"  --pin-env NAME   with --login: take the PIN from this environment\n"
+		"                   variable (for automated tests)\n"
+		"  --assume-yes     answer confirmations (for automated tests)\n"
+		"  --selftest-certificate FILE\n"
+		"                   write a certificate built from fixed test values\n"
+		"                   to FILE and exit; checks the certificate encoder\n",
 		name);
 }
 
@@ -674,11 +717,32 @@ probe_token_info(CK_SLOT_ID slot)
 			buffer.info.ulSizeofThisStructure);
 }
 
+/* Prints every entry the library touched, also after an error. */
+static void
+show_volume_entries(const CK_VOLUME_INFO_EXTENDED *volumes, CK_ULONG capacity)
+{
+	CK_ULONG i;
+
+	for (i = 0; i < capacity; i++) {
+		if (!changed_bytes(&volumes[i], 0, sizeof(volumes[i])))
+			continue;
+		line("entry %lu: idVolume 0x%lx, size %lu MB, access 0x%lx (%s), "
+				"owner 0x%lx, flags 0x%lx", i, volumes[i].idVolume,
+				volumes[i].ulVolumeSize, volumes[i].accessMode,
+				access_mode_name(volumes[i].accessMode),
+				volumes[i].volumeOwner, volumes[i].flags);
+	}
+	line("bytes changed: %zu of %zu",
+			changed_bytes(volumes, 0, capacity * sizeof(volumes[0])),
+			(size_t)capacity * sizeof(volumes[0]));
+}
+
 static void
 probe_flash(CK_SLOT_ID slot, const char *when)
 {
-	CK_VOLUME_INFO_EXTENDED volumes[20];
+	CK_VOLUME_INFO_EXTENDED volumes[MAX_VOLUMES];
 	CK_ULONG size, count = 0, capacity, i;
+	CK_ULONG capacities[4];
 	CK_RV rv;
 
 	step("C_EX_GetDriveSize %s", when);
@@ -705,15 +769,29 @@ probe_flash(CK_SLOT_ID slot, const char *when)
 	rv = fx->C_EX_GetVolumesInfo(slot, volumes, &count);
 	show_rv("C_EX_GetVolumesInfo", rv);
 	line("*pulInfoCount = %lu", count);
-	for (i = 0; rv == CKR_OK && i < count && i < capacity; i++)
-		line("volume %lu: size %lu MB, access 0x%lx (%s), owner 0x%lx, "
-				"flags 0x%lx", volumes[i].idVolume, volumes[i].ulVolumeSize,
-				volumes[i].accessMode,
-				access_mode_name(volumes[i].accessMode),
-				volumes[i].volumeOwner, volumes[i].flags);
+	show_volume_entries(volumes, capacity);
 	line("bytes written after %lu entries: %zu", capacity,
 			changed_bytes(volumes, capacity * sizeof(volumes[0]),
 					sizeof(volumes)));
+
+	/* The first hardware run got CKR_TOKEN_NOT_PRESENT for an exact array;
+	 * larger arrays and an empty one show whether the size is the cause. */
+	capacities[0] = capacity + 1;
+	capacities[1] = 8;
+	capacities[2] = 16;
+	capacities[3] = 0;
+	for (i = 0; i < sizeof(capacities) / sizeof(capacities[0]); i++) {
+		if (i > 0 && i < 3 && capacities[i] <= capacity + 1)
+			continue;
+		step("C_EX_GetVolumesInfo with room for %lu entries %s",
+				capacities[i], when);
+		memset(volumes, SENTINEL, sizeof(volumes));
+		count = capacities[i];
+		rv = fx->C_EX_GetVolumesInfo(slot, volumes, &count);
+		show_rv("C_EX_GetVolumesInfo", rv);
+		line("*pulInfoCount = %lu", count);
+		show_volume_entries(volumes, capacities[i] ? capacities[i] : 1);
+	}
 	if (capacity < 2)
 		return;
 
@@ -782,11 +860,12 @@ describe_journal(const CK_BYTE *data, size_t size)
 		} else if (tag == 0xB6) {
 			line("tag 0xB6 signature: %zu bytes", length);
 		} else if (tag == 0x85 && length == 12) {
-			line("tag 0x85 operation 0x%02x, key type 0x%02x, key purpose "
-					"0x%02x, operation flags 0x%02x, reserved %02x %02x",
+			/* field names of the Rutoken SDK sample JournalParse.c */
+			line("tag 0x85 operation 0x%02x, RSF type 0x%02x, RSF flags 0x%02x, "
+					"operation flags 0x%02x, PINPad flags 0x%02x, reserved 0x%02x",
 					data[value], data[value + 1], data[value + 2],
 					data[value + 3], data[value + 4], data[value + 5]);
-			line("  key id 0x%04x, signature counter %lu",
+			line("  RSF id 0x%04x, signature counter %lu",
 					(unsigned int)(data[value + 6] << 8 | data[value + 7]),
 					(unsigned long)data[value + 8] << 24 |
 					(unsigned long)data[value + 9] << 16 |
@@ -794,6 +873,8 @@ describe_journal(const CK_BYTE *data, size_t size)
 					(unsigned long)data[value + 11]);
 		} else if (tag == 0x83) {
 			print_hex("tag 0x83 device id", data + value, length, 32);
+		} else if (tag == 0x86) {
+			print_hex("tag 0x86 loadable tag table", data + value, length, 64);
 		} else {
 			line("tag 0x%02x with %zu bytes", tag, length);
 			print_hex("value", data + value, length, 64);
@@ -805,7 +886,7 @@ describe_journal(const CK_BYTE *data, size_t size)
 }
 
 static void
-probe_journal(CK_SLOT_ID slot, const char *when)
+probe_journal(CK_SLOT_ID slot, const char *when, const char *file)
 {
 	CK_BYTE *buffer;
 	CK_ULONG length = 0, size;
@@ -817,27 +898,33 @@ probe_journal(CK_SLOT_ID slot, const char *when)
 	rv = fx->C_EX_GetJournal(slot, NULL_PTR, &length);
 	show_rv("C_EX_GetJournal(NULL)", rv);
 	line("*pulJournalSize = %lu", length);
-	if (rv != CKR_OK || length == 0 || length > 65536)
+	if (rv != CKR_OK || length > 65536)
 		return;
-	size = length;
+	size = length ? length : 256;
 	buffer = malloc(size + 64);
 	if (!buffer)
 		return;
 
-	step("C_EX_GetJournal with a %lu-byte buffer %s", size, when);
+	if (!length)
+		step("C_EX_GetJournal with a %lu-byte buffer although the size is 0 %s",
+				size, when);
+	else
+		step("C_EX_GetJournal with a %lu-byte buffer %s", size, when);
 	memset(buffer, SENTINEL, size + 64);
 	length = size;
 	rv = fx->C_EX_GetJournal(slot, buffer, &length);
 	show_rv("C_EX_GetJournal", rv);
 	line("*pulJournalSize = %lu", length);
-	if (rv == CKR_OK && length <= size) {
+	if (rv == CKR_OK && length > 0 && length <= size) {
 		describe_journal(buffer, length);
-		save_file("journal.bin", buffer, length);
+		if (file)
+			save_file(file, buffer, length);
 	}
-	line("bytes written after the buffer: %zu",
-			changed_bytes(buffer, size, size + 64));
+	line("bytes written after %lu: %zu", length <= size ? length : size,
+			changed_bytes(buffer, length <= size ? length : size, size + 64));
 
-	if (size > 1) {
+	if (size > 1 && length > 1 && length <= size) {
+		size = length;
 		step("C_EX_GetJournal with a %lu-byte buffer %s", size - 1, when);
 		memset(buffer, SENTINEL, size + 64);
 		length = size - 1;
@@ -853,21 +940,68 @@ probe_journal(CK_SLOT_ID slot, const char *when)
 static void
 probe_forced_pin_change(CK_SLOT_ID slot)
 {
-	const CK_USER_TYPE users[] = { CKU_USER, CKU_SO };
+	/* 2 is CKU_CONTEXT_SPECIFIC, 3 and 31 are local PIN numbers, 32 is out
+	 * of the documented range. */
+	const CK_USER_TYPE users[] = { CKU_USER, CKU_SO, CKU_CONTEXT_SPECIFIC, 3,
+			31, 32 };
 	CK_USER_TYPE user;
 	size_t i;
 	CK_RV rv;
 
+	step("C_EX_SlotManage(MODE_GET_PIN_SET_TO_BE_CHANGED) for user types "
+			"1, 0, 2, 3, 31 and 32");
+	if (!HAVE(fx, C_EX_SlotManage))
+		return;
 	for (i = 0; i < sizeof(users) / sizeof(users[0]); i++) {
-		step("C_EX_SlotManage(MODE_GET_PIN_SET_TO_BE_CHANGED, %s)",
-				users[i] == CKU_USER ? "CKU_USER" : "CKU_SO");
-		if (!HAVE(fx, C_EX_SlotManage))
-			return;
 		user = users[i];
 		rv = fx->C_EX_SlotManage(slot, MODE_GET_PIN_SET_TO_BE_CHANGED, &user);
-		show_rv("C_EX_SlotManage", rv);
-		if (user != users[i])
-			line("the library changed *pValue to 0x%lx", user);
+		line("user type %lu: %s (0x%lx)%s", users[i], rv_name(rv),
+				(unsigned long)rv,
+				user != users[i] ? ", the library changed *pValue" : "");
+	}
+}
+
+/* Runs of IDs with the same result are printed as one line. */
+static void
+probe_local_pin_ids(CK_SLOT_ID slot, const char *when)
+{
+	CK_LOCAL_PIN_INFO pin, untouched;
+	CK_RV results[34], rv;
+	int changed[34];
+	CK_ULONG id, first;
+
+	step("C_EX_SlotManage(MODE_GET_LOCAL_PIN_INFO) for ulPinID 0..33, one "
+			"structure each, %s", when);
+	if (!HAVE(fx, C_EX_SlotManage))
+		return;
+	for (id = 0; id < 34; id++) {
+		memset(&pin, SENTINEL, sizeof(pin));
+		pin.ulPinID = id;
+		untouched = pin;
+		rv = fx->C_EX_SlotManage(slot, MODE_GET_LOCAL_PIN_INFO, &pin);
+		results[id] = rv;
+		changed[id] = memcmp(&pin, &untouched, sizeof(pin)) != 0;
+		if (changed[id])
+			line("ulPinID %lu: %s (0x%lx), ulPinID 0x%lx, size %lu..%lu, "
+					"retries %lu of %lu, flags 0x%lx", id, rv_name(rv),
+					(unsigned long)rv, pin.ulPinID, pin.ulMinSize,
+					pin.ulMaxSize, pin.ulCurrentRetryCount,
+					pin.ulMaxRetryCount, pin.flags);
+	}
+	for (id = 0; id < 34; id++) {
+		if (changed[id])
+			continue;
+		first = id;
+		while (id + 1 < 34 && !changed[id + 1] &&
+				results[id + 1] == results[first])
+			id++;
+		if (first == id)
+			line("ulPinID %lu: %s (0x%lx), structure unchanged", first,
+					rv_name(results[first]), (unsigned long)results[first]);
+		else
+			line("ulPinID %lu..%lu: %s (0x%lx), structure unchanged", first,
+					id, rv_name(results[first]),
+					(unsigned long)results[first]);
 	}
 }
 
@@ -915,6 +1049,18 @@ probe_token_name(CK_SESSION_HANDLE session)
 	}
 	line("bytes written after the buffer: %zu",
 			changed_bytes(buffer, needed, sizeof(buffer)));
+
+	step("C_EX_GetTokenName with a %lu-byte buffer", needed + 64);
+	memset(buffer, SENTINEL, sizeof(buffer));
+	length = needed + 64;
+	rv = fx->C_EX_GetTokenName(session, buffer, &length);
+	show_rv("C_EX_GetTokenName", rv);
+	line("*pulLabelLen = %lu", length);
+	if (rv == CKR_OK && length < needed + 64)
+		line("byte after the name: 0x%02x (0x%02x means untouched)",
+				buffer[length], SENTINEL);
+	line("bytes changed after %lu: %zu", needed,
+			changed_bytes(buffer, needed, sizeof(buffer)));
 	if (needed < 2)
 		return;
 
@@ -928,6 +1074,7 @@ probe_token_name(CK_SESSION_HANDLE session)
 			changed_bytes(buffer, needed - 1, sizeof(buffer)));
 }
 
+/* The content is never printed: a license is secret. */
 static void
 probe_license(CK_SESSION_HANDLE session, CK_ULONG number, int full)
 {
@@ -935,7 +1082,8 @@ probe_license(CK_SESSION_HANDLE session, CK_ULONG number, int full)
 	CK_ULONG length = 0, used, i, nonzero = 0;
 	CK_RV rv;
 
-	step("C_EX_GetLicense(%lu) size query", number);
+	step("C_EX_GetLicense(%lu)%s", number,
+			full ? ": size query, full buffer, 8-byte buffer" : ": size query");
 	if (!HAVE(fx, C_EX_GetLicense))
 		return;
 	rv = fx->C_EX_GetLicense(session, number, NULL_PTR, &length);
@@ -945,11 +1093,10 @@ probe_license(CK_SESSION_HANDLE session, CK_ULONG number, int full)
 		return;
 	used = rv == CKR_OK && length > 0 && length <= 128 ? length : 72;
 
-	step("C_EX_GetLicense(%lu) with a %lu-byte buffer", number, used);
 	memset(buffer, SENTINEL, sizeof(buffer));
 	length = used;
 	rv = fx->C_EX_GetLicense(session, number, buffer, &length);
-	show_rv("C_EX_GetLicense", rv);
+	show_rv("C_EX_GetLicense with a full buffer", rv);
 	line("*pulLicenseLen = %lu", length);
 	if (rv == CKR_OK) {
 		for (i = 0; i < length && i < used; i++)
@@ -960,14 +1107,15 @@ probe_license(CK_SESSION_HANDLE session, CK_ULONG number, int full)
 	}
 	line("bytes written after %lu: %zu", used,
 			changed_bytes(buffer, used, sizeof(buffer)));
+	wipe(buffer, sizeof(buffer));
 
-	step("C_EX_GetLicense(%lu) with an 8-byte buffer", number);
 	memset(buffer, SENTINEL, sizeof(buffer));
 	length = 8;
 	rv = fx->C_EX_GetLicense(session, number, buffer, &length);
-	show_rv("C_EX_GetLicense", rv);
+	show_rv("C_EX_GetLicense with an 8-byte buffer", rv);
 	line("*pulLicenseLen = %lu", length);
 	line("bytes written after 8: %zu", changed_bytes(buffer, 8, sizeof(buffer)));
+	wipe(buffer, sizeof(buffer));
 }
 
 static CK_ULONG
@@ -1052,7 +1200,7 @@ print_attribute(CK_SESSION_HANDLE session, CK_OBJECT_HANDLE object,
 	}
 }
 
-static void
+static CK_OBJECT_HANDLE
 probe_hardware_features(CK_SESSION_HANDLE session)
 {
 	static const struct {
@@ -1094,7 +1242,7 @@ probe_hardware_features(CK_SESSION_HANDLE session)
 
 	step("vendor hardware feature object CKH_VENDOR_TOKEN_INFO");
 	if (!HAVE(f, C_GetAttributeValue))
-		return;
+		return CK_INVALID_HANDLE;
 	count = find_objects(session, pattern, 2, objects, 4);
 	line("%lu objects", count);
 	for (i = 0; i < count; i++) {
@@ -1106,17 +1254,18 @@ probe_hardware_features(CK_SESSION_HANDLE session)
 					attributes[j].suffix, name, 0);
 		}
 	}
+	return count ? objects[0] : CK_INVALID_HANDLE;
 }
 
 static void
-describe_text(const CK_CHAR *text, CK_ULONG length)
+describe_text(const CK_CHAR *text, CK_ULONG length, int show)
 {
 	CK_ULONG i, start = 0, lines = 0, prefix;
 
 	line("NUL bytes inside the length: %s, last byte 0x%02x",
 			memchr(text, 0, length) ? "yes" : "no",
 			length ? text[length - 1] : 0);
-	if (opt.show_text) {
+	if (show || opt.show_text) {
 		printf("%.*s\n", (int)length, (const char *)text);
 		fflush(stdout);
 		return;
@@ -1143,7 +1292,8 @@ describe_text(const CK_CHAR *text, CK_ULONG length)
 }
 
 static void
-probe_certificate_text(CK_SESSION_HANDLE session, CK_OBJECT_HANDLE certificate)
+probe_certificate_text(CK_SESSION_HANDLE session, CK_OBJECT_HANDLE certificate,
+		int show)
 {
 	CK_CHAR_PTR text = NULL;
 	CK_ULONG length = 0;
@@ -1157,9 +1307,40 @@ probe_certificate_text(CK_SESSION_HANDLE session, CK_OBJECT_HANDLE certificate)
 	line("*pInfo %s, *pulInfoLen = %lu", text ? "set" : "NULL", length);
 	if (rv != CKR_OK || !text)
 		return;
-	describe_text(text, length);
+	describe_text(text, length, show);
 	if (HAVE(fx, C_EX_FreeBuffer))
 		show_rv("C_EX_FreeBuffer(info)", fx->C_EX_FreeBuffer(text));
+}
+
+static void
+probe_certificate_text_errors(CK_SESSION_HANDLE session,
+		CK_OBJECT_HANDLE not_a_certificate)
+{
+	const CK_OBJECT_HANDLE handles[] = { CK_INVALID_HANDLE, 0x7FFFFFF0UL,
+			not_a_certificate };
+	const char *const names[] = { "CK_INVALID_HANDLE", "unused handle",
+			"hardware feature object" };
+	CK_CHAR_PTR text;
+	CK_ULONG length;
+	size_t i;
+	CK_RV rv;
+
+	step("C_EX_GetCertificateInfoText with handles that are not certificates");
+	if (!HAVE(fx, C_EX_GetCertificateInfoText))
+		return;
+	for (i = 0; i < sizeof(handles) / sizeof(handles[0]); i++) {
+		if (i == 2 && not_a_certificate == CK_INVALID_HANDLE)
+			continue;
+		text = NULL;
+		length = 0;
+		rv = fx->C_EX_GetCertificateInfoText(session, handles[i], &text,
+				&length);
+		line("%s %lu: %s (0x%lx), *pInfo %s, *pulInfoLen %lu", names[i],
+				handles[i], rv_name(rv), (unsigned long)rv,
+				text ? "set" : "NULL", length);
+		if (rv == CKR_OK && text && HAVE(fx, C_EX_FreeBuffer))
+			show_rv("C_EX_FreeBuffer(info)", fx->C_EX_FreeBuffer(text));
+	}
 }
 
 static void
@@ -1192,7 +1373,7 @@ probe_certificates(CK_SESSION_HANDLE session, const char *when)
 		value.ulValueLen = 0;
 		if (f->C_GetAttributeValue(session, objects[i], &value, 1) == CKR_OK)
 			line("  CKA_VALUE: %lu bytes, not printed", value.ulValueLen);
-		probe_certificate_text(session, objects[i]);
+		probe_certificate_text(session, objects[i], 0);
 	}
 }
 
@@ -1293,9 +1474,23 @@ read_tty_line(const char *prompt, char *buffer, size_t size, int hidden)
 }
 
 static int
+confirmed(const char *prompt, const char *word)
+{
+	char answer[16];
+
+	if (opt.assume_yes) {
+		line("\"%s\" confirmed by --assume-yes", word);
+		return 1;
+	}
+	return read_tty_line(prompt, answer, sizeof(answer), 0) &&
+			!strcmp(answer, word);
+}
+
+static int
 login(CK_SESSION_HANDLE session)
 {
 	char pin[128];
+	const char *value;
 	CK_RV rv;
 
 	step("C_Login(CKU_USER)");
@@ -1306,8 +1501,15 @@ login(CK_SESSION_HANDLE session)
 				token_info.ulUserRetryCountLeft);
 		return 0;
 	}
-	if (!read_tty_line("User PIN (hidden, a single attempt is made): ", pin,
-			sizeof(pin), 1)) {
+	if (opt.pin_env) {
+		value = getenv(opt.pin_env);
+		if (!value || !value[0] || strlen(value) >= sizeof(pin)) {
+			line("no usable PIN in $%s: login skipped", opt.pin_env);
+			return 0;
+		}
+		memcpy(pin, value, strlen(value) + 1);
+	} else if (!read_tty_line("User PIN (hidden, a single attempt is made): ",
+			pin, sizeof(pin), 1)) {
 		line("no PIN entered: login skipped");
 		return 0;
 	}
@@ -1381,6 +1583,8 @@ sign(CK_SESSION_HANDLE session, const char *title, CK_OBJECT_HANDLE certificate,
 	show_rv("C_EX_PKCS7Sign", rv);
 	line("*ppEnvelope %s, *pEnvelopeLen = %lu", envelope ? "set" : "NULL",
 			*length);
+	if (rv == CKR_OK && journal_after_signatures)
+		probe_journal(journal_slot, title, NULL);
 	if (rv != CKR_OK || !envelope)
 		return NULL;
 	if (keep)
@@ -1479,8 +1683,9 @@ verify_detached(CK_SESSION_HANDLE session, const char *title, CK_BYTE_PTR cms,
 
 static void
 create_csr(CK_SESSION_HANDLE session, const char *title,
-		CK_OBJECT_HANDLE public_key, CK_CHAR_PTR *dn, CK_ULONG dn_count,
-		CK_CHAR_PTR *extensions, CK_ULONG extension_count, const char *file)
+		CK_OBJECT_HANDLE public_key, CK_OBJECT_HANDLE private_key,
+		CK_CHAR_PTR *dn, CK_ULONG dn_count, CK_CHAR_PTR *extensions,
+		CK_ULONG extension_count, const char *file)
 {
 	CK_BYTE_PTR csr = NULL;
 	CK_ULONG length = 0;
@@ -1488,9 +1693,11 @@ create_csr(CK_SESSION_HANDLE session, const char *title,
 
 	step("C_EX_CreateCSR: %s", title);
 	rv = fx->C_EX_CreateCSR(session, public_key, dn, dn_count, &csr, &length,
-			CK_INVALID_HANDLE, NULL_PTR, 0, extensions, extension_count);
+			private_key, NULL_PTR, 0, extensions, extension_count);
 	show_rv("C_EX_CreateCSR", rv);
 	line("*pCsr %s, *pulCsrLength = %lu", csr ? "set" : "NULL", length);
+	if (rv == CKR_OK && journal_after_signatures)
+		probe_journal(journal_slot, title, NULL);
 	if (rv != CKR_OK || !csr)
 		return;
 	if (file)
@@ -1498,8 +1705,10 @@ create_csr(CK_SESSION_HANDLE session, const char *title,
 	show_rv("C_EX_FreeBuffer(csr)", fx->C_EX_FreeBuffer(csr));
 }
 
+/* already_confirmed: the caller has asked for consent. */
 static void
-probe_pkcs7(CK_SESSION_HANDLE session)
+probe_pkcs7(CK_SESSION_HANDLE session, CK_BYTE *id, CK_ULONG id_length,
+		int already_confirmed)
 {
 	static CK_CHAR cn_type[] = "CN";
 	static CK_CHAR cn_value[] = "OpenSC Rutoken probe";
@@ -1507,8 +1716,8 @@ probe_pkcs7(CK_SESSION_HANDLE session)
 	static CK_CHAR key_usage_value[] = "digitalSignature";
 	CK_CHAR_PTR dn[] = { cn_type, cn_value };
 	CK_CHAR_PTR extensions[] = { key_usage, key_usage_value };
-	CK_BYTE id[128], *certificate_value = NULL;
-	CK_ULONG id_length, attached_length = 0, detached_length = 0, length;
+	CK_BYTE *certificate_value = NULL;
+	CK_ULONG attached_length = 0, detached_length = 0, length;
 	CK_OBJECT_HANDLE certificate, private_key, public_key;
 	CK_BYTE_PTR attached, detached;
 	CK_ATTRIBUTE value = { CKA_VALUE, NULL_PTR, 0 };
@@ -1517,20 +1726,14 @@ probe_pkcs7(CK_SESSION_HANDLE session)
 	CK_BYTE_PTR data = NULL;
 	CK_VENDOR_BUFFER_PTR signers = NULL;
 	CK_ULONG count = 0;
-	char answer[16];
 	CK_RV rv;
 
-	step("--pkcs7: objects with CKA_ID %s", opt.pkcs7_id);
+	step("PKCS #7 and CSR checks: objects with a %lu-byte CKA_ID", id_length);
 	if (!HAVE(f, C_GetAttributeValue) || !HAVE(fx, C_EX_PKCS7Sign) ||
 			!HAVE(fx, C_EX_FreeBuffer) || !HAVE(fx, C_EX_PKCS7VerifyInit) ||
 			!HAVE(fx, C_EX_PKCS7Verify) || !HAVE(fx, C_EX_PKCS7VerifyUpdate) ||
 			!HAVE(fx, C_EX_PKCS7VerifyFinal) || !HAVE(fx, C_EX_CreateCSR))
 		return;
-	id_length = parse_hex(opt.pkcs7_id, id, sizeof(id));
-	if (!id_length) {
-		line("--pkcs7 needs an even number of hexadecimal digits");
-		return;
-	}
 	certificate = find_by_id(session, CKO_CERTIFICATE, id, id_length);
 	private_key = find_by_id(session, CKO_PRIVATE_KEY, id, id_length);
 	public_key = find_by_id(session, CKO_PUBLIC_KEY, id, id_length);
@@ -1551,10 +1754,10 @@ probe_pkcs7(CK_SESSION_HANDLE session)
 		free(certificate_value);
 		return;
 	}
-	if (!read_tty_line("The probe will sign fixed test data with this key "
-			"five times. This replaces\nthe journal record and increases the "
-			"signature counter. Type SIGN to continue: ",
-			answer, sizeof(answer), 0) || strcmp(answer, "SIGN")) {
+	if (!already_confirmed && !confirmed("The probe will sign fixed test "
+			"data with this key five times. This replaces\nthe journal record "
+			"and increases the signature counter. Type SIGN to continue: ",
+			"SIGN")) {
 		line("not confirmed: PKCS #7 and CSR checks skipped");
 		free(certificate_value);
 		return;
@@ -1607,43 +1810,452 @@ probe_pkcs7(CK_SESSION_HANDLE session)
 		line("no public key object with this CKA_ID: CSR checks skipped");
 		return;
 	}
-	create_csr(session, "CN only", public_key, dn, 2, NULL_PTR, 0, "csr.der");
-	create_csr(session, "CN and keyUsage extension", public_key, dn, 2,
-			extensions, 2, "csr-key-usage.der");
-	create_csr(session, "odd DN string count", public_key, dn, 1, NULL_PTR, 0,
-			NULL);
+	create_csr(session, "CN only, key found by CKA_ID", public_key,
+			CK_INVALID_HANDLE, dn, 2, NULL_PTR, 0, "csr.der");
+	create_csr(session, "CN only, explicit private key handle", public_key,
+			private_key, dn, 2, NULL_PTR, 0, "csr-explicit-key.der");
+	create_csr(session, "CN and keyUsage extension", public_key,
+			CK_INVALID_HANDLE, dn, 2, extensions, 2, "csr-key-usage.der");
+	create_csr(session, "odd DN string count", public_key, CK_INVALID_HANDLE,
+			dn, 1, NULL_PTR, 0, NULL);
+}
+
+/*
+ * DER encoding of the self-signed test certificate of --write-tests:
+ * GOST R 34.10-2012 256-bit key with the CryptoPro A parameter set,
+ * GOST R 34.11-2012 256-bit digest, subject and issuer CN=probe_label.
+ */
+static const CK_BYTE oid_gost2012_256[] = {
+	0x06, 0x08, 0x2A, 0x85, 0x03, 0x07, 0x01, 0x01, 0x01, 0x01 };
+static const CK_BYTE oid_paramset_a[] = {
+	0x06, 0x07, 0x2A, 0x85, 0x03, 0x02, 0x02, 0x23, 0x01 };
+static const CK_BYTE oid_digest_2012_256[] = {
+	0x06, 0x08, 0x2A, 0x85, 0x03, 0x07, 0x01, 0x01, 0x02, 0x02 };
+static const CK_BYTE oid_sign_2012_256[] = {
+	0x06, 0x08, 0x2A, 0x85, 0x03, 0x07, 0x01, 0x01, 0x03, 0x02 };
+static const CK_BYTE oid_common_name[] = { 0x06, 0x03, 0x55, 0x04, 0x03 };
+static const CK_BYTE key_usage_extension[] = {
+	/* SEQUENCE { keyUsage, critical, digitalSignature } */
+	0x30, 0x0E, 0x06, 0x03, 0x55, 0x1D, 0x0F, 0x01, 0x01, 0xFF,
+	0x04, 0x04, 0x03, 0x02, 0x07, 0x80 };
+
+#define GOST_PUBLIC_KEY_SIZE 64
+#define GOST_SIGNATURE_SIZE 64
+
+struct der {
+	CK_BYTE data[1024];
+	size_t length;
+	int overflow;
+};
+
+static void
+der_bytes(struct der *out, const void *bytes, size_t count)
+{
+	if (out->overflow || count > sizeof(out->data) - out->length) {
+		out->overflow = 1;
+		return;
+	}
+	memcpy(out->data + out->length, bytes, count);
+	out->length += count;
 }
 
 static void
-probe_local_pins(CK_SLOT_ID slot)
+der_value(struct der *out, CK_BYTE tag, const void *value, size_t length)
 {
-	CK_LOCAL_PIN_INFO pins[32], expected;
-	size_t i, changed = 0;
+	CK_BYTE header[4];
+	size_t n = 0;
+
+	header[n++] = tag;
+	if (length < 0x80) {
+		header[n++] = (CK_BYTE)length;
+	} else if (length < 0x100) {
+		header[n++] = 0x81;
+		header[n++] = (CK_BYTE)length;
+	} else if (length < 0x10000) {
+		header[n++] = 0x82;
+		header[n++] = (CK_BYTE)(length >> 8);
+		header[n++] = (CK_BYTE)length;
+	} else {
+		out->overflow = 1;
+		return;
+	}
+	der_bytes(out, header, n);
+	der_bytes(out, value, length);
+}
+
+static void
+der_wrap(struct der *out, CK_BYTE tag, const struct der *inner)
+{
+	if (inner->overflow)
+		out->overflow = 1;
+	else
+		der_value(out, tag, inner->data, inner->length);
+}
+
+static void
+der_name(struct der *out)
+{
+	struct der attribute = { { 0 }, 0, 0 }, set = { { 0 }, 0, 0 },
+			sequence = { { 0 }, 0, 0 };
+
+	der_bytes(&attribute, oid_common_name, sizeof(oid_common_name));
+	der_value(&attribute, 0x0C, probe_label, sizeof(probe_label) - 1);
+	der_wrap(&set, 0x30, &attribute);
+	der_wrap(&sequence, 0x31, &set);
+	der_wrap(out, 0x30, &sequence);
+}
+
+static void
+der_signature_algorithm(struct der *out)
+{
+	der_value(out, 0x30, oid_sign_2012_256, sizeof(oid_sign_2012_256));
+}
+
+static int
+build_tbs_certificate(const CK_BYTE *public_key, struct der *tbs)
+{
+	static const CK_BYTE version[] = { 0xA0, 0x03, 0x02, 0x01, 0x02 };
+	static const CK_BYTE serial[] = { 0x02, 0x04, 0x01, 0x23, 0x45, 0x67 };
+	static const char not_before[] = "260101000000Z";
+	static const char not_after[] = "360101000000Z";
+	struct der content = { { 0 }, 0, 0 }, validity = { { 0 }, 0, 0 },
+			parameters = { { 0 }, 0, 0 }, algorithm = { { 0 }, 0, 0 },
+			key = { { 0 }, 0, 0 }, spki = { { 0 }, 0, 0 },
+			extensions = { { 0 }, 0, 0 }, explicit = { { 0 }, 0, 0 };
+
+	der_bytes(&content, version, sizeof(version));
+	der_bytes(&content, serial, sizeof(serial));
+	der_signature_algorithm(&content);
+	der_name(&content);
+	der_value(&validity, 0x17, not_before, sizeof(not_before) - 1);
+	der_value(&validity, 0x17, not_after, sizeof(not_after) - 1);
+	der_wrap(&content, 0x30, &validity);
+	der_name(&content);
+
+	der_bytes(&parameters, oid_paramset_a, sizeof(oid_paramset_a));
+	der_bytes(&parameters, oid_digest_2012_256, sizeof(oid_digest_2012_256));
+	der_bytes(&algorithm, oid_gost2012_256, sizeof(oid_gost2012_256));
+	der_wrap(&algorithm, 0x30, &parameters);
+	der_wrap(&spki, 0x30, &algorithm);
+	/* BIT STRING without unused bits holding OCTET STRING (64) */
+	key.data[0] = 0x00;
+	key.length = 1;
+	der_value(&key, 0x04, public_key, GOST_PUBLIC_KEY_SIZE);
+	der_wrap(&spki, 0x03, &key);
+	der_wrap(&content, 0x30, &spki);
+
+	der_bytes(&extensions, key_usage_extension, sizeof(key_usage_extension));
+	der_wrap(&explicit, 0x30, &extensions);
+	der_wrap(&content, 0xA3, &explicit);
+
+	tbs->length = 0;
+	tbs->overflow = 0;
+	der_wrap(tbs, 0x30, &content);
+	return !tbs->overflow;
+}
+
+static int
+build_certificate(const struct der *tbs, const CK_BYTE *signature,
+		CK_ULONG signature_length, struct der *certificate)
+{
+	struct der content = { { 0 }, 0, 0 }, bits = { { 0 }, 0, 0 };
+
+	der_bytes(&content, tbs->data, tbs->length);
+	der_signature_algorithm(&content);
+	bits.data[0] = 0x00;
+	bits.length = 1;
+	der_bytes(&bits, signature, signature_length);
+	der_wrap(&content, 0x03, &bits);
+	certificate->length = 0;
+	certificate->overflow = 0;
+	der_wrap(certificate, 0x30, &content);
+	return !certificate->overflow;
+}
+
+/* --selftest-certificate: the encoder with fixed key and signature bytes. */
+static int
+selftest_certificate(const char *path)
+{
+	CK_BYTE public_key[GOST_PUBLIC_KEY_SIZE], signature[GOST_SIGNATURE_SIZE];
+	struct der tbs, certificate;
+	FILE *file;
+	size_t i;
+	int ok;
+
+	for (i = 0; i < sizeof(public_key); i++)
+		public_key[i] = (CK_BYTE)(i + 1);
+	for (i = 0; i < sizeof(signature); i++)
+		signature[i] = (CK_BYTE)(0x80 + i);
+	if (!build_tbs_certificate(public_key, &tbs) ||
+			!build_certificate(&tbs, signature, sizeof(signature), &certificate)) {
+		fprintf(stderr, "the certificate does not fit the encoder buffer\n");
+		return 1;
+	}
+	file = fopen(path, "wb");
+	if (!file) {
+		fprintf(stderr, "cannot create %s: %s\n", path, strerror(errno));
+		return 1;
+	}
+	ok = fwrite(certificate.data, 1, certificate.length, file) ==
+			certificate.length;
+	if (fclose(file))
+		ok = 0;
+	if (!ok) {
+		fprintf(stderr, "cannot write %s\n", path);
+		return 1;
+	}
+	printf("selftest certificate: %zu bytes written to %s\n",
+			certificate.length, path);
+	return 0;
+}
+
+static CK_ULONG
+find_probe_objects(CK_SESSION_HANDLE session, CK_OBJECT_HANDLE *objects,
+		CK_ULONG max)
+{
+	CK_ATTRIBUTE pattern[] = {
+		{ CKA_LABEL, (CK_VOID_PTR)probe_label, sizeof(probe_label) - 1 },
+		{ CKA_ID, (CK_VOID_PTR)probe_id, sizeof(probe_id) }
+	};
+
+	return find_objects(session, pattern, 2, objects, max);
+}
+
+static void
+destroy_probe_objects(CK_SESSION_HANDLE session, const char *when)
+{
+	CK_OBJECT_HANDLE objects[MAX_OBJECTS];
+	CK_ULONG count, i;
+
+	step("delete temporary objects %s", when);
+	count = find_probe_objects(session, objects, MAX_OBJECTS);
+	line("%lu objects with the label \"%s\" and the probe CKA_ID", count,
+			probe_label);
+	for (i = 0; i < count; i++) {
+		line("object %lu", objects[i]);
+		print_attribute(session, objects[i], CKA_CLASS, "  CKA_CLASS", 0);
+		if (HAVE(f, C_DestroyObject))
+			show_rv("  C_DestroyObject", f->C_DestroyObject(session,
+					objects[i]));
+	}
+	if (count)
+		line("%lu objects remain", find_probe_objects(session, objects,
+				MAX_OBJECTS));
+}
+
+static int
+generate_probe_key_pair(CK_SESSION_HANDLE session,
+		CK_OBJECT_HANDLE *public_key, CK_OBJECT_HANDLE *private_key)
+{
+	static const CK_BYTE gost_parameters[] = {
+		0x06, 0x07, 0x2A, 0x85, 0x03, 0x02, 0x02, 0x23, 0x01 };
+	static const CK_BYTE digest_parameters[] = {
+		0x06, 0x08, 0x2A, 0x85, 0x03, 0x07, 0x01, 0x01, 0x02, 0x02 };
+	CK_OBJECT_CLASS public_class = CKO_PUBLIC_KEY;
+	CK_OBJECT_CLASS private_class = CKO_PRIVATE_KEY;
+	CK_KEY_TYPE key_type = CKK_GOSTR3410;
+	CK_BBOOL yes = CK_TRUE, no = CK_FALSE;
+	/* the templates of the Rutoken SDK sample for GOST R 34.10-2012 256 */
+	CK_ATTRIBUTE public_template[] = {
+		{ CKA_CLASS, &public_class, sizeof(public_class) },
+		{ CKA_KEY_TYPE, &key_type, sizeof(key_type) },
+		{ CKA_TOKEN, &yes, sizeof(yes) },
+		{ CKA_PRIVATE, &no, sizeof(no) },
+		{ CKA_LABEL, (CK_VOID_PTR)probe_label, sizeof(probe_label) - 1 },
+		{ CKA_ID, (CK_VOID_PTR)probe_id, sizeof(probe_id) },
+		{ CKA_GOSTR3410_PARAMS, (CK_VOID_PTR)gost_parameters,
+			sizeof(gost_parameters) },
+		{ CKA_GOSTR3411_PARAMS, (CK_VOID_PTR)digest_parameters,
+			sizeof(digest_parameters) }
+	};
+	/* CKA_VENDOR_KEY_JOURNAL is not set: it marks the key pair that signs
+	 * the journal itself, while any GOST signature fills the journal. */
+	CK_ATTRIBUTE private_template[] = {
+		{ CKA_CLASS, &private_class, sizeof(private_class) },
+		{ CKA_KEY_TYPE, &key_type, sizeof(key_type) },
+		{ CKA_TOKEN, &yes, sizeof(yes) },
+		{ CKA_PRIVATE, &yes, sizeof(yes) },
+		{ CKA_LABEL, (CK_VOID_PTR)probe_label, sizeof(probe_label) - 1 },
+		{ CKA_ID, (CK_VOID_PTR)probe_id, sizeof(probe_id) },
+		{ CKA_GOSTR3410_PARAMS, (CK_VOID_PTR)gost_parameters,
+			sizeof(gost_parameters) },
+		{ CKA_GOSTR3411_PARAMS, (CK_VOID_PTR)digest_parameters,
+			sizeof(digest_parameters) }
+	};
+	CK_MECHANISM mechanism = { CKM_GOSTR3410_KEY_PAIR_GEN, NULL_PTR, 0 };
 	CK_RV rv;
 
-	step("C_EX_SlotManage(MODE_GET_LOCAL_PIN_INFO) with 32 entries, "
-			"ulPinID 0x03..0x22");
-	if (!HAVE(fx, C_EX_SlotManage))
+	step("C_GenerateKeyPair: GOST R 34.10-2012 256 token key pair");
+	if (!HAVE(f, C_GenerateKeyPair))
+		return 0;
+	rv = f->C_GenerateKeyPair(session, &mechanism, public_template,
+			sizeof(public_template) / sizeof(public_template[0]),
+			private_template,
+			sizeof(private_template) / sizeof(private_template[0]),
+			public_key, private_key);
+	show_rv("C_GenerateKeyPair", rv);
+	if (rv != CKR_OK)
+		return 0;
+	line("public key %lu, private key %lu", *public_key, *private_key);
+	print_attribute(session, *private_key, CKA_VENDOR_KEY_JOURNAL,
+			"CKA_VENDOR_KEY_JOURNAL", 0);
+	print_attribute(session, *private_key, CKA_KEY_TYPE, "CKA_KEY_TYPE", 0);
+	return 1;
+}
+
+static CK_RV
+sign_with(CK_SESSION_HANDLE session, CK_MECHANISM_TYPE type,
+		CK_OBJECT_HANDLE key, const CK_BYTE *data, CK_ULONG length,
+		CK_BYTE *signature, CK_ULONG *signature_length)
+{
+	CK_MECHANISM mechanism = { type, NULL_PTR, 0 };
+	CK_RV rv;
+
+	if (!HAVE(f, C_SignInit) || !HAVE(f, C_Sign))
+		return CKR_FUNCTION_NOT_SUPPORTED;
+	rv = f->C_SignInit(session, &mechanism, key);
+	if (rv != CKR_OK)
+		return rv;
+	return f->C_Sign(session, (CK_BYTE_PTR)data, length, signature,
+			signature_length);
+}
+
+static void
+probe_raw_signature(CK_SESSION_HANDLE session, CK_OBJECT_HANDLE public_key,
+		CK_OBJECT_HANDLE private_key)
+{
+	CK_BYTE hash[32], signature[128];
+	CK_ULONG length = sizeof(signature);
+	CK_MECHANISM mechanism = { CKM_GOSTR3410, NULL_PTR, 0 };
+	CK_RV rv;
+
+	step("C_Sign with CKM_GOSTR3410 over a fixed 32-byte value");
+	memset(hash, 0x5A, sizeof(hash));
+	rv = sign_with(session, CKM_GOSTR3410, private_key, hash, sizeof(hash),
+			signature, &length);
+	show_rv("C_SignInit and C_Sign", rv);
+	if (rv != CKR_OK)
 		return;
-	line("the buffer semantics are undocumented; if the probe stops here, "
-			"this step is the answer");
-	memset(pins, SENTINEL, sizeof(pins));
-	for (i = 0; i < 32; i++)
-		pins[i].ulPinID = 0x03 + i;
-	rv = fx->C_EX_SlotManage(slot, MODE_GET_LOCAL_PIN_INFO, pins);
-	show_rv("C_EX_SlotManage", rv);
-	for (i = 0; i < 32; i++) {
-		memset(&expected, SENTINEL, sizeof(expected));
-		expected.ulPinID = 0x03 + i;
-		if (!memcmp(&pins[i], &expected, sizeof(expected)))
-			continue;
-		changed++;
-		line("entry %zu: ulPinID 0x%lx, size 0x%lx..0x%lx, retries 0x%lx of "
-				"0x%lx, flags 0x%lx", i, pins[i].ulPinID, pins[i].ulMinSize,
-				pins[i].ulMaxSize, pins[i].ulCurrentRetryCount,
-				pins[i].ulMaxRetryCount, pins[i].flags);
+	line("signature: %lu bytes", length);
+	if (!HAVE(f, C_VerifyInit) || !HAVE(f, C_Verify))
+		return;
+	rv = f->C_VerifyInit(session, &mechanism, public_key);
+	if (rv == CKR_OK)
+		rv = f->C_Verify(session, hash, sizeof(hash), signature, length);
+	show_rv("C_VerifyInit and C_Verify with the public key", rv);
+}
+
+static CK_OBJECT_HANDLE
+create_probe_certificate(CK_SESSION_HANDLE session,
+		CK_OBJECT_HANDLE public_key, CK_OBJECT_HANDLE private_key)
+{
+	CK_BYTE public_value[GOST_PUBLIC_KEY_SIZE], signature[128];
+	CK_ULONG signature_length = sizeof(signature);
+	CK_ATTRIBUTE value = { CKA_VALUE, public_value, sizeof(public_value) };
+	CK_OBJECT_CLASS certificate_class = CKO_CERTIFICATE;
+	CK_CERTIFICATE_TYPE certificate_type = CKC_X_509;
+	CK_BBOOL yes = CK_TRUE, no = CK_FALSE;
+	CK_OBJECT_HANDLE certificate = CK_INVALID_HANDLE;
+	struct der tbs, der, subject = { { 0 }, 0, 0 };
+	CK_ATTRIBUTE template[] = {
+		{ CKA_CLASS, &certificate_class, sizeof(certificate_class) },
+		{ CKA_CERTIFICATE_TYPE, &certificate_type, sizeof(certificate_type) },
+		{ CKA_TOKEN, &yes, sizeof(yes) },
+		{ CKA_PRIVATE, &no, sizeof(no) },
+		{ CKA_LABEL, (CK_VOID_PTR)probe_label, sizeof(probe_label) - 1 },
+		{ CKA_ID, (CK_VOID_PTR)probe_id, sizeof(probe_id) },
+		{ CKA_SUBJECT, NULL_PTR, 0 },
+		{ CKA_VALUE, NULL_PTR, 0 }
+	};
+	CK_RV rv;
+
+	step("self-signed certificate for the temporary key");
+	rv = f->C_GetAttributeValue(session, public_key, &value, 1);
+	show_rv("C_GetAttributeValue(public key CKA_VALUE)", rv);
+	if (rv != CKR_OK || value.ulValueLen != sizeof(public_value)) {
+		line("expected a %u-byte public key, got %lu bytes",
+				GOST_PUBLIC_KEY_SIZE, value.ulValueLen);
+		return CK_INVALID_HANDLE;
 	}
-	line("%zu of 32 entries changed", changed);
+	if (!build_tbs_certificate(public_value, &tbs)) {
+		line("the certificate does not fit the encoder buffer");
+		return CK_INVALID_HANDLE;
+	}
+	rv = sign_with(session, CKM_GOSTR3410_WITH_GOSTR3411_12_256, private_key,
+			tbs.data, (CK_ULONG)tbs.length, signature, &signature_length);
+	show_rv("C_Sign(CKM_GOSTR3410_WITH_GOSTR3411_12_256) over TBSCertificate",
+			rv);
+	if (rv != CKR_OK)
+		return CK_INVALID_HANDLE;
+	line("signature: %lu bytes, used as returned", signature_length);
+	if (!build_certificate(&tbs, signature, signature_length, &der)) {
+		line("the certificate does not fit the encoder buffer");
+		return CK_INVALID_HANDLE;
+	}
+	line("certificate: %zu bytes", der.length);
+	save_file("certificate-temporary.der", der.data, (CK_ULONG)der.length);
+	der_name(&subject);
+	template[6].pValue = subject.data;
+	template[6].ulValueLen = (CK_ULONG)subject.length;
+	template[7].pValue = der.data;
+	template[7].ulValueLen = (CK_ULONG)der.length;
+	if (!HAVE(f, C_CreateObject))
+		return CK_INVALID_HANDLE;
+	rv = f->C_CreateObject(session, template,
+			sizeof(template) / sizeof(template[0]), &certificate);
+	show_rv("C_CreateObject(certificate)", rv);
+	return rv == CKR_OK ? certificate : CK_INVALID_HANDLE;
+}
+
+static void
+probe_write_tests(CK_SLOT_ID slot)
+{
+	CK_SESSION_HANDLE session = CK_INVALID_HANDLE;
+	CK_OBJECT_HANDLE public_key, private_key, certificate;
+	CK_RV rv;
+
+	step("--write-tests: open a read-write session");
+	if (!confirmed("The probe will create a temporary GOST key pair and "
+			"certificate labelled\n\"OpenSC probe temporary\", sign test data "
+			"with them and delete them. This\nreplaces the journal record and "
+			"increases the signature counter. Type WRITE\nto continue: ",
+			"WRITE")) {
+		line("not confirmed: write tests skipped");
+		return;
+	}
+	if (!HAVE(f, C_OpenSession) || !HAVE(f, C_CloseSession))
+		return;
+	rv = f->C_OpenSession(slot, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL_PTR,
+			NULL, &session);
+	show_rv("C_OpenSession(read-write)", rv);
+	if (rv != CKR_OK)
+		return;
+
+	destroy_probe_objects(session, "left by an earlier run");
+	probe_journal(slot, "before the temporary key", NULL);
+	if (generate_probe_key_pair(session, &public_key, &private_key)) {
+		probe_raw_signature(session, public_key, private_key);
+		probe_journal(slot, "after the raw signature",
+				"journal-raw-signature.bin");
+		certificate = create_probe_certificate(session, public_key,
+				private_key);
+		probe_journal(slot, "after signing the certificate",
+				"journal-certificate.bin");
+		if (certificate != CK_INVALID_HANDLE) {
+			probe_certificate_text(session, certificate, 1);
+			journal_slot = slot;
+			journal_after_signatures = 1;
+			probe_pkcs7(session, (CK_BYTE *)probe_id, sizeof(probe_id), 1);
+			journal_after_signatures = 0;
+			probe_journal(slot, "after the PKCS #7 and CSR checks",
+					"journal-pkcs7.bin");
+		}
+	}
+	destroy_probe_objects(session, "after the tests");
+	probe_journal(slot, "after deleting the temporary key", NULL);
+
+	step("--write-tests: close the read-write session");
+	show_rv("C_CloseSession", f->C_CloseSession(session));
 }
 
 int
@@ -1651,6 +2263,9 @@ main(int argc, char **argv)
 {
 	CK_SLOT_ID slot;
 	CK_SESSION_HANDLE session;
+	CK_OBJECT_HANDLE feature;
+	CK_BYTE id[128];
+	CK_ULONG id_length = 0, number;
 	CK_RV rv;
 
 	setvbuf(stdout, NULL, _IOLBF, 0);
@@ -1658,12 +2273,31 @@ main(int argc, char **argv)
 		usage(argv[0]);
 		return 2;
 	}
+	if (opt.selftest_certificate)
+		return selftest_certificate(opt.selftest_certificate);
+	if (opt.pkcs7_id) {
+		id_length = parse_hex(opt.pkcs7_id, id, sizeof(id));
+		if (!id_length) {
+			fprintf(stderr, "--pkcs7 needs an even number of hexadecimal "
+					"digits\n");
+			return 2;
+		}
+	}
+	if (opt.save_dir && mkdir(opt.save_dir, 0700) && errno != EEXIST) {
+		fprintf(stderr, "cannot create %s: %s\n", opt.save_dir,
+				strerror(errno));
+		return 1;
+	}
 	printf("OpenSC Rutoken hardware probe %d\n", PROBE_VERSION);
-	printf("module %s, pause %ld ms, login %s, pkcs7 %s\n", opt.module,
-			opt.pause_ms, opt.login ? "yes" : "no",
-			opt.pkcs7_id ? opt.pkcs7_id : "no");
-	printf("Only reading functions are called; nothing that formats the "
-			"token or\nchanges PINs, names, licenses, volumes or modes.\n");
+	printf("module %s, pause %ld ms, login %s, pkcs7 %s, write tests %s\n",
+			opt.module, opt.pause_ms, opt.login ? "yes" : "no",
+			opt.pkcs7_id ? opt.pkcs7_id : "no", opt.write_tests ? "yes" : "no");
+	if (opt.pkcs7_id || opt.write_tests)
+		printf("Functions that change the token are called only after the "
+				"confirmation\nasked below; the rest only read.\n");
+	else
+		printf("Only reading functions are called; nothing that formats the "
+				"token or\nchanges PINs, names, licenses, volumes or modes.\n");
 
 	if (!load_module())
 		return 1;
@@ -1676,26 +2310,31 @@ main(int argc, char **argv)
 		probe_mechanisms(slot);
 		probe_token_info(slot);
 		probe_flash(slot, "without login");
-		probe_journal(slot, "without login");
+		probe_journal(slot, "without login", "journal.bin");
 		probe_forced_pin_change(slot);
 		session = open_session(slot);
 		if (session != CK_INVALID_HANDLE) {
+			/* the open session keeps the token connected */
+			probe_local_pin_ids(slot, "with an open session");
 			probe_token_name(session);
-			probe_license(session, 1, 1);
-			probe_license(session, 2, 1);
+			for (number = 1; number <= 5; number++)
+				probe_license(session, number, 1);
 			probe_license(session, 0, 0);
-			probe_license(session, 3, 0);
-			probe_hardware_features(session);
+			probe_license(session, 6, 0);
+			feature = probe_hardware_features(session);
+			probe_certificate_text_errors(session, feature);
 			probe_certificates(session, "without login");
 			probe_authenticators(session, "without login");
 			if (opt.login && login(session)) {
-				probe_journal(slot, "after login");
+				probe_journal(slot, "after login", "journal-login.bin");
 				probe_flash(slot, "after login");
 				probe_keys(session);
 				probe_certificates(session, "after login");
 				probe_authenticators(session, "after login");
 				if (opt.pkcs7_id)
-					probe_pkcs7(session);
+					probe_pkcs7(session, id, id_length, 0);
+				if (opt.write_tests)
+					probe_write_tests(slot);
 				step("C_Logout");
 				if (HAVE(f, C_Logout))
 					show_rv("C_Logout", f->C_Logout(session));
@@ -1704,7 +2343,6 @@ main(int argc, char **argv)
 			if (HAVE(f, C_CloseSession))
 				show_rv("C_CloseSession", f->C_CloseSession(session));
 		}
-		probe_local_pins(slot);
 	}
 	step("C_Finalize");
 	if (HAVE(f, C_Finalize)) {

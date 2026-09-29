@@ -7,10 +7,13 @@
 static CK_FUNCTION_LIST standard_functions;
 static CK_FUNCTION_LIST_EXTENDED extended_functions;
 
-/* Slot 7 holds the token, session 23 is the only session. A slot or session
- * handle of ORDER_PROBE makes every extension function return only its
- * CKR_VENDOR_DEFINED + number, so that rutoken-driver.c can check the order
- * of the function table through pkcs11-spy. */
+/* Slot 7 holds the token; read-only sessions get handle 23, read-write
+ * sessions 24. A slot or session handle of ORDER_PROBE makes every extension
+ * function return only its CKR_VENDOR_DEFINED + number, so that
+ * rutoken-driver.c can check the order of the function table through
+ * pkcs11-spy. */
+#define SESSION_RO 23
+#define SESSION_RW 24
 #define ORDER_PROBE 99
 #define ORDER_CODE(number) (CKR_VENDOR_DEFINED + (number))
 
@@ -34,10 +37,34 @@ static const struct test_object objects[] = {
 };
 #define OBJECT_COUNT (sizeof(objects) / sizeof(objects[0]))
 
+/* Objects created through C_GenerateKeyPair and C_CreateObject keep copies
+ * of their templates. */
+#define DYNAMIC_OBJECTS 8
+#define DYNAMIC_ATTRIBUTES 16
+
+struct dynamic_object {
+	CK_OBJECT_HANDLE handle;	/* 0 for an unused entry */
+	CK_ULONG count;
+	CK_ATTRIBUTE attributes[DYNAMIC_ATTRIBUTES];
+};
+
+static struct dynamic_object dynamic_objects[DYNAMIC_OBJECTS];
+static CK_OBJECT_HANDLE next_dynamic_handle = 1001;
+
 static CK_ATTRIBUTE search_template[4];
 static CK_ULONG search_count;
 static CK_ULONG search_position;
 static int search_active;
+static int logged_in;
+static int sign_active;
+static int verify_active;
+static CK_MECHANISM_TYPE sign_mechanism;
+
+static int
+session_valid(CK_SESSION_HANDLE hSession)
+{
+	return hSession == SESSION_RO || hSession == SESSION_RW;
+}
 
 #define STUB_FUNCTION(name, number, parameters) \
 CK_RV CK_SPEC name parameters \
@@ -97,21 +124,142 @@ CK_RV
 C_OpenSession(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication,
 		CK_NOTIFY notify, CK_SESSION_HANDLE_PTR phSession)
 {
-	(void)flags;
 	(void)pApplication;
 	(void)notify;
 	if (slotID != 7)
 		return CKR_SLOT_ID_INVALID;
 	if (!phSession)
 		return CKR_ARGUMENTS_BAD;
-	*phSession = 23;
+	*phSession = (flags & CKF_RW_SESSION) ? SESSION_RW : SESSION_RO;
 	return CKR_OK;
 }
 
 CK_RV
 C_CloseSession(CK_SESSION_HANDLE hSession)
 {
-	return hSession == 23 ? CKR_OK : CKR_SESSION_HANDLE_INVALID;
+	return session_valid(hSession) ? CKR_OK : CKR_SESSION_HANDLE_INVALID;
+}
+
+CK_RV
+C_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR_PTR pPin,
+		CK_ULONG ulPinLen)
+{
+	if (!session_valid(hSession))
+		return CKR_SESSION_HANDLE_INVALID;
+	if (userType != CKU_USER)
+		return CKR_USER_TYPE_INVALID;
+	if (!pPin || !ulPinLen)
+		return CKR_PIN_INCORRECT;
+	if (logged_in)
+		return CKR_USER_ALREADY_LOGGED_IN;
+	logged_in = 1;
+	return CKR_OK;
+}
+
+CK_RV
+C_Logout(CK_SESSION_HANDLE hSession)
+{
+	if (!session_valid(hSession))
+		return CKR_SESSION_HANDLE_INVALID;
+	if (!logged_in)
+		return CKR_USER_NOT_LOGGED_IN;
+	logged_in = 0;
+	return CKR_OK;
+}
+
+static void
+release_dynamic(struct dynamic_object *object)
+{
+	CK_ULONG i;
+
+	for (i = 0; i < object->count; i++)
+		free(object->attributes[i].pValue);
+	memset(object, 0, sizeof(*object));
+}
+
+static CK_RV
+store_dynamic(const CK_ATTRIBUTE *pTemplate, CK_ULONG ulCount,
+		const CK_ATTRIBUTE *extra, CK_OBJECT_HANDLE_PTR phObject)
+{
+	struct dynamic_object *object = NULL;
+	const CK_ATTRIBUTE *source;
+	CK_ULONG i, total = ulCount + (extra ? 1 : 0);
+	size_t j;
+
+	if ((!pTemplate && ulCount) || !phObject)
+		return CKR_ARGUMENTS_BAD;
+	if (total > DYNAMIC_ATTRIBUTES)
+		return CKR_TEMPLATE_INCONSISTENT;
+	for (j = 0; j < DYNAMIC_OBJECTS && !object; j++)
+		if (!dynamic_objects[j].handle)
+			object = &dynamic_objects[j];
+	if (!object)
+		return CKR_DEVICE_MEMORY;
+	for (i = 0; i < total; i++) {
+		source = i < ulCount ? &pTemplate[i] : extra;
+		object->attributes[i].type = source->type;
+		object->attributes[i].ulValueLen = source->ulValueLen;
+		object->attributes[i].pValue =
+				malloc(source->ulValueLen ? source->ulValueLen : 1);
+		object->count = i + 1;
+		if (!object->attributes[i].pValue) {
+			release_dynamic(object);
+			return CKR_HOST_MEMORY;
+		}
+		if (source->ulValueLen)
+			memcpy(object->attributes[i].pValue, source->pValue,
+					source->ulValueLen);
+	}
+	object->handle = next_dynamic_handle++;
+	*phObject = object->handle;
+	return CKR_OK;
+}
+
+static struct dynamic_object *
+find_dynamic(CK_OBJECT_HANDLE handle)
+{
+	size_t i;
+
+	for (i = 0; handle && i < DYNAMIC_OBJECTS; i++)
+		if (dynamic_objects[i].handle == handle)
+			return &dynamic_objects[i];
+	return NULL;
+}
+
+static const CK_ATTRIBUTE *
+dynamic_attribute(const struct dynamic_object *object, CK_ATTRIBUTE_TYPE type)
+{
+	CK_ULONG i;
+
+	for (i = 0; i < object->count; i++)
+		if (object->attributes[i].type == type)
+			return &object->attributes[i];
+	return NULL;
+}
+
+static int
+dynamic_class(const struct dynamic_object *object, CK_OBJECT_CLASS object_class)
+{
+	const CK_ATTRIBUTE *attribute = dynamic_attribute(object, CKA_CLASS);
+
+	return attribute && attribute->ulValueLen == sizeof(object_class) &&
+			!memcmp(attribute->pValue, &object_class, sizeof(object_class));
+}
+
+static int
+dynamic_matches(const struct dynamic_object *object)
+{
+	const CK_ATTRIBUTE *stored;
+	CK_ULONG i;
+
+	for (i = 0; i < search_count; i++) {
+		stored = dynamic_attribute(object, search_template[i].type);
+		if (!stored || stored->ulValueLen != search_template[i].ulValueLen ||
+				(stored->ulValueLen && memcmp(stored->pValue,
+					search_template[i].pValue, stored->ulValueLen)))
+			return 0;
+	}
+	return 1;
 }
 
 static int
@@ -151,7 +299,7 @@ CK_RV
 C_FindObjectsInit(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate,
 		CK_ULONG ulCount)
 {
-	if (hSession != 23)
+	if (!session_valid(hSession))
 		return CKR_SESSION_HANDLE_INVALID;
 	if (search_active)
 		return CKR_OPERATION_ACTIVE;
@@ -172,15 +320,24 @@ C_FindObjects(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE_PTR phObject,
 {
 	CK_ULONG found = 0;
 
-	if (hSession != 23)
+	if (!session_valid(hSession))
 		return CKR_SESSION_HANDLE_INVALID;
 	if (!search_active)
 		return CKR_OPERATION_NOT_INITIALIZED;
 	if (!phObject || !pulObjectCount)
 		return CKR_ARGUMENTS_BAD;
-	while (found < ulMaxObjectCount && search_position < OBJECT_COUNT) {
-		if (object_matches(&objects[search_position]))
-			phObject[found++] = objects[search_position].handle;
+	while (found < ulMaxObjectCount &&
+			search_position < OBJECT_COUNT + DYNAMIC_OBJECTS) {
+		if (search_position < OBJECT_COUNT) {
+			if (object_matches(&objects[search_position]))
+				phObject[found++] = objects[search_position].handle;
+		} else {
+			const struct dynamic_object *object =
+					&dynamic_objects[search_position - OBJECT_COUNT];
+
+			if (object->handle && dynamic_matches(object))
+				phObject[found++] = object->handle;
+		}
 		search_position++;
 	}
 	*pulObjectCount = found;
@@ -190,7 +347,7 @@ C_FindObjects(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE_PTR phObject,
 CK_RV
 C_FindObjectsFinal(CK_SESSION_HANDLE hSession)
 {
-	if (hSession != 23)
+	if (!session_valid(hSession))
 		return CKR_SESSION_HANDLE_INVALID;
 	if (!search_active)
 		return CKR_OPERATION_NOT_INITIALIZED;
@@ -209,36 +366,59 @@ find_object(CK_OBJECT_HANDLE handle)
 	return NULL;
 }
 
+static int
+static_attribute(const struct test_object *object, CK_ATTRIBUTE_TYPE type,
+		const void **value, CK_ULONG *length)
+{
+	switch (type) {
+	case CKA_CLASS:
+		*value = &object->object_class;
+		*length = sizeof(object->object_class);
+		return 1;
+	case CKA_ID:
+		*value = object->id;
+		*length = 2;
+		return 1;
+	case CKA_LABEL:
+		*value = object->label;
+		*length = (CK_ULONG)strlen(object->label);
+		return 1;
+	default:
+		return 0;
+	}
+}
+
 CK_RV
 C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject,
 		CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount)
 {
 	const struct test_object *object = find_object(hObject);
+	const struct dynamic_object *created = find_dynamic(hObject);
+	const CK_ATTRIBUTE *stored;
 	CK_RV rv = CKR_OK;
 	const void *value;
 	CK_ULONG i, length;
+	int known;
 
-	if (hSession != 23)
+	if (!session_valid(hSession))
 		return CKR_SESSION_HANDLE_INVALID;
-	if (!object)
+	if (!object && !created)
 		return CKR_OBJECT_HANDLE_INVALID;
 	if (!pTemplate && ulCount)
 		return CKR_ARGUMENTS_BAD;
 	for (i = 0; i < ulCount; i++) {
-		switch (pTemplate[i].type) {
-		case CKA_CLASS:
-			value = &object->object_class;
-			length = sizeof(object->object_class);
-			break;
-		case CKA_ID:
-			value = object->id;
-			length = 2;
-			break;
-		case CKA_LABEL:
-			value = object->label;
-			length = strlen(object->label);
-			break;
-		default:
+		if (object) {
+			known = static_attribute(object, pTemplate[i].type, &value,
+					&length);
+		} else {
+			stored = dynamic_attribute(created, pTemplate[i].type);
+			known = stored != NULL;
+			if (known) {
+				value = stored->pValue;
+				length = stored->ulValueLen;
+			}
+		}
+		if (!known) {
 			pTemplate[i].ulValueLen = (CK_ULONG)-1;
 			rv = CKR_ATTRIBUTE_TYPE_INVALID;
 			continue;
@@ -254,6 +434,165 @@ C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject,
 		}
 	}
 	return rv;
+}
+
+/* The signature depends only on the data length, so that C_Verify can
+ * check it without keys. */
+static void
+test_signature(CK_ULONG data_length, CK_BYTE *signature)
+{
+	CK_ULONG i;
+
+	for (i = 0; i < 64; i++)
+		signature[i] = (CK_BYTE)(0xC0 ^ i ^ (data_length & 0xFF));
+}
+
+CK_RV
+C_GenerateKeyPair(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
+		CK_ATTRIBUTE_PTR pPublicKeyTemplate, CK_ULONG ulPublicKeyAttributeCount,
+		CK_ATTRIBUTE_PTR pPrivateKeyTemplate,
+		CK_ULONG ulPrivateKeyAttributeCount, CK_OBJECT_HANDLE_PTR phPublicKey,
+		CK_OBJECT_HANDLE_PTR phPrivateKey)
+{
+	CK_BYTE value[64];
+	CK_ATTRIBUTE public_value = { CKA_VALUE, value, sizeof(value) };
+	struct dynamic_object *public_key;
+	CK_ULONG i;
+	CK_RV rv;
+
+	if (!session_valid(hSession))
+		return CKR_SESSION_HANDLE_INVALID;
+	if (hSession != SESSION_RW)
+		return CKR_SESSION_READ_ONLY;
+	if (!logged_in)
+		return CKR_USER_NOT_LOGGED_IN;
+	if (!pMechanism || pMechanism->mechanism != CKM_GOSTR3410_KEY_PAIR_GEN)
+		return CKR_MECHANISM_INVALID;
+	if (!phPublicKey || !phPrivateKey)
+		return CKR_ARGUMENTS_BAD;
+	for (i = 0; i < sizeof(value); i++)
+		value[i] = (CK_BYTE)(0x10 + i);
+	rv = store_dynamic(pPublicKeyTemplate, ulPublicKeyAttributeCount,
+			&public_value, phPublicKey);
+	if (rv != CKR_OK)
+		return rv;
+	rv = store_dynamic(pPrivateKeyTemplate, ulPrivateKeyAttributeCount, NULL,
+			phPrivateKey);
+	if (rv != CKR_OK && (public_key = find_dynamic(*phPublicKey)) != NULL)
+		release_dynamic(public_key);
+	return rv;
+}
+
+CK_RV
+C_SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
+		CK_OBJECT_HANDLE hKey)
+{
+	const struct dynamic_object *key = find_dynamic(hKey);
+
+	if (!session_valid(hSession))
+		return CKR_SESSION_HANDLE_INVALID;
+	if (!logged_in)
+		return CKR_USER_NOT_LOGGED_IN;
+	if (!key || !dynamic_class(key, CKO_PRIVATE_KEY))
+		return CKR_KEY_HANDLE_INVALID;
+	if (!pMechanism || (pMechanism->mechanism != CKM_GOSTR3410 &&
+			pMechanism->mechanism != CKM_GOSTR3410_WITH_GOSTR3411_12_256))
+		return CKR_MECHANISM_INVALID;
+	sign_mechanism = pMechanism->mechanism;
+	sign_active = 1;
+	return CKR_OK;
+}
+
+CK_RV
+C_Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen,
+		CK_BYTE_PTR pSignature, CK_ULONG_PTR pulSignatureLen)
+{
+	if (!session_valid(hSession))
+		return CKR_SESSION_HANDLE_INVALID;
+	if (!sign_active)
+		return CKR_OPERATION_NOT_INITIALIZED;
+	if ((!pData && ulDataLen) || !pulSignatureLen)
+		return CKR_ARGUMENTS_BAD;
+	if (sign_mechanism == CKM_GOSTR3410 && ulDataLen != 32) {
+		sign_active = 0;
+		return CKR_DATA_LEN_RANGE;
+	}
+	if (!pSignature) {
+		*pulSignatureLen = 64;
+		return CKR_OK;
+	}
+	if (*pulSignatureLen < 64) {
+		*pulSignatureLen = 64;
+		return CKR_BUFFER_TOO_SMALL;
+	}
+	test_signature(ulDataLen, pSignature);
+	*pulSignatureLen = 64;
+	sign_active = 0;
+	return CKR_OK;
+}
+
+CK_RV
+C_VerifyInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
+		CK_OBJECT_HANDLE hKey)
+{
+	const struct dynamic_object *key = find_dynamic(hKey);
+
+	if (!session_valid(hSession))
+		return CKR_SESSION_HANDLE_INVALID;
+	if (!key || !dynamic_class(key, CKO_PUBLIC_KEY))
+		return CKR_KEY_HANDLE_INVALID;
+	if (!pMechanism || pMechanism->mechanism != CKM_GOSTR3410)
+		return CKR_MECHANISM_INVALID;
+	verify_active = 1;
+	return CKR_OK;
+}
+
+CK_RV
+C_Verify(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen,
+		CK_BYTE_PTR pSignature, CK_ULONG ulSignatureLen)
+{
+	CK_BYTE expected[64];
+
+	if (!session_valid(hSession))
+		return CKR_SESSION_HANDLE_INVALID;
+	if (!verify_active)
+		return CKR_OPERATION_NOT_INITIALIZED;
+	verify_active = 0;
+	if ((!pData && ulDataLen) || !pSignature)
+		return CKR_ARGUMENTS_BAD;
+	if (ulSignatureLen != sizeof(expected))
+		return CKR_SIGNATURE_LEN_RANGE;
+	test_signature(ulDataLen, expected);
+	return memcmp(expected, pSignature, sizeof(expected)) ?
+			CKR_SIGNATURE_INVALID : CKR_OK;
+}
+
+CK_RV
+C_CreateObject(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate,
+		CK_ULONG ulCount, CK_OBJECT_HANDLE_PTR phObject)
+{
+	if (!session_valid(hSession))
+		return CKR_SESSION_HANDLE_INVALID;
+	if (hSession != SESSION_RW)
+		return CKR_SESSION_READ_ONLY;
+	return store_dynamic(pTemplate, ulCount, NULL, phObject);
+}
+
+CK_RV
+C_DestroyObject(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject)
+{
+	struct dynamic_object *object = find_dynamic(hObject);
+
+	if (!session_valid(hSession))
+		return CKR_SESSION_HANDLE_INVALID;
+	if (hSession != SESSION_RW)
+		return CKR_SESSION_READ_ONLY;
+	if (find_object(hObject))
+		return CKR_ACTION_PROHIBITED;
+	if (!object)
+		return CKR_OBJECT_HANDLE_INVALID;
+	release_dynamic(object);
+	return CKR_OK;
 }
 
 CK_RV CK_SPEC
@@ -305,7 +644,7 @@ C_EX_GetTokenName(CK_SESSION_HANDLE hSession, CK_CHAR_PTR pLabel,
 	static const char label[] = "Test Rutoken";
 	CK_ULONG needed = sizeof(label) - 1;
 
-	if (hSession != 23)
+	if (!session_valid(hSession))
 		return CKR_SESSION_HANDLE_INVALID;
 	if (!pulLabelLen)
 		return CKR_ARGUMENTS_BAD;
@@ -333,7 +672,7 @@ C_EX_GetLicense(CK_SESSION_HANDLE hSession, CK_ULONG ulLicenseNum,
 
 	if (hSession == ORDER_PROBE)
 		return ORDER_CODE(6);
-	if (hSession != 23)
+	if (!session_valid(hSession))
 		return CKR_SESSION_HANDLE_INVALID;
 	if (!pulLicenseLen || ulLicenseNum < 1 || ulLicenseNum > 4)
 		return CKR_ARGUMENTS_BAD;
@@ -364,7 +703,7 @@ C_EX_GetCertificateInfoText(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hCert,
 
 	if (hSession == ORDER_PROBE)
 		return ORDER_CODE(7);
-	if (hSession != 23)
+	if (!session_valid(hSession))
 		return CKR_SESSION_HANDLE_INVALID;
 	if (!pInfo || !pulInfoLen)
 		return CKR_ARGUMENTS_BAD;
@@ -389,6 +728,345 @@ C_EX_FreeBuffer(CK_BYTE_PTR pBuffer)
 		return ORDER_CODE(10);
 	free(pBuffer);
 	allocated_buffers--;
+	return CKR_OK;
+}
+
+/* A static or created object of this class. */
+static int
+object_is(CK_OBJECT_HANDLE handle, CK_OBJECT_CLASS object_class)
+{
+	const struct test_object *object = find_object(handle);
+	const struct dynamic_object *created = find_dynamic(handle);
+
+	if (object)
+		return object->object_class == object_class;
+	return created && dynamic_class(created, object_class);
+}
+
+static const CK_BYTE *
+object_id(CK_OBJECT_HANDLE handle, CK_ULONG *length)
+{
+	const struct test_object *object = find_object(handle);
+	const struct dynamic_object *created = find_dynamic(handle);
+	const CK_ATTRIBUTE *id;
+
+	if (object) {
+		*length = 2;
+		return (const CK_BYTE *)object->id;
+	}
+	if (!created || !(id = dynamic_attribute(created, CKA_ID)))
+		return NULL;
+	*length = id->ulValueLen;
+	return id->pValue;
+}
+
+/* A private key shares the CKA_ID of the certificate. */
+static int
+have_key_for(CK_OBJECT_HANDLE certificate)
+{
+	const CK_BYTE *id, *key_id;
+	CK_ULONG length, key_length;
+	size_t i;
+
+	if (!(id = object_id(certificate, &length)))
+		return 0;
+	for (i = 0; i < OBJECT_COUNT; i++)
+		if (objects[i].object_class == CKO_PRIVATE_KEY && length == 2 &&
+				!memcmp(objects[i].id, id, 2))
+			return 1;
+	for (i = 0; i < DYNAMIC_OBJECTS; i++) {
+		if (!dynamic_objects[i].handle ||
+				!dynamic_class(&dynamic_objects[i], CKO_PRIVATE_KEY))
+			continue;
+		key_id = object_id(dynamic_objects[i].handle, &key_length);
+		if (key_id && key_length == length && !memcmp(key_id, id, length))
+			return 1;
+	}
+	return 0;
+}
+
+/* The stub "CMS": magic, detached flag, data length and FNV-1a hash of the
+ * data (both BE32), then the data of an attached signature. */
+static const CK_BYTE cms_magic[] = { 'S', 'T', 'U', 'B', '-', 'P', '7' };
+#define CMS_HEADER (sizeof(cms_magic) + 9)
+#define FNV_OFFSET 2166136261UL
+
+static CK_ULONG
+fnv1a(CK_ULONG hash, const CK_BYTE *data, CK_ULONG length)
+{
+	CK_ULONG i;
+
+	for (i = 0; i < length; i++)
+		hash = ((hash ^ data[i]) * 16777619UL) & 0xFFFFFFFFUL;
+	return hash;
+}
+
+static void
+put_be32(CK_BYTE *p, CK_ULONG value)
+{
+	p[0] = (CK_BYTE)(value >> 24);
+	p[1] = (CK_BYTE)(value >> 16);
+	p[2] = (CK_BYTE)(value >> 8);
+	p[3] = (CK_BYTE)value;
+}
+
+static CK_ULONG
+get_be32(const CK_BYTE *p)
+{
+	return ((CK_ULONG)p[0] << 24) | ((CK_ULONG)p[1] << 16) |
+			((CK_ULONG)p[2] << 8) | p[3];
+}
+
+CK_RV CK_SPEC
+C_EX_PKCS7Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData,
+		CK_ULONG ulDataLen, CK_OBJECT_HANDLE hCert, CK_BYTE_PTR *ppEnvelope,
+		CK_ULONG_PTR pEnvelopeLen, CK_OBJECT_HANDLE hPrivKey,
+		CK_OBJECT_HANDLE_PTR phCertificates, CK_ULONG ulCertificatesLen,
+		CK_ULONG flags)
+{
+	CK_ULONG i, length;
+	CK_BYTE_PTR envelope;
+
+	if (hSession == ORDER_PROBE)
+		return ORDER_CODE(8);
+	if (!session_valid(hSession))
+		return CKR_SESSION_HANDLE_INVALID;
+	if (!logged_in)
+		return CKR_USER_NOT_LOGGED_IN;
+	if (!pData || !ulDataLen || !ppEnvelope || !pEnvelopeLen ||
+			(!phCertificates && ulCertificatesLen) ||
+			(flags & ~(PKCS7_DETACHED_SIGNATURE | USE_HARDWARE_HASH)))
+		return CKR_ARGUMENTS_BAD;
+	if (!object_is(hCert, CKO_CERTIFICATE))
+		return CKR_OBJECT_HANDLE_INVALID;
+	if (hPrivKey != CK_INVALID_HANDLE ?
+			!object_is(hPrivKey, CKO_PRIVATE_KEY) : !have_key_for(hCert))
+		return CKR_KEY_HANDLE_INVALID;
+	for (i = 0; i < ulCertificatesLen; i++)
+		if (!object_is(phCertificates[i], CKO_CERTIFICATE))
+			return CKR_OBJECT_HANDLE_INVALID;
+	length = CMS_HEADER + (flags & PKCS7_DETACHED_SIGNATURE ? 0 : ulDataLen);
+	envelope = malloc(length);
+	if (!envelope)
+		return CKR_HOST_MEMORY;
+	memcpy(envelope, cms_magic, sizeof(cms_magic));
+	envelope[sizeof(cms_magic)] = (CK_BYTE)(flags & PKCS7_DETACHED_SIGNATURE);
+	put_be32(envelope + sizeof(cms_magic) + 1, ulDataLen);
+	put_be32(envelope + sizeof(cms_magic) + 5,
+			fnv1a(FNV_OFFSET, pData, ulDataLen));
+	if (!(flags & PKCS7_DETACHED_SIGNATURE))
+		memcpy(envelope + CMS_HEADER, pData, ulDataLen);
+	allocated_buffers++;
+	*ppEnvelope = envelope;
+	*pEnvelopeLen = length;
+	return CKR_OK;
+}
+
+/* The C_EX_PKCS7Verify* operation of the session. */
+static struct {
+	int active;
+	int detached;
+	CK_RV status;		/* CKR_OK or CKR_CERT_CHAIN_NOT_VERIFIED */
+	CK_ULONG length;	/* length and hash of the signed data */
+	CK_ULONG hash;
+	CK_ULONG received;	/* detached: data of C_EX_PKCS7VerifyUpdate */
+	CK_ULONG running;
+	CK_BYTE_PTR data;	/* attached: copy of the signed data */
+} cms_verify;
+
+static void
+cms_verify_reset(void)
+{
+	free(cms_verify.data);
+	memset(&cms_verify, 0, sizeof(cms_verify));
+}
+
+static const CK_BYTE signer_certificate[] = "stub signer certificate";
+
+static CK_RV
+cms_signers(CK_VENDOR_BUFFER_PTR_PTR ppSignerCertificates,
+		CK_ULONG_PTR pulSignerCertificatesCount)
+{
+	CK_VENDOR_BUFFER_PTR signers = malloc(sizeof(*signers));
+
+	if (!signers)
+		return CKR_HOST_MEMORY;
+	signers->pData = malloc(sizeof(signer_certificate));
+	if (!signers->pData) {
+		free(signers);
+		return CKR_HOST_MEMORY;
+	}
+	memcpy(signers->pData, signer_certificate, sizeof(signer_certificate));
+	signers->ulSize = sizeof(signer_certificate);
+	allocated_buffers += 2;
+	*ppSignerCertificates = signers;
+	*pulSignerCertificatesCount = 1;
+	return CKR_OK;
+}
+
+CK_RV CK_SPEC
+C_EX_PKCS7VerifyInit(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pCms,
+		CK_ULONG ulCmsSize, CK_VENDOR_X509_STORE_PTR pStore,
+		CK_VENDOR_CRL_MODE ckMode, CK_FLAGS flags)
+{
+	CK_ULONG length;
+	int detached;
+
+	if (hSession == ORDER_PROBE)
+		return ORDER_CODE(27);
+	if (!session_valid(hSession))
+		return CKR_SESSION_HANDLE_INVALID;
+	if (cms_verify.active)
+		return CKR_OPERATION_ACTIVE;
+	if (!pCms || ulCmsSize < CMS_HEADER || !pStore || ckMode > ALL_CRL_CHECK)
+		return CKR_ARGUMENTS_BAD;
+	detached = pCms[sizeof(cms_magic)];
+	length = get_be32(pCms + sizeof(cms_magic) + 1);
+	if (memcmp(pCms, cms_magic, sizeof(cms_magic)) || detached > 1 ||
+			ulCmsSize - CMS_HEADER != (detached ? 0 : length))
+		return CKR_DATA_INVALID;
+	if (!detached) {
+		cms_verify.data = malloc(length ? length : 1);
+		if (!cms_verify.data)
+			return CKR_HOST_MEMORY;
+		memcpy(cms_verify.data, pCms + CMS_HEADER, length);
+	}
+	cms_verify.active = 1;
+	cms_verify.detached = detached;
+	cms_verify.length = length;
+	cms_verify.hash = get_be32(pCms + sizeof(cms_magic) + 5);
+	cms_verify.running = FNV_OFFSET;
+	/* the signer is trusted only through a certificate of the store */
+	cms_verify.status = ((flags & CKF_VENDOR_CHECK_SIGNATURE_ONLY) ||
+			pStore->ulTrustedCertificateCount) ?
+			CKR_OK : CKR_CERT_CHAIN_NOT_VERIFIED;
+	return CKR_OK;
+}
+
+CK_RV CK_SPEC
+C_EX_PKCS7Verify(CK_SESSION_HANDLE hSession, CK_BYTE_PTR_PTR ppData,
+		CK_ULONG_PTR pulDataSize, CK_VENDOR_BUFFER_PTR_PTR ppSignerCertificates,
+		CK_ULONG_PTR pulSignerCertificatesCount)
+{
+	CK_RV rv, status = cms_verify.status;
+
+	if (hSession == ORDER_PROBE)
+		return ORDER_CODE(28);
+	if (!session_valid(hSession))
+		return CKR_SESSION_HANDLE_INVALID;
+	if (!cms_verify.active)
+		return CKR_OPERATION_NOT_INITIALIZED;
+	/* a detached signature needs C_EX_PKCS7VerifyUpdate and Final */
+	if (cms_verify.detached)
+		return CKR_OPERATION_ACTIVE;
+	if (!ppData || !pulDataSize || !ppSignerCertificates ||
+			!pulSignerCertificatesCount)
+		rv = CKR_ARGUMENTS_BAD;
+	else if (fnv1a(FNV_OFFSET, cms_verify.data, cms_verify.length) !=
+			cms_verify.hash)
+		rv = CKR_SIGNATURE_INVALID;
+	else
+		rv = cms_signers(ppSignerCertificates, pulSignerCertificatesCount);
+	if (rv == CKR_OK) {
+		*ppData = cms_verify.data;
+		*pulDataSize = cms_verify.length;
+		cms_verify.data = NULL;
+		allocated_buffers++;
+	}
+	cms_verify_reset();
+	return rv == CKR_OK ? status : rv;
+}
+
+CK_RV CK_SPEC
+C_EX_PKCS7VerifyUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData,
+		CK_ULONG ulDataSize)
+{
+	if (hSession == ORDER_PROBE)
+		return ORDER_CODE(29);
+	if (!session_valid(hSession))
+		return CKR_SESSION_HANDLE_INVALID;
+	if (!cms_verify.active || !cms_verify.detached)
+		return CKR_OPERATION_NOT_INITIALIZED;
+	if (!pData && ulDataSize) {
+		cms_verify_reset();
+		return CKR_ARGUMENTS_BAD;
+	}
+	cms_verify.running = fnv1a(cms_verify.running, pData, ulDataSize);
+	cms_verify.received += ulDataSize;
+	return CKR_OK;
+}
+
+CK_RV CK_SPEC
+C_EX_PKCS7VerifyFinal(CK_SESSION_HANDLE hSession,
+		CK_VENDOR_BUFFER_PTR_PTR ppSignerCertificates,
+		CK_ULONG_PTR pulSignerCertificatesCount)
+{
+	CK_RV rv, status = cms_verify.status;
+
+	if (hSession == ORDER_PROBE)
+		return ORDER_CODE(30);
+	if (!session_valid(hSession))
+		return CKR_SESSION_HANDLE_INVALID;
+	if (!cms_verify.active || !cms_verify.detached)
+		return CKR_OPERATION_NOT_INITIALIZED;
+	if (!ppSignerCertificates || !pulSignerCertificatesCount)
+		rv = CKR_ARGUMENTS_BAD;
+	else if (cms_verify.received != cms_verify.length ||
+			cms_verify.running != cms_verify.hash)
+		rv = CKR_SIGNATURE_INVALID;
+	else
+		rv = cms_signers(ppSignerCertificates, pulSignerCertificatesCount);
+	cms_verify_reset();
+	return rv == CKR_OK ? status : rv;
+}
+
+/* The stub "CSR" is the text "stub CSR:" followed by " type=value" pairs of
+ * the distinguished name. */
+CK_RV CK_SPEC
+C_EX_CreateCSR(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hPublicKey,
+		CK_CHAR_PTR *dn, CK_ULONG dnLength, CK_BYTE_PTR *pCsr,
+		CK_ULONG_PTR pulCsrLength, CK_OBJECT_HANDLE hPrivKey,
+		CK_CHAR_PTR *pAttributes, CK_ULONG ulAttributesLength,
+		CK_CHAR_PTR *pExtensions, CK_ULONG ulExtensionsLength)
+{
+	static const char prefix[] = "stub CSR:";
+	size_t length = sizeof(prefix) - 1, part;
+	CK_BYTE_PTR csr;
+	CK_ULONG i;
+
+	if (hSession == ORDER_PROBE)
+		return ORDER_CODE(9);
+	if (!session_valid(hSession))
+		return CKR_SESSION_HANDLE_INVALID;
+	if (!logged_in)
+		return CKR_USER_NOT_LOGGED_IN;
+	if (!dn || !dnLength || dnLength % 2 || !pCsr || !pulCsrLength ||
+			(!pAttributes && ulAttributesLength) || ulAttributesLength % 2 ||
+			(!pExtensions && ulExtensionsLength) || ulExtensionsLength % 2)
+		return CKR_ARGUMENTS_BAD;
+	if (!object_is(hPublicKey, CKO_PUBLIC_KEY) ||
+			(hPrivKey != CK_INVALID_HANDLE &&
+			 !object_is(hPrivKey, CKO_PRIVATE_KEY)))
+		return CKR_KEY_HANDLE_INVALID;
+	for (i = 0; i < dnLength; i++) {
+		if (!dn[i])
+			return CKR_ARGUMENTS_BAD;
+		length += strlen((const char *)dn[i]) + 1;
+	}
+	csr = malloc(length);
+	if (!csr)
+		return CKR_HOST_MEMORY;
+	memcpy(csr, prefix, sizeof(prefix) - 1);
+	length = sizeof(prefix) - 1;
+	for (i = 0; i < dnLength; i++) {
+		part = strlen((const char *)dn[i]);
+		csr[length++] = i % 2 ? '=' : ' ';
+		memcpy(csr + length, dn[i], part);
+		length += part;
+	}
+	allocated_buffers++;
+	*pCsr = csr;
+	*pulCsrLength = (CK_ULONG)length;
 	return CKR_OK;
 }
 
@@ -436,11 +1114,13 @@ C_EX_GetDriveSize(CK_SLOT_ID slotID, CK_ULONG_PTR pulDriveSize)
 	return CKR_OK;
 }
 
-/* One record in the documented format: operation data, hash, signature and
- * device ID inside TLV 0x80. */
+/* One record in the format of the Rutoken SDK sample JournalParse.c inside
+ * TLV 0x80: operation information (signature with the GOST private key RSF
+ * 0x0005 that allows key exchange, hash computed by the token, 298
+ * signatures), hash, signature and device ID. */
 static const CK_BYTE journal[] = {
 	0x80, 0x7C,
-	0x85, 0x0C, 0x01, 0x02, 0x03, 0x00, 0x00, 0x00, 0x00, 0x05,
+	0x85, 0x0C, 0x01, 0x03, 0x01, 0x01, 0x00, 0x00, 0x00, 0x05,
 		0x00, 0x00, 0x01, 0x2A,
 	0xAA, 0x20,
 		0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
@@ -528,9 +1208,21 @@ C_EX_SlotManage(CK_SLOT_ID slotID, CK_ULONG ulMode, CK_VOID_PTR pValue)
 CK_RV
 C_Finalize(CK_VOID_PTR pReserved)
 {
+	int left = 0;
+	size_t i;
+
 	(void)pReserved;
-	/* a buffer from C_EX_GetCertificateInfoText was not released */
-	return allocated_buffers ? CKR_GENERAL_ERROR : CKR_OK;
+	for (i = 0; i < DYNAMIC_OBJECTS; i++) {
+		if (dynamic_objects[i].handle) {
+			left = 1;
+			release_dynamic(&dynamic_objects[i]);
+		}
+	}
+	logged_in = 0;
+	cms_verify_reset();
+	/* a buffer returned by an extension function was not released or a
+	 * created object was not destroyed */
+	return allocated_buffers || left ? CKR_GENERAL_ERROR : CKR_OK;
 }
 
 CK_RV CK_SPEC
@@ -551,18 +1243,6 @@ STUB_FUNCTION(C_EX_SetTokenName, 4,
 STUB_FUNCTION(C_EX_SetLicense, 5,
 		(CK_SESSION_HANDLE hSession, CK_ULONG ulLicenseNum,
 		 CK_BYTE_PTR pLicense, CK_ULONG ulLicenseLen))
-STUB_FUNCTION(C_EX_PKCS7Sign, 8,
-		(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataLen,
-		 CK_OBJECT_HANDLE hCert, CK_BYTE_PTR *ppEnvelope,
-		 CK_ULONG_PTR pEnvelopeLen, CK_OBJECT_HANDLE hPrivKey,
-		 CK_OBJECT_HANDLE_PTR phCertificates, CK_ULONG ulCertificatesLen,
-		 CK_ULONG flags))
-STUB_FUNCTION(C_EX_CreateCSR, 9,
-		(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hPublicKey,
-		 CK_CHAR_PTR *dn, CK_ULONG dnLength, CK_BYTE_PTR *pCsr,
-		 CK_ULONG_PTR pulCsrLength, CK_OBJECT_HANDLE hPrivKey,
-		 CK_CHAR_PTR *pAttributes, CK_ULONG ulAttributesLength,
-		 CK_CHAR_PTR *pExtensions, CK_ULONG ulExtensionsLength))
 STUB_FUNCTION(C_EX_SetLocalPIN, 12,
 		(CK_SLOT_ID slotID, CK_UTF8CHAR_PTR pUserPin, CK_ULONG ulUserPinLen,
 		 CK_UTF8CHAR_PTR pNewLocalPin, CK_ULONG ulNewLocalPinLen,
@@ -603,21 +1283,6 @@ STUB_FUNCTION(C_EX_UnwrapKey, 26,
 		 CK_BYTE_PTR pWrappedKey, CK_ULONG ulWrappedKeyLen,
 		 CK_ATTRIBUTE_PTR pKeyTemplate, CK_ULONG ulKeyAttributeCount,
 		 CK_OBJECT_HANDLE_PTR phKey))
-STUB_FUNCTION(C_EX_PKCS7VerifyInit, 27,
-		(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pCms, CK_ULONG ulCmsSize,
-		 CK_VENDOR_X509_STORE_PTR pStore, CK_VENDOR_CRL_MODE ckMode,
-		 CK_FLAGS flags))
-STUB_FUNCTION(C_EX_PKCS7Verify, 28,
-		(CK_SESSION_HANDLE hSession, CK_BYTE_PTR_PTR ppData,
-		 CK_ULONG_PTR pulDataSize,
-		 CK_VENDOR_BUFFER_PTR_PTR ppSignerCertificates,
-		 CK_ULONG_PTR pulSignerCertificatesCount))
-STUB_FUNCTION(C_EX_PKCS7VerifyUpdate, 29,
-		(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataSize))
-STUB_FUNCTION(C_EX_PKCS7VerifyFinal, 30,
-		(CK_SESSION_HANDLE hSession,
-		 CK_VENDOR_BUFFER_PTR_PTR ppSignerCertificates,
-		 CK_ULONG_PTR pulSignerCertificatesCount))
 STUB_FUNCTION(C_EX_Authenticate, 31,
 		(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hAuthObject,
 		 CK_BYTE_PTR pData, CK_ULONG ulDataSize))
@@ -637,10 +1302,19 @@ static CK_FUNCTION_LIST standard_functions = {
 	.C_GetSlotInfo = C_GetSlotInfo,
 	.C_OpenSession = C_OpenSession,
 	.C_CloseSession = C_CloseSession,
+	.C_Login = C_Login,
+	.C_Logout = C_Logout,
+	.C_CreateObject = C_CreateObject,
+	.C_DestroyObject = C_DestroyObject,
 	.C_GetAttributeValue = C_GetAttributeValue,
 	.C_FindObjectsInit = C_FindObjectsInit,
 	.C_FindObjects = C_FindObjects,
-	.C_FindObjectsFinal = C_FindObjectsFinal
+	.C_FindObjectsFinal = C_FindObjectsFinal,
+	.C_SignInit = C_SignInit,
+	.C_Sign = C_Sign,
+	.C_VerifyInit = C_VerifyInit,
+	.C_Verify = C_Verify,
+	.C_GenerateKeyPair = C_GenerateKeyPair
 };
 
 static CK_FUNCTION_LIST_EXTENDED extended_functions = {

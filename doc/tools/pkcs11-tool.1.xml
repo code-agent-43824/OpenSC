@@ -383,9 +383,10 @@
 						<option>--rutoken-journal</option>
 					</term>
 					<listitem><para>Show the journal of the last GOST signature
-					returned by <option>C_EX_GetJournal</option>: operation data, key
-					ID, signature counter, hash, signature and device ID. The raw
-					data is written to the file given with
+					returned by <option>C_EX_GetJournal</option>: the operation, type,
+					flags and ID of the key file (RSF), operation and PINPad flags,
+					signature count, hash, signature and device ID. The raw data is
+					written to the file given with
 					<option>--output-file</option>.</para></listitem>
 				</varlistentry>
 

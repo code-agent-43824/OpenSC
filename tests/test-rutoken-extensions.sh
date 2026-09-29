@@ -46,9 +46,46 @@ $CC -I"$SOURCE_PATH/src" "$SOURCE_PATH/tests/rutoken-hw-probe.c" \
 if ! "$probe" --pause-ms 0 "$stub" > "$test_dir/probe.log" ||
 		! grep -q '^PROBE COMPLETE' "$test_dir/probe.log" ||
 		! grep -q '34 of 34 function pointers are set' "$test_dir/probe.log" ||
-		! grep -q '^  name: "Test Rutoken"$' "$test_dir/probe.log"; then
+		! grep -q '^  name: "Test Rutoken"$' "$test_dir/probe.log" ||
+		! grep -q '^  ulPinID 5: CKR_OK' "$test_dir/probe.log"; then
 	cat "$test_dir/probe.log"
 	exit 1
+fi
+
+# The write tests create, use and delete a key pair and a certificate; the
+# stub's C_Finalize fails if one of them or a returned buffer is left behind.
+# The probe creates the --save-dir directory.
+probe_out="$test_dir/probe-out"
+probe_write="$test_dir/probe-write.log"
+if ! RUTOKEN_PROBE_PIN=1234 "$probe" --pause-ms 0 --login \
+		--pin-env RUTOKEN_PROBE_PIN --write-tests --assume-yes \
+		--save-dir "$probe_out" "$stub" > "$probe_write" ||
+		! grep -q '^PROBE COMPLETE' "$probe_write" ||
+		! grep -q '^  C_GenerateKeyPair -> CKR_OK' "$probe_write" ||
+		! grep -q '^  C_CreateObject(certificate) -> CKR_OK' "$probe_write" ||
+		! grep -q '^  data 40 bytes, equal to the signed data; 1 signer' \
+			"$probe_write" ||
+		! grep -q '^  C_EX_PKCS7VerifyFinal -> CKR_SIGNATURE_INVALID' \
+			"$probe_write" ||
+		! grep -q '^  3 objects with the label' "$probe_write" ||
+		! grep -q '^  C_Finalize -> CKR_OK' "$probe_write"; then
+	cat "$probe_write"
+	exit 1
+fi
+for file in certificate-temporary.der pkcs7-attached.der pkcs7-detached.der \
+		csr.der csr-explicit-key.der csr-key-usage.der journal-pkcs7.bin; do
+	if ! test -s "$probe_out/$file"; then
+		echo "the probe did not save $file"
+		exit 1
+	fi
+done
+"$probe" --selftest-certificate "$test_dir/selftest.der" > /dev/null
+if command -v openssl > /dev/null 2>&1; then
+	for certificate in "$probe_out/certificate-temporary.der" \
+			"$test_dir/selftest.der"; do
+		openssl x509 -inform DER -in "$certificate" -noout -subject |
+			grep -q 'CN *= *OpenSC probe temporary'
+	done
 fi
 
 run_tool() {
@@ -81,7 +118,11 @@ text="$test_dir/commands.txt"
 run_tool --rutoken-license 2 --rutoken-journal --rutoken-volumes \
 	--rutoken-cert-text --rutoken-pin-status > "$text"
 expect "$text" 'Rutoken license 2: 72 bytes, not empty'
-expect "$text" 'signature counter  : 298'
+expect "$text" 'RSF type           : 0x03 (AGOST_PR)'
+expect "$text" 'RSF flags          : 0x01 (KEY_EXCHANGE_ALLOWED)'
+expect "$text" 'operation flags    : 0x01 (DEVICE_HASH)'
+expect "$text" 'RSF ID             : 0x0005'
+expect "$text" 'signature count    : 298'
 expect "$text" 'device ID          : 3333333333333333'
 expect "$text" 'Rutoken flash drive: 1024 MB'
 expect "$text" 'volume 3: 256 MB, HIDDEN, owner local PIN 3, flags 0x0'
@@ -129,7 +170,11 @@ assert result["info"]["firmware_checksum"] == 0xA5674611
 assert result["name"]["label"] == "Test Rutoken"
 assert result["license"] == {"number": 1, "length": 72, "empty": True}
 record = result["journal"]["records"][0]
-assert record["key_id"] == 5 and record["signature_counter"] == 298
+assert record["operation_name"] == "SIGNATURE"
+assert record["rsf_type"] == 3 and record["rsf_type_name"] == "AGOST_PR"
+assert record["rsf_flag_names"] == ["KEY_EXCHANGE_ALLOWED"]
+assert record["operation_flag_names"] == ["DEVICE_HASH"]
+assert record["rsf_id"] == 5 and record["signature_count"] == 298
 assert result["journal"]["format_valid"] is True
 assert [v["owner_name"] for v in result["volumes"]["list"]] == [
     "USER", "SO", "LOCAL_PIN"]
@@ -145,7 +190,7 @@ assert [p["id"] for p in status["local_pins"]] == [3, 5]
 assert len(status["local_pins_not_reported"]) == 27
 PYTHON
 else
-	expect "$json" '"signature_counter":298'
+	expect "$json" '"signature_count":298'
 fi
 
 # Every buffer from C_EX_GetCertificateInfoText was released, so the stub's
@@ -158,4 +203,4 @@ grep -q '^\[out\] pInfo\[2\]: idVolume = 3' "$log"
 grep -q '^\[in\] pValue->ulPinID = 0x1f' "$log"
 
 echo "PASS: all Rutoken wrappers and the --rutoken-* commands through pkcs11-spy"
-echo "PASS: Rutoken hardware probe runs against the stub module"
+echo "PASS: Rutoken hardware probe runs against the stub module, write tests included"
