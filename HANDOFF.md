@@ -5,6 +5,8 @@
 `pkcs11-spy`, тесты на заглушке. Прогон на устройстве разобран в
 `docs/RUTOKEN-APDU.md`, ответы — в `docs/RUTOKEN-FUNCTIONS.md`.
 
-Ветка слита в `master`. Ждем прогона probe 2 (Linux ARM64) владельцем: вывод
-программы, очищенный от PIN `pcscd.log`, файлы `--save-dir` и, по желанию,
-результат `--write-tests`.
+Ветка слита в `master`. Probe 2 с `--write-tests` прогнана на устройстве,
+результаты — в `docs/RUTOKEN-APDU.md` (раздел «Запись, подпись и PKCS#7») и
+`docs/RUTOKEN-FUNCTIONS.md`. Следующий шаг — этап 4: команды PKCS#7 и CSR в
+`pkcs11-tool`; от владельца нужен вывод `lsblk` для размеров разделов
+Flash.
