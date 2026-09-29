@@ -8,5 +8,5 @@
 Ветка слита в `master`. Probe 2 с `--write-tests` прогнана на устройстве,
 результаты — в `docs/RUTOKEN-APDU.md` (раздел «Запись, подпись и PKCS#7») и
 `docs/RUTOKEN-FUNCTIONS.md`. Следующий шаг — этап 4: команды PKCS#7 и CSR в
-`pkcs11-tool`; от владельца нужен вывод `lsblk` для размеров разделов
-Flash.
+`pkcs11-tool`. Работа с разделами Flash отложена владельцем (раздел
+«Отложено» в `docs/PLAN.md`).
