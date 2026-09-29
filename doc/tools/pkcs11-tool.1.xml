@@ -433,6 +433,83 @@
 
 				<varlistentry>
 					<term>
+						<option>--rutoken-pkcs7-sign</option>
+					</term>
+					<listitem><para>Sign the file given with
+					<option>--input-file</option> with
+					<option>C_EX_PKCS7Sign</option> and write the PKCS#7
+					(CMS) envelope to the file given with
+					<option>--output-file</option>. The certificate is selected with
+					<option>--id</option> or <option>--label</option>; the library
+					finds the private key by the certificate's CKA_ID. Requires
+					<option>--login</option>. Modifiers:
+					<option>--rutoken-detached</option> creates a detached signature,
+					<option>--rutoken-hw-hash</option> hashes on the token and
+					<option>--rutoken-chain-id</option> <replaceable>ID</replaceable>
+					adds the certificate with this CKA_ID to the envelope; it may be
+					repeated.</para></listitem>
+				</varlistentry>
+
+				<varlistentry>
+					<term>
+						<option>--rutoken-pkcs7-verify</option>
+					</term>
+					<listitem><para>Verify the envelope given with
+					<option>--input-file</option> with
+					<option>C_EX_PKCS7VerifyInit</option> and
+					<option>C_EX_PKCS7Verify</option>; the signed data of an attached
+					signature is written to the file given with
+					<option>--output-file</option>. For a detached signature the data
+					file is given with <option>--rutoken-data-file</option> and passed
+					in 64 KiB blocks to <option>C_EX_PKCS7VerifyUpdate</option>.
+					<option>--rutoken-trusted</option>,
+					<option>--rutoken-cert</option> and
+					<option>--rutoken-crl</option> add DER trusted certificates,
+					other certificates and CRLs to the store and may be repeated;
+					<option>--rutoken-crl-mode</option> is <literal>optional</literal>
+					(default), <literal>leaf</literal> or <literal>all</literal>;
+					<option>--rutoken-verify-flag</option> is one of
+					<literal>do-not-use-internal-cms-certs</literal>,
+					<literal>allow-partial-chains</literal>,
+					<literal>check-signature-only</literal> and
+					<literal>use-trusted-certs-from-token</literal> and may be
+					repeated; <option>--rutoken-signers-dir</option> writes the signer
+					certificates as <filename>signer-N.der</filename>. The exit status
+					is 0 only for a valid signature with a verified chain.
+					</para></listitem>
+				</varlistentry>
+
+				<varlistentry>
+					<term>
+						<option>--rutoken-csr</option>
+					</term>
+					<listitem><para>Create a PKCS#10 request with
+					<option>C_EX_CreateCSR</option> for the public key selected with
+					<option>--id</option> or <option>--label</option> and write it to
+					the file given with <option>--output-file</option>. Subject name
+					components are given with <option>--rutoken-dn</option>
+					<replaceable>type</replaceable>=<replaceable>value</replaceable>,
+					request attributes with <option>--rutoken-csr-attr</option> and
+					extensions with <option>--rutoken-csr-ext</option> in the same
+					form; each may be repeated. Types are names such as CN or OIDs,
+					values follow the Rutoken SDK (for example
+					<literal>keyUsage=digitalSignature</literal>). Requires
+					<option>--login</option>.</para></listitem>
+				</varlistentry>
+
+				<varlistentry>
+					<term>
+						<option>--rutoken-confirm-by-touch</option>
+					</term>
+					<listitem><para>With <option>--keypairgen</option>, set
+					CKA_VENDOR_CONFIRM_BY_TOUCH on the private key: a Rutoken with a
+					button signs with it only after the button is pressed. The key is
+					not generated if the token does not report
+					TOKEN_FLAGS_HAS_BUTTON.</para></listitem>
+				</varlistentry>
+
+				<varlistentry>
+					<term>
 						<option>--puk</option> <replaceable>puk</replaceable>
 					</term>
 					<listitem><para>Supply User PUK on the command line.</para></listitem>

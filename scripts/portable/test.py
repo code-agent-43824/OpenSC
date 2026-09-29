@@ -235,9 +235,40 @@ def verify_rutoken_cli(
         print(document, end="")
         raise RuntimeError("pkcs11-tool Rutoken JSON has unexpected values")
 
+    data_path = work_dir / "rutoken-data.txt"
+    envelope_path = work_dir / "rutoken-attached.p7"
+    data_out_path = work_dir / "rutoken-data.out"
+    request_path = work_dir / "rutoken-request.der"
+    data_path.write_bytes(b"OpenSC Rutoken test data\n")
+    login = ["--login", "--pin", "12345678"]
+    stage4 = (
+        (["--rutoken-pkcs7-sign", "--id", "0102", "--input-file",
+          str(data_path), "--output-file", str(envelope_path)], 0,
+         "envelope           : 41 bytes written to"),
+        (["--rutoken-pkcs7-verify", "--input-file", str(envelope_path),
+          "--output-file", str(data_out_path), "--rutoken-trusted",
+          str(data_path)], 0, "result             : valid (CKR_OK)"),
+        (["--rutoken-pkcs7-verify", "--input-file", str(envelope_path)], 1,
+         "certificate chain not verified (CKR_CERT_CHAIN_NOT_VERIFIED)"),
+        (["--rutoken-csr", "--id", "0102", "--rutoken-dn", "CN=Test",
+          "--output-file", str(request_path)], 0,
+         "request            : 17 bytes written to"),
+    )
+    for arguments, code, expected in stage4:
+        output = tool_output(login + arguments, expected_code=code)
+        if expected not in output:
+            print(output, end="")
+            raise RuntimeError(f"pkcs11-tool Rutoken output lacks: {expected}")
+    if data_out_path.read_bytes() != data_path.read_bytes():
+        raise RuntimeError("pkcs11-tool wrote wrong Rutoken signed data")
+    if request_path.read_bytes() != b"stub CSR: CN=Test":
+        raise RuntimeError("pkcs11-tool wrote a wrong Rutoken request")
+
     log = log_path.read_text(encoding="utf-8", errors="replace")
     if "CKR_GENERAL_ERROR" in log:
         raise RuntimeError("a Rutoken buffer was not released through pkcs11-spy")
+    if '[in] dn[1] = "Test"' not in log:
+        raise RuntimeError("the pkcs11-spy log lacks the Rutoken request subject")
     if "01 02 03 04 05 06 07 08" in log:
         raise RuntimeError("the pkcs11-spy log contains the Rutoken license")
     print("PASS: pkcs11-tool Rutoken commands through pkcs11-spy")

@@ -194,7 +194,52 @@ else
 	expect "$json" '"signature_count":298'
 fi
 
-# Every buffer from C_EX_GetCertificateInfoText was released, so the stub's
+# Stage 4: PKCS #7 and CSR through pkcs11-spy. The stub's envelope is not
+# CMS; a trusted certificate or check-signature-only makes it valid.
+data="$test_dir/data.txt"
+printf 'OpenSC Rutoken test data\n' > "$data"
+run_tool --login --pin 12345678 --rutoken-pkcs7-sign --id 0102 \
+	--input-file "$data" --output-file "$test_dir/attached.p7" > "$text"
+expect "$text" 'certificate        : handle 0x65, ID 0102'
+expect "$text" 'envelope           : 41 bytes written to'
+run_tool --login --pin 12345678 --rutoken-pkcs7-sign --id 0102 \
+	--rutoken-detached --rutoken-hw-hash --rutoken-chain-id 0304 \
+	--input-file "$data" --output-file "$test_dir/detached.p7" \
+	--rutoken-json > "$text"
+expect "$text" '"flag_names":["DETACHED_SIGNATURE","HARDWARE_HASH"],"chain_certificates":1,"length":16'
+if run_tool --login --pin 12345678 --rutoken-pkcs7-verify \
+		--input-file "$test_dir/attached.p7" > "$text"; then
+	echo "an unverified chain must fail"
+	exit 1
+fi
+expect "$text" 'result             : signature valid, certificate chain not verified (CKR_CERT_CHAIN_NOT_VERIFIED)'
+run_tool --login --pin 12345678 --rutoken-pkcs7-verify \
+	--input-file "$test_dir/attached.p7" --output-file "$test_dir/data.out" \
+	--rutoken-trusted "$data" --rutoken-signers-dir "$test_dir" > "$text"
+expect "$text" 'result             : valid (CKR_OK)'
+cmp "$data" "$test_dir/data.out"
+test -s "$test_dir/signer-1.der"
+run_tool --login --pin 12345678 --rutoken-pkcs7-verify \
+	--input-file "$test_dir/detached.p7" --rutoken-data-file "$data" \
+	--rutoken-verify-flag check-signature-only --rutoken-json > "$text"
+expect "$text" '"flag_names":["check-signature-only"],"result":"CKR_OK","code":0,"valid":true'
+printf 'OpenSC Rutoken test datX\n' > "$test_dir/modified.txt"
+if run_tool --login --pin 12345678 --rutoken-pkcs7-verify \
+		--input-file "$test_dir/detached.p7" \
+		--rutoken-data-file "$test_dir/modified.txt" \
+		--rutoken-trusted "$data" > "$text"; then
+	echo "modified data must not verify"
+	exit 1
+fi
+expect "$text" 'result             : invalid (CKR_SIGNATURE_INVALID)'
+run_tool --login --pin 12345678 --rutoken-csr --id 0102 --rutoken-dn CN=Test \
+	--rutoken-dn C=RU --rutoken-csr-ext keyUsage=digitalSignature \
+	--output-file "$test_dir/request.der" > "$text"
+expect "$text" 'request            : 22 bytes written to'
+test "$(cat "$test_dir/request.der")" = "stub CSR: CN=Test C=RU"
+grep -q '^\[in\] dn\[3\] = "RU"' "$log"
+
+# Every buffer returned by the library was released, so the stub's
 # C_Finalize never failed.
 if grep -q 'CKR_GENERAL_ERROR' "$log"; then
 	echo "a Rutoken buffer was not released"
@@ -202,6 +247,24 @@ if grep -q 'CKR_GENERAL_ERROR' "$log"; then
 fi
 grep -q '^\[out\] pInfo\[2\]: idVolume = 3' "$log"
 grep -q '^\[in\] pValue->ulPinID = 0x1f' "$log"
+
+# --rutoken-confirm-by-touch sets CKA_VENDOR_CONFIRM_BY_TOUCH only on a token
+# with a button. The generated keys stay in the stub, so this run has its
+# own log.
+touch_log="$test_dir/touch.log"
+keygen() {
+	PKCS11SPY="$stub" PKCS11SPY_OUTPUT="$touch_log" \
+		"$tool" --module "$spy" --slot 7 --login --pin 12345678 --keypairgen \
+		--key-type GOSTR3410-2012-256:A --mechanism GOSTR3410-KEY-PAIR-GEN \
+		--id 0a0b --label touch --rutoken-confirm-by-touch
+}
+if keygen > "$text" 2>&1; then
+	echo "a token without a button must be refused"
+	exit 1
+fi
+expect "$text" 'the token has no button'
+RUTOKEN_STUB_HAS_BUTTON=1 keygen > "$text" 2>&1
+grep -q '0x80002003' "$touch_log"
 
 echo "PASS: all Rutoken wrappers and the --rutoken-* commands through pkcs11-spy"
 echo "PASS: Rutoken hardware probe runs against the stub module, write tests included"

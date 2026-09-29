@@ -258,6 +258,23 @@ enum {
 	OPT_RUTOKEN_CERT_TEXT,
 	OPT_RUTOKEN_PIN_STATUS,
 	OPT_RUTOKEN_JSON,
+	OPT_RUTOKEN_PKCS7_SIGN,
+	OPT_RUTOKEN_DETACHED,
+	OPT_RUTOKEN_HW_HASH,
+	OPT_RUTOKEN_CHAIN_ID,
+	OPT_RUTOKEN_PKCS7_VERIFY,
+	OPT_RUTOKEN_DATA_FILE,
+	OPT_RUTOKEN_TRUSTED,
+	OPT_RUTOKEN_CERT,
+	OPT_RUTOKEN_CRL,
+	OPT_RUTOKEN_CRL_MODE,
+	OPT_RUTOKEN_VERIFY_FLAG,
+	OPT_RUTOKEN_SIGNERS_DIR,
+	OPT_RUTOKEN_CSR,
+	OPT_RUTOKEN_DN,
+	OPT_RUTOKEN_CSR_ATTR,
+	OPT_RUTOKEN_CSR_EXT,
+	OPT_RUTOKEN_CONFIRM_BY_TOUCH,
 	OPT_URI,
 	OPT_URI_WITH_SLOT_ID
 };
@@ -362,6 +379,23 @@ static const struct option options[] = {
 	{ "rutoken-cert-text",	0, NULL,		OPT_RUTOKEN_CERT_TEXT},
 	{ "rutoken-pin-status",	0, NULL,		OPT_RUTOKEN_PIN_STATUS},
 	{ "rutoken-json",	0, NULL,		OPT_RUTOKEN_JSON},
+	{ "rutoken-pkcs7-sign",	0, NULL,		OPT_RUTOKEN_PKCS7_SIGN},
+	{ "rutoken-detached",	0, NULL,		OPT_RUTOKEN_DETACHED},
+	{ "rutoken-hw-hash",	0, NULL,		OPT_RUTOKEN_HW_HASH},
+	{ "rutoken-chain-id",	1, NULL,		OPT_RUTOKEN_CHAIN_ID},
+	{ "rutoken-pkcs7-verify", 0, NULL,		OPT_RUTOKEN_PKCS7_VERIFY},
+	{ "rutoken-data-file",	1, NULL,		OPT_RUTOKEN_DATA_FILE},
+	{ "rutoken-trusted",	1, NULL,		OPT_RUTOKEN_TRUSTED},
+	{ "rutoken-cert",	1, NULL,		OPT_RUTOKEN_CERT},
+	{ "rutoken-crl",	1, NULL,		OPT_RUTOKEN_CRL},
+	{ "rutoken-crl-mode",	1, NULL,		OPT_RUTOKEN_CRL_MODE},
+	{ "rutoken-verify-flag", 1, NULL,		OPT_RUTOKEN_VERIFY_FLAG},
+	{ "rutoken-signers-dir", 1, NULL,		OPT_RUTOKEN_SIGNERS_DIR},
+	{ "rutoken-csr",	0, NULL,		OPT_RUTOKEN_CSR},
+	{ "rutoken-dn",		1, NULL,		OPT_RUTOKEN_DN},
+	{ "rutoken-csr-attr",	1, NULL,		OPT_RUTOKEN_CSR_ATTR},
+	{ "rutoken-csr-ext",	1, NULL,		OPT_RUTOKEN_CSR_EXT},
+	{ "rutoken-confirm-by-touch", 0, NULL,		OPT_RUTOKEN_CONFIRM_BY_TOUCH},
 	{ "uri",		1, NULL,		OPT_URI},
 	{ "uri-with-slot-id",	0, NULL,		OPT_URI_WITH_SLOT_ID},
 	{ NULL, 0, NULL, 0 },
@@ -467,6 +501,23 @@ static const char *option_help[] = {
 		"Show Rutoken certificate descriptions (select with --id or --label)",
 		"Show Rutoken PIN change requirements and local PINs",
 		"Print the --rutoken-* results as one JSON object",
+		"Sign --input-file into a Rutoken PKCS#7 envelope written to --output-file with the certificate selected by --id or --label",
+		"Create a detached signature with --rutoken-pkcs7-sign",
+		"Hash on the token with --rutoken-pkcs7-sign",
+		"Add the certificate with CKA_ID <arg> to the --rutoken-pkcs7-sign chain",
+		"Verify the Rutoken PKCS#7 envelope in --input-file; attached data goes to --output-file",
+		"Data file of a detached signature for --rutoken-pkcs7-verify",
+		"Trusted DER certificate file for --rutoken-pkcs7-verify",
+		"Additional DER certificate file for --rutoken-pkcs7-verify",
+		"DER CRL file for --rutoken-pkcs7-verify",
+		"CRL check of --rutoken-pkcs7-verify: optional, leaf or all",
+		"Verification flag: do-not-use-internal-cms-certs, allow-partial-chains, check-signature-only or use-trusted-certs-from-token",
+		"Write the signer certificates of --rutoken-pkcs7-verify to this directory",
+		"Create a PKCS#10 request with the Rutoken key pair selected by --id or --label, written to --output-file",
+		"Subject name component <type>=<value> for --rutoken-csr",
+		"Request attribute <type>=<value> for --rutoken-csr",
+		"Request extension <type>=<value> for --rutoken-csr",
+		"With --keypairgen: sign with the private key only after the token button is pressed (Rutoken with a button)",
 		"Specify the PKCS#11 URI for module, slot, token or object",
 		"Include SlotId in PKCS#11 URI",
 		"",
@@ -478,6 +529,7 @@ static int		verbose = 0;
 static const char *	opt_input = NULL;
 static const char *	opt_output = NULL;
 static int		opt_rutoken_json = 0;
+static int		opt_rutoken_touch = 0;
 static const char *	opt_signature_file = NULL;
 static const char *opt_module = NULL;
 static int		opt_slot_set = 0;
@@ -643,6 +695,11 @@ static void		show_token(CK_SLOT_ID);
 static void		list_mechs(CK_SLOT_ID);
 static void		list_objects(CK_SESSION_HANDLE);
 static void		list_interfaces(void);
+/* Repeated option arguments; the strings stay in argv. */
+struct rutoken_list {
+	const char **items;
+	size_t count;
+};
 struct rutoken_request {
 	int info;
 	int name;
@@ -651,7 +708,29 @@ struct rutoken_request {
 	int volumes;
 	int cert_text;
 	int pin_status;
+	int pkcs7_sign;
+	CK_ULONG sign_flags;
+	struct rutoken_list chain_ids;
+	int pkcs7_verify;
+	const char *data_file;
+	struct rutoken_list trusted;
+	struct rutoken_list certs;
+	struct rutoken_list crls;
+	CK_VENDOR_CRL_MODE crl_mode;
+	CK_FLAGS verify_flags;
+	const char *signers_dir;
+	int csr;
+	struct rutoken_list dn;
+	struct rutoken_list csr_attrs;
+	struct rutoken_list csr_exts;
 };
+/* Option groups that belong to one --rutoken-* command */
+#define RUTOKEN_SIGN_MODIFIER	0x01
+#define RUTOKEN_VERIFY_MODIFIER	0x02
+#define RUTOKEN_CSR_MODIFIER	0x04
+static void rutoken_list_add(struct rutoken_list *list, const char *item);
+static CK_FLAGS rutoken_verify_flag(const char *name);
+static void rutoken_check_touch(CK_SLOT_ID slot);
 static void load_rutoken_extension(void);
 static int run_rutoken_actions(CK_SLOT_ID slot, CK_SESSION_HANDLE session,
 		const struct rutoken_request *request);
@@ -853,6 +932,7 @@ int main(int argc, char * argv[])
 	int do_list_interfaces = 0;
 	struct rutoken_request rutoken = { 0 };
 	int rutoken_action_count = 0;
+	int rutoken_modifiers = 0;
 	int do_sign = 0;
 	int do_verify = 0;
 	int do_decrypt = 0;
@@ -1377,6 +1457,85 @@ int main(int argc, char * argv[])
 		case OPT_RUTOKEN_JSON:
 			opt_rutoken_json = 1;
 			break;
+		case OPT_RUTOKEN_PKCS7_SIGN:
+			rutoken.pkcs7_sign = 1;
+			need_session |= NEED_SESSION_RO;
+			rutoken_action_count++;
+			action_count++;
+			break;
+		case OPT_RUTOKEN_DETACHED:
+			rutoken.sign_flags |= PKCS7_DETACHED_SIGNATURE;
+			rutoken_modifiers |= RUTOKEN_SIGN_MODIFIER;
+			break;
+		case OPT_RUTOKEN_HW_HASH:
+			rutoken.sign_flags |= USE_HARDWARE_HASH;
+			rutoken_modifiers |= RUTOKEN_SIGN_MODIFIER;
+			break;
+		case OPT_RUTOKEN_CHAIN_ID:
+			rutoken_list_add(&rutoken.chain_ids, optarg);
+			rutoken_modifiers |= RUTOKEN_SIGN_MODIFIER;
+			break;
+		case OPT_RUTOKEN_PKCS7_VERIFY:
+			rutoken.pkcs7_verify = 1;
+			need_session |= NEED_SESSION_RO;
+			rutoken_action_count++;
+			action_count++;
+			break;
+		case OPT_RUTOKEN_DATA_FILE:
+			rutoken.data_file = optarg;
+			rutoken_modifiers |= RUTOKEN_VERIFY_MODIFIER;
+			break;
+		case OPT_RUTOKEN_TRUSTED:
+			rutoken_list_add(&rutoken.trusted, optarg);
+			rutoken_modifiers |= RUTOKEN_VERIFY_MODIFIER;
+			break;
+		case OPT_RUTOKEN_CERT:
+			rutoken_list_add(&rutoken.certs, optarg);
+			rutoken_modifiers |= RUTOKEN_VERIFY_MODIFIER;
+			break;
+		case OPT_RUTOKEN_CRL:
+			rutoken_list_add(&rutoken.crls, optarg);
+			rutoken_modifiers |= RUTOKEN_VERIFY_MODIFIER;
+			break;
+		case OPT_RUTOKEN_CRL_MODE:
+			if (!strcmp(optarg, "optional"))
+				rutoken.crl_mode = OPTIONAL_CRL_CHECK;
+			else if (!strcmp(optarg, "leaf"))
+				rutoken.crl_mode = LEAF_CRL_CHECK;
+			else if (!strcmp(optarg, "all"))
+				rutoken.crl_mode = ALL_CRL_CHECK;
+			else
+				util_fatal("Invalid CRL mode \"%s\": use optional, leaf or all",
+						optarg);
+			rutoken_modifiers |= RUTOKEN_VERIFY_MODIFIER;
+			break;
+		case OPT_RUTOKEN_VERIFY_FLAG:
+			rutoken.verify_flags |= rutoken_verify_flag(optarg);
+			rutoken_modifiers |= RUTOKEN_VERIFY_MODIFIER;
+			break;
+		case OPT_RUTOKEN_SIGNERS_DIR:
+			rutoken.signers_dir = optarg;
+			rutoken_modifiers |= RUTOKEN_VERIFY_MODIFIER;
+			break;
+		case OPT_RUTOKEN_CSR:
+			rutoken.csr = 1;
+			need_session |= NEED_SESSION_RO;
+			rutoken_action_count++;
+			action_count++;
+			break;
+		case OPT_RUTOKEN_DN:
+		case OPT_RUTOKEN_CSR_ATTR:
+		case OPT_RUTOKEN_CSR_EXT:
+			if (!strchr(optarg, '=') || optarg[0] == '=')
+				util_fatal("Expected <type>=<value>, got \"%s\"", optarg);
+			rutoken_list_add(c == OPT_RUTOKEN_DN ? &rutoken.dn :
+					c == OPT_RUTOKEN_CSR_ATTR ? &rutoken.csr_attrs :
+					&rutoken.csr_exts, optarg);
+			rutoken_modifiers |= RUTOKEN_CSR_MODIFIER;
+			break;
+		case OPT_RUTOKEN_CONFIRM_BY_TOUCH:
+			opt_rutoken_touch = 1;
+			break;
 		case OPT_URI_WITH_SLOT_ID:
 			opt_uri_with_slot_id = 1;
 			break;
@@ -1398,6 +1557,36 @@ int main(int argc, char * argv[])
 	if (opt_output && rutoken.license && rutoken.journal)
 		util_fatal("--output-file can be used with only one of "
 				"--rutoken-license and --rutoken-journal");
+	if ((rutoken_modifiers & RUTOKEN_SIGN_MODIFIER) && !rutoken.pkcs7_sign)
+		util_fatal("--rutoken-detached, --rutoken-hw-hash and "
+				"--rutoken-chain-id require --rutoken-pkcs7-sign");
+	if ((rutoken_modifiers & RUTOKEN_VERIFY_MODIFIER) && !rutoken.pkcs7_verify)
+		util_fatal("--rutoken-data-file, --rutoken-trusted, --rutoken-cert, "
+				"--rutoken-crl, --rutoken-crl-mode, --rutoken-verify-flag and "
+				"--rutoken-signers-dir require --rutoken-pkcs7-verify");
+	if ((rutoken_modifiers & RUTOKEN_CSR_MODIFIER) && !rutoken.csr)
+		util_fatal("--rutoken-dn, --rutoken-csr-attr and --rutoken-csr-ext "
+				"require --rutoken-csr");
+	if (rutoken.pkcs7_sign + rutoken.pkcs7_verify + rutoken.csr > 1)
+		util_fatal("Use one of --rutoken-pkcs7-sign, --rutoken-pkcs7-verify "
+				"and --rutoken-csr at a time");
+	if ((rutoken.pkcs7_sign || rutoken.pkcs7_verify || rutoken.csr) &&
+			opt_output && (rutoken.license || rutoken.journal))
+		util_fatal("--output-file cannot serve --rutoken-license or "
+				"--rutoken-journal together with a PKCS#7 or CSR command");
+	if ((rutoken.pkcs7_sign || rutoken.pkcs7_verify) && !opt_input)
+		util_fatal("--rutoken-pkcs7-sign and --rutoken-pkcs7-verify need "
+				"--input-file");
+	if ((rutoken.pkcs7_sign || rutoken.csr) && !opt_output)
+		util_fatal("--rutoken-pkcs7-sign and --rutoken-csr need --output-file");
+	if ((rutoken.pkcs7_sign || rutoken.csr) && !opt_object_id_len &&
+			!opt_object_label)
+		util_fatal("Select the %s with --id or --label",
+				rutoken.csr ? "key pair" : "certificate");
+	if (rutoken.csr && rutoken.dn.count == 0)
+		util_fatal("--rutoken-csr needs at least one --rutoken-dn");
+	if (opt_rutoken_touch && !do_gen_keypair)
+		util_fatal("--rutoken-confirm-by-touch requires --keypairgen");
 
 	if (opt_uri) {
 		/* Check that no interfering options were set */
@@ -1475,7 +1664,7 @@ int main(int argc, char * argv[])
 			util_fatal("Failed to load pkcs11 module");
 		p11 = (CK_FUNCTION_LIST_3_0_PTR) p11_v2;
 	}
-	if (rutoken_action_count)
+	if (rutoken_action_count || opt_rutoken_touch)
 		load_rutoken_extension();
 
 	/* This can be done even before initialization */
@@ -3168,6 +3357,553 @@ rutoken_show_pin_status(CK_SLOT_ID slot)
 	return failed;
 }
 
+/* PKCS #7 and CSR commands (stage 4) */
+
+#define RUTOKEN_MAX_FILE	(256UL * 1024 * 1024)
+#define RUTOKEN_VERIFY_BLOCK	65536
+
+static const struct rutoken_name rutoken_sign_flags[] = {
+	{ PKCS7_DETACHED_SIGNATURE, "DETACHED_SIGNATURE" },
+	{ USE_HARDWARE_HASH, "HARDWARE_HASH" },
+	{ 0, NULL }
+};
+
+static const struct rutoken_name rutoken_verify_flags[] = {
+	{ CKF_VENDOR_DO_NOT_USE_INTERNAL_CMS_CERTS, "do-not-use-internal-cms-certs" },
+	{ CKF_VENDOR_ALLOW_PARTIAL_CHAINS, "allow-partial-chains" },
+	{ CKF_VENDOR_CHECK_SIGNATURE_ONLY, "check-signature-only" },
+	{ CKF_VENDOR_USE_TRUSTED_CERTS_FROM_TOKEN, "use-trusted-certs-from-token" },
+	{ 0, NULL }
+};
+
+static const struct rutoken_name rutoken_crl_modes[] = {
+	{ OPTIONAL_CRL_CHECK, "optional" },
+	{ LEAF_CRL_CHECK, "leaf" },
+	{ ALL_CRL_CHECK, "all" },
+	{ 0, NULL }
+};
+
+static void
+rutoken_list_add(struct rutoken_list *list, const char *item)
+{
+	const char **grown;
+
+	grown = realloc(list->items, (list->count + 1) * sizeof(*grown));
+	if (!grown)
+		util_fatal("Out of memory");
+	grown[list->count++] = item;
+	list->items = grown;
+}
+
+static CK_FLAGS
+rutoken_verify_flag(const char *name)
+{
+	const struct rutoken_name *flag;
+
+	for (flag = rutoken_verify_flags; flag->name; flag++)
+		if (!strcmp(flag->name, name))
+			return flag->value;
+	util_fatal("Unknown verification flag \"%s\"", name);
+	return 0;
+}
+
+/* CKA_VENDOR_CONFIRM_BY_TOUCH only means something on a token with a
+ * button, so the key is not generated for another one. */
+static void
+rutoken_check_touch(CK_SLOT_ID slot)
+{
+	CK_TOKEN_INFO_EXTENDED info;
+	CK_RV rv;
+
+	memset(&info, 0, sizeof(info));
+	info.ulSizeofThisStructure = sizeof(info);
+	rv = RUTOKEN_CALL(C_EX_GetTokenInfoExtended, (slot, &info));
+	if (rv != CKR_OK)
+		p11_fatal("C_EX_GetTokenInfoExtended", rv);
+	if (!(info.flags & TOKEN_FLAGS_HAS_BUTTON))
+		util_fatal("--rutoken-confirm-by-touch: the token has no button "
+				"(TOKEN_FLAGS_HAS_BUTTON is not set)");
+}
+
+static CK_BYTE_PTR
+rutoken_read_file(const char *path, CK_ULONG *length)
+{
+	CK_BYTE buffer[RUTOKEN_VERIFY_BLOCK];
+	CK_BYTE_PTR data = NULL, grown;
+	size_t used = 0, size = 0, n;
+	FILE *file;
+
+	file = fopen(path, "rb");
+	if (!file)
+		util_fatal("failed to open %s: %s", path, strerror(errno));
+	while ((n = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+		if (used + n > RUTOKEN_MAX_FILE)
+			util_fatal("%s is larger than %lu bytes", path,
+					(unsigned long)RUTOKEN_MAX_FILE);
+		if (used + n > size) {
+			size = size ? size * 2 : sizeof(buffer);
+			while (size < used + n)
+				size *= 2;
+			grown = realloc(data, size);
+			if (!grown)
+				util_fatal("Out of memory");
+			data = grown;
+		}
+		memcpy(data + used, buffer, n);
+		used += n;
+	}
+	if (ferror(file))
+		util_fatal("failed to read %s: %s", path, strerror(errno));
+	fclose(file);
+	if (!data && !(data = malloc(1)))
+		util_fatal("Out of memory");
+	*length = (CK_ULONG)used;
+	return data;
+}
+
+static void
+rutoken_write_file(const char *path, const CK_BYTE *data, CK_ULONG length)
+{
+	int fd;
+
+	fd = open(path, O_CREAT | O_TRUNC | O_WRONLY | O_BINARY,
+			S_IRUSR | S_IWUSR);
+	if (fd < 0)
+		util_fatal("failed to open %s: %s", path, strerror(errno));
+	if (length && write(fd, data, length) != (ssize_t)length) {
+		close(fd);
+		util_fatal("failed to write to %s: %s", path, strerror(errno));
+	}
+	if (close(fd) != 0)
+		util_fatal("failed to write to %s: %s", path, strerror(errno));
+}
+
+/* The object of this class selected by --id and --label; exactly one must
+ * match. */
+static CK_OBJECT_HANDLE
+rutoken_find_one(CK_SESSION_HANDLE session, CK_OBJECT_CLASS object_class,
+		const char *what)
+{
+	CK_OBJECT_HANDLE object = CK_INVALID_HANDLE, other;
+
+	if (!find_object(session, object_class, &object,
+			opt_object_id_len ? opt_object_id : NULL, opt_object_id_len,
+			opt_object_label, 0))
+		util_fatal("No %s found with the given --id or --label", what);
+	if (find_object(session, object_class, &other,
+			opt_object_id_len ? opt_object_id : NULL, opt_object_id_len,
+			opt_object_label, 1))
+		util_fatal("Several %ss match the given --id and --label", what);
+	return object;
+}
+
+static void
+rutoken_show_object_ref(const char *key, CK_OBJECT_HANDLE object,
+		const char *what)
+{
+	if (opt_rutoken_json) {
+		json_begin(key, "{");
+		json_ulong("handle", object);
+		if (opt_object_id_len)
+			json_hex("id", opt_object_id, opt_object_id_len);
+		if (opt_object_label)
+			json_text("label", opt_object_label);
+		json_end("}");
+	} else {
+		printf("  %-19s: handle 0x%lx", what, (unsigned long)object);
+		if (opt_object_id_len) {
+			printf(", ID ");
+			rutoken_print_hex(opt_object_id, opt_object_id_len);
+		}
+		if (opt_object_label)
+			printf(", label \"%s\"", opt_object_label);
+		printf("\n");
+	}
+}
+
+static int
+rutoken_free(CK_BYTE_PTR buffer)
+{
+	CK_RV rv;
+
+	if (!buffer)
+		return 0;
+	rv = RUTOKEN_CALL(C_EX_FreeBuffer, (buffer));
+	return rv == CKR_OK ? 0 : rutoken_error("C_EX_FreeBuffer", rv);
+}
+
+static int
+rutoken_pkcs7_sign(CK_SESSION_HANDLE session,
+		const struct rutoken_request *request)
+{
+	CK_OBJECT_HANDLE certificate, *chain = NULL;
+	CK_BYTE_PTR data, envelope = NULL;
+	CK_ULONG data_length, envelope_length = 0, i;
+	unsigned char id[256];
+	size_t id_length;
+	int failed = 0;
+	CK_RV rv;
+
+	certificate = rutoken_find_one(session, CKO_CERTIFICATE, "certificate");
+	if (request->chain_ids.count) {
+		chain = calloc(request->chain_ids.count, sizeof(*chain));
+		if (!chain)
+			util_fatal("Out of memory");
+	}
+	for (i = 0; i < request->chain_ids.count; i++) {
+		id_length = sizeof(id);
+		if (sc_hex_to_bin(request->chain_ids.items[i], id, &id_length))
+			util_fatal("Invalid --rutoken-chain-id \"%s\"",
+					request->chain_ids.items[i]);
+		if (!find_object(session, CKO_CERTIFICATE, &chain[i], id, id_length,
+				NULL, 0))
+			util_fatal("No certificate with CKA_ID %s",
+					request->chain_ids.items[i]);
+	}
+	data = rutoken_read_file(opt_input, &data_length);
+
+	if (opt_rutoken_json) {
+		json_begin("pkcs7_sign", "{");
+		rutoken_show_object_ref("certificate", certificate, "certificate");
+		json_ulong("data_length", data_length);
+		json_ulong("flags", request->sign_flags);
+		json_flag_names("flag_names", rutoken_sign_flags, request->sign_flags);
+		json_ulong("chain_certificates", request->chain_ids.count);
+	} else {
+		printf("Rutoken PKCS#7 signature:\n");
+		rutoken_show_object_ref("certificate", certificate, "certificate");
+		printf("  %-19s: %lu bytes\n", "data", data_length);
+		printf("  %-19s: 0x%lx", "flags", request->sign_flags);
+		rutoken_print_flags(rutoken_sign_flags, request->sign_flags);
+		printf("\n");
+	}
+	rv = RUTOKEN_CALL(C_EX_PKCS7Sign, (session, data, data_length,
+			certificate, &envelope, &envelope_length, CK_INVALID_HANDLE,
+			chain, (CK_ULONG)request->chain_ids.count, request->sign_flags));
+	if (rv != CKR_OK) {
+		failed = rutoken_error("C_EX_PKCS7Sign", rv);
+	} else if (!envelope || !envelope_length ||
+			envelope_length > RUTOKEN_MAX_FILE) {
+		failed = rutoken_bad_length("C_EX_PKCS7Sign", envelope_length);
+	} else {
+		rutoken_write_file(opt_output, envelope, envelope_length);
+		if (opt_rutoken_json) {
+			json_ulong("length", envelope_length);
+			json_text("output_file", opt_output);
+		} else {
+			printf("  %-19s: %lu bytes written to %s\n", "envelope",
+					envelope_length, opt_output);
+		}
+	}
+	/* the library allocated the envelope even if it is rejected here */
+	failed |= rutoken_free(envelope);
+	if (opt_rutoken_json)
+		json_end("}");
+	free(data);
+	free(chain);
+	return failed;
+}
+
+/* A list of DER files as CK_VENDOR_BUFFERs; the data is kept until the
+ * verification ends. */
+static CK_VENDOR_BUFFER_PTR
+rutoken_read_buffers(const struct rutoken_list *files)
+{
+	CK_VENDOR_BUFFER_PTR buffers;
+	size_t i;
+
+	if (!files->count)
+		return NULL_PTR;
+	buffers = calloc(files->count, sizeof(*buffers));
+	if (!buffers)
+		util_fatal("Out of memory");
+	for (i = 0; i < files->count; i++)
+		buffers[i].pData = rutoken_read_file(files->items[i],
+				&buffers[i].ulSize);
+	return buffers;
+}
+
+static void
+rutoken_free_buffers(CK_VENDOR_BUFFER_PTR buffers, size_t count)
+{
+	size_t i;
+
+	for (i = 0; buffers && i < count; i++)
+		free(buffers[i].pData);
+	free(buffers);
+}
+
+/* Reports and releases what C_EX_PKCS7Verify or VerifyFinal returned. */
+static int
+rutoken_verify_outputs(const struct rutoken_request *request, CK_RV rv,
+		CK_BYTE_PTR data, CK_ULONG data_length, CK_VENDOR_BUFFER_PTR signers,
+		CK_ULONG count)
+{
+	char path[PATH_MAX];
+	CK_ULONG i;
+	int failed = 0;
+
+	/* outputs exist also when only the chain could not be verified */
+	if (rv != CKR_OK && rv != CKR_CERT_CHAIN_NOT_VERIFIED)
+		return 0;
+	if (data && opt_output)
+		rutoken_write_file(opt_output, data, data_length);
+	if (opt_rutoken_json) {
+		if (data) {
+			json_ulong("data_length", data_length);
+			if (opt_output)
+				json_text("output_file", opt_output);
+		}
+		json_begin("signers", "[");
+	} else if (data) {
+		printf("  %-19s: %lu bytes", "data", data_length);
+		if (opt_output)
+			printf(" written to %s", opt_output);
+		printf("\n");
+	}
+	for (i = 0; signers && i < count; i++) {
+		path[0] = '\0';
+		if (request->signers_dir && signers[i].pData) {
+			if (snprintf(path, sizeof(path), "%s/signer-%lu.der",
+					request->signers_dir, i + 1) >= (int)sizeof(path))
+				util_fatal("--rutoken-signers-dir is too long");
+			rutoken_write_file(path, signers[i].pData, signers[i].ulSize);
+		}
+		if (opt_rutoken_json) {
+			json_begin(NULL, "{");
+			json_ulong("length", signers[i].ulSize);
+			if (path[0])
+				json_text("file", path);
+			json_end("}");
+		} else {
+			printf("  %-19s: %lu bytes", "signer certificate",
+					signers[i].ulSize);
+			if (path[0])
+				printf(" written to %s", path);
+			printf("\n");
+		}
+		failed |= rutoken_free(signers[i].pData);
+	}
+	if (opt_rutoken_json)
+		json_end("]");
+	failed |= rutoken_free((CK_BYTE_PTR)signers);
+	failed |= rutoken_free(data);
+	return failed;
+}
+
+static int
+rutoken_pkcs7_verify(CK_SESSION_HANDLE session,
+		const struct rutoken_request *request)
+{
+	CK_VENDOR_X509_STORE store;
+	CK_VENDOR_BUFFER_PTR signers = NULL;
+	CK_BYTE_PTR cms, data = NULL;
+	CK_BYTE block[RUTOKEN_VERIFY_BLOCK];
+	CK_ULONG cms_length, data_length = 0, count = 0;
+	FILE *file = NULL;
+	size_t n;
+	int failed = 0;
+	const char *name;
+	CK_RV rv;
+
+	cms = rutoken_read_file(opt_input, &cms_length);
+	memset(&store, 0, sizeof(store));
+	store.pTrustedCertificates = rutoken_read_buffers(&request->trusted);
+	store.ulTrustedCertificateCount = (CK_ULONG)request->trusted.count;
+	store.pCertificates = rutoken_read_buffers(&request->certs);
+	store.ulCertificateCount = (CK_ULONG)request->certs.count;
+	store.pCrls = rutoken_read_buffers(&request->crls);
+	store.ulCrlCount = (CK_ULONG)request->crls.count;
+
+	name = rutoken_lookup(rutoken_crl_modes, request->crl_mode);
+	if (opt_rutoken_json) {
+		json_begin("pkcs7_verify", "{");
+		json_ulong("cms_length", cms_length);
+		json_bool("detached", request->data_file != NULL);
+		json_ulong("trusted_certificates", store.ulTrustedCertificateCount);
+		json_ulong("certificates", store.ulCertificateCount);
+		json_ulong("crls", store.ulCrlCount);
+		json_text("crl_mode", name ? name : "?");
+		json_ulong("flags", request->verify_flags);
+		json_flag_names("flag_names", rutoken_verify_flags,
+				request->verify_flags);
+	} else {
+		printf("Rutoken PKCS#7 verification:\n");
+		printf("  %-19s: %lu bytes%s\n", "envelope", cms_length,
+				request->data_file ? ", detached data" : "");
+		printf("  %-19s: %lu trusted, %lu other certificates, %lu CRLs, "
+				"CRL check %s\n", "store", store.ulTrustedCertificateCount,
+				store.ulCertificateCount, store.ulCrlCount, name ? name : "?");
+		printf("  %-19s: 0x%lx", "flags", request->verify_flags);
+		rutoken_print_flags(rutoken_verify_flags, request->verify_flags);
+		printf("\n");
+	}
+
+	rv = RUTOKEN_CALL(C_EX_PKCS7VerifyInit, (session, cms, cms_length,
+			&store, request->crl_mode, request->verify_flags));
+	if (rv != CKR_OK) {
+		failed = rutoken_error("C_EX_PKCS7VerifyInit", rv);
+		goto out;
+	}
+	if (!request->data_file) {
+		rv = RUTOKEN_CALL(C_EX_PKCS7Verify, (session, &data, &data_length,
+				&signers, &count));
+	} else {
+		file = fopen(request->data_file, "rb");
+		if (!file)
+			util_fatal("failed to open %s: %s", request->data_file,
+					strerror(errno));
+		rv = CKR_OK;
+		while (rv == CKR_OK &&
+				(n = fread(block, 1, sizeof(block), file)) > 0)
+			rv = RUTOKEN_CALL(C_EX_PKCS7VerifyUpdate,
+					(session, block, (CK_ULONG)n));
+		if (ferror(file))
+			util_fatal("failed to read %s: %s", request->data_file,
+					strerror(errno));
+		fclose(file);
+		/* Final ends the operation also after a failed update. */
+		if (rv != CKR_OK) {
+			failed = rutoken_error("C_EX_PKCS7VerifyUpdate", rv);
+			RUTOKEN_CALL(C_EX_PKCS7VerifyFinal, (session, &signers, &count));
+			signers = NULL;
+			count = 0;
+			goto out;
+		}
+		rv = RUTOKEN_CALL(C_EX_PKCS7VerifyFinal, (session, &signers,
+				&count));
+	}
+	if (opt_rutoken_json) {
+		json_text("result", CKR2Str(rv));
+		json_ulong("code", rv);
+		json_bool("valid", rv == CKR_OK);
+	} else {
+		printf("  %-19s: %s", "result", rv == CKR_OK ? "valid" :
+				rv == CKR_CERT_CHAIN_NOT_VERIFIED ?
+				"signature valid, certificate chain not verified" :
+				"invalid");
+		printf(" (%s)\n", CKR2Str(rv));
+	}
+	failed |= rutoken_verify_outputs(request, rv, data, data_length,
+			signers, count);
+	if (rv != CKR_OK)
+		failed = 1;
+out:
+	if (opt_rutoken_json)
+		json_end("}");
+	rutoken_free_buffers(store.pTrustedCertificates,
+			store.ulTrustedCertificateCount);
+	rutoken_free_buffers(store.pCertificates, store.ulCertificateCount);
+	rutoken_free_buffers(store.pCrls, store.ulCrlCount);
+	free(cms);
+	return failed;
+}
+
+/* "type=value" arguments as the pairs of strings CreateCSR expects */
+static CK_CHAR_PTR *
+rutoken_pairs(const struct rutoken_list *list)
+{
+	CK_CHAR_PTR *pairs;
+	char *copy, *separator;
+	size_t i;
+
+	if (!list->count)
+		return NULL_PTR;
+	pairs = calloc(list->count * 2, sizeof(*pairs));
+	if (!pairs)
+		util_fatal("Out of memory");
+	for (i = 0; i < list->count; i++) {
+		copy = strdup(list->items[i]);
+		if (!copy)
+			util_fatal("Out of memory");
+		separator = strchr(copy, '=');
+		*separator = '\0';
+		pairs[2 * i] = (CK_CHAR_PTR)copy;
+		pairs[2 * i + 1] = (CK_CHAR_PTR)(separator + 1);
+	}
+	return pairs;
+}
+
+static void
+rutoken_free_pairs(CK_CHAR_PTR *pairs, size_t count)
+{
+	size_t i;
+
+	for (i = 0; pairs && i < count; i++)
+		free(pairs[2 * i]);
+	free(pairs);
+}
+
+static void
+rutoken_show_pairs(const char *key, const char *label,
+		const struct rutoken_list *list)
+{
+	size_t i;
+
+	if (opt_rutoken_json) {
+		json_begin(key, "[");
+		for (i = 0; i < list->count; i++)
+			json_text(NULL, list->items[i]);
+		json_end("]");
+		return;
+	}
+	for (i = 0; i < list->count; i++)
+		printf("  %-19s: %s\n", label, list->items[i]);
+}
+
+static int
+rutoken_csr(CK_SESSION_HANDLE session, const struct rutoken_request *request)
+{
+	CK_OBJECT_HANDLE public_key;
+	CK_CHAR_PTR *dn, *attributes, *extensions;
+	CK_BYTE_PTR csr = NULL;
+	CK_ULONG csr_length = 0;
+	int failed = 0;
+	CK_RV rv;
+
+	public_key = rutoken_find_one(session, CKO_PUBLIC_KEY, "public key");
+	dn = rutoken_pairs(&request->dn);
+	attributes = rutoken_pairs(&request->csr_attrs);
+	extensions = rutoken_pairs(&request->csr_exts);
+	if (opt_rutoken_json) {
+		json_begin("csr", "{");
+		rutoken_show_object_ref("public_key", public_key, "public key");
+	} else {
+		printf("Rutoken PKCS#10 request:\n");
+		rutoken_show_object_ref("public_key", public_key, "public key");
+	}
+	rutoken_show_pairs("subject", "subject", &request->dn);
+	rutoken_show_pairs("attributes", "attribute", &request->csr_attrs);
+	rutoken_show_pairs("extensions", "extension", &request->csr_exts);
+
+	rv = RUTOKEN_CALL(C_EX_CreateCSR, (session, public_key, dn,
+			(CK_ULONG)request->dn.count * 2, &csr, &csr_length,
+			CK_INVALID_HANDLE, attributes,
+			(CK_ULONG)request->csr_attrs.count * 2, extensions,
+			(CK_ULONG)request->csr_exts.count * 2));
+	if (rv != CKR_OK) {
+		failed = rutoken_error("C_EX_CreateCSR", rv);
+	} else if (!csr || !csr_length || csr_length > RUTOKEN_MAX_FILE) {
+		failed = rutoken_bad_length("C_EX_CreateCSR", csr_length);
+	} else {
+		rutoken_write_file(opt_output, csr, csr_length);
+		if (opt_rutoken_json) {
+			json_ulong("length", csr_length);
+			json_text("output_file", opt_output);
+		} else {
+			printf("  %-19s: %lu bytes written to %s\n", "request",
+					csr_length, opt_output);
+		}
+	}
+	failed |= rutoken_free(csr);
+	if (opt_rutoken_json)
+		json_end("}");
+	rutoken_free_pairs(dn, request->dn.count);
+	rutoken_free_pairs(attributes, request->csr_attrs.count);
+	rutoken_free_pairs(extensions, request->csr_exts.count);
+	return failed;
+}
+
 static int
 run_rutoken_actions(CK_SLOT_ID slot, CK_SESSION_HANDLE session,
 		const struct rutoken_request *request)
@@ -3192,6 +3928,12 @@ run_rutoken_actions(CK_SLOT_ID slot, CK_SESSION_HANDLE session,
 		failed |= rutoken_show_cert_text(session);
 	if (request->pin_status)
 		failed |= rutoken_show_pin_status(slot);
+	if (request->pkcs7_sign)
+		failed |= rutoken_pkcs7_sign(session, request);
+	if (request->pkcs7_verify)
+		failed |= rutoken_pkcs7_verify(session, request);
+	if (request->csr)
+		failed |= rutoken_csr(session, request);
 	if (opt_rutoken_json) {
 		json_end("}");
 		printf("%s\n", rutoken_json.data);
@@ -5277,6 +6019,13 @@ static int gen_keypair(CK_SLOT_ID slot, CK_SESSION_HANDLE session,
 	if (opt_always_auth != 0) {
 		FILL_ATTR(privateKeyTemplate[n_privkey_attr], CKA_ALWAYS_AUTHENTICATE,
 				&_true, sizeof(_true));
+		n_privkey_attr++;
+	}
+
+	if (opt_rutoken_touch) {
+		rutoken_check_touch(slot);
+		FILL_ATTR(privateKeyTemplate[n_privkey_attr],
+				CKA_VENDOR_CONFIRM_BY_TOUCH, &_true, sizeof(_true));
 		n_privkey_attr++;
 	}
 

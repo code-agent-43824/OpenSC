@@ -889,6 +889,114 @@ spy_ex_dump_ulong_out(const char *name, CK_ULONG_PTR value, CK_RV rv)
 		fprintf(spy_output, "[out] %s = %p\n", name, (void *)value);
 }
 
+struct spy_ex_flag {
+	CK_ULONG value;
+	const char *name;
+};
+
+static const struct spy_ex_flag spy_ex_sign_flags[] = {
+	{ PKCS7_DETACHED_SIGNATURE, "PKCS7_DETACHED_SIGNATURE" },
+	{ USE_HARDWARE_HASH, "USE_HARDWARE_HASH" },
+	{ 0, NULL }
+};
+
+static const struct spy_ex_flag spy_ex_verify_flags[] = {
+	{ CKF_VENDOR_DO_NOT_USE_INTERNAL_CMS_CERTS,
+		"CKF_VENDOR_DO_NOT_USE_INTERNAL_CMS_CERTS" },
+	{ CKF_VENDOR_ALLOW_PARTIAL_CHAINS, "CKF_VENDOR_ALLOW_PARTIAL_CHAINS" },
+	{ CKF_VENDOR_CHECK_SIGNATURE_ONLY, "CKF_VENDOR_CHECK_SIGNATURE_ONLY" },
+	{ CKF_VENDOR_USE_TRUSTED_CERTS_FROM_TOKEN,
+		"CKF_VENDOR_USE_TRUSTED_CERTS_FROM_TOKEN" },
+	{ 0, NULL }
+};
+
+static void
+spy_ex_dump_flags_in(const char *name, CK_ULONG flags,
+		const struct spy_ex_flag *names)
+{
+	fprintf(spy_output, "[in] %s = 0x%lx", name, flags);
+	for (; names->name; names++)
+		if (flags & names->value)
+			fprintf(spy_output, " %s", names->name);
+	fprintf(spy_output, "\n");
+}
+
+static void
+spy_ex_dump_handles_in(const char *name, CK_OBJECT_HANDLE_PTR handles,
+		CK_ULONG count)
+{
+	CK_ULONG i;
+
+	for (i = 0; handles && i < count; i++)
+		fprintf(spy_output, "[in] %s[%lu] = 0x%lx\n", name, i, handles[i]);
+}
+
+/* The DN, attribute and extension strings of C_EX_CreateCSR */
+static void
+spy_ex_dump_strings_in(const char *name, CK_CHAR_PTR *strings, CK_ULONG count)
+{
+	CK_ULONG i;
+
+	for (i = 0; strings && i < count; i++)
+		fprintf(spy_output, "[in] %s[%lu] = \"%s\"\n", name, i,
+				strings[i] ? (const char *)strings[i] : "(null)");
+}
+
+static void
+spy_ex_dump_buffers_in(const char *name, const CK_VENDOR_BUFFER *buffers,
+		CK_ULONG count)
+{
+	char label[64];
+	CK_ULONG i;
+
+	fprintf(spy_output, "[in] %s count = %lu\n", name, count);
+	for (i = 0; buffers && i < count; i++) {
+		snprintf(label, sizeof(label), "%s[%lu]", name, i);
+		spy_dump_string_in(label, buffers[i].pData, buffers[i].ulSize);
+	}
+}
+
+static void
+spy_ex_dump_store_in(const CK_VENDOR_X509_STORE *store)
+{
+	if (!store)
+		return;
+	spy_ex_dump_buffers_in("pStore->pTrustedCertificates",
+			store->pTrustedCertificates, store->ulTrustedCertificateCount);
+	spy_ex_dump_buffers_in("pStore->pCertificates", store->pCertificates,
+			store->ulCertificateCount);
+	spy_ex_dump_buffers_in("pStore->pCrls", store->pCrls, store->ulCrlCount);
+}
+
+/* Signer certificates come also with an unverified chain. */
+static void
+spy_ex_dump_signers_out(CK_VENDOR_BUFFER_PTR_PTR signers, CK_ULONG_PTR count,
+		CK_RV rv)
+{
+	char label[64];
+	CK_ULONG i;
+
+	if ((rv != CKR_OK && rv != CKR_CERT_CHAIN_NOT_VERIFIED) || !signers ||
+			!*signers || !count)
+		return;
+	fprintf(spy_output, "[out] *pulSignerCertificatesCount = %lu\n", *count);
+	for (i = 0; i < *count; i++) {
+		snprintf(label, sizeof(label), "(*ppSignerCertificates)[%lu]", i);
+		spy_dump_string_out(label, (*signers)[i].pData, (*signers)[i].ulSize);
+	}
+}
+
+static const char *
+spy_ex_crl_mode(CK_VENDOR_CRL_MODE mode)
+{
+	switch (mode) {
+	case OPTIONAL_CRL_CHECK: return "OPTIONAL_CRL_CHECK";
+	case LEAF_CRL_CHECK: return "LEAF_CRL_CHECK";
+	case ALL_CRL_CHECK: return "ALL_CRL_CHECK";
+	default: return "unknown";
+	}
+}
+
 #define SPY_EX_PROXY(name, parameters, arguments, log_inputs, log_outputs) \
 CK_RV name parameters \
 { \
@@ -1009,12 +1117,17 @@ SPY_EX_PROXY(C_EX_PKCS7Sign,
 		(hSession, pData, ulDataLen, hCert, ppEnvelope, pEnvelopeLen,
 		 hPrivKey, phCertificates, ulCertificatesLen, flags),
 		spy_dump_ulong_in("hSession", hSession);
-		spy_dump_ulong_in("ulDataLen", ulDataLen);
+		spy_dump_string_in("pData[ulDataLen]", pData, ulDataLen);
 		spy_dump_ulong_in("hCert", hCert);
 		spy_dump_ulong_in("hPrivKey", hPrivKey);
 		spy_dump_ulong_in("ulCertificatesLen", ulCertificatesLen);
-		spy_dump_ulong_in("flags", flags),
-		spy_ex_dump_ulong_out("*pEnvelopeLen", pEnvelopeLen, rv))
+		spy_ex_dump_handles_in("phCertificates", phCertificates,
+				ulCertificatesLen);
+		spy_ex_dump_flags_in("flags", flags, spy_ex_sign_flags),
+		spy_ex_dump_ulong_out("*pEnvelopeLen", pEnvelopeLen, rv);
+		if (rv == CKR_OK && ppEnvelope && *ppEnvelope && pEnvelopeLen)
+			spy_dump_string_out("*ppEnvelope[*pEnvelopeLen]", *ppEnvelope,
+					*pEnvelopeLen))
 SPY_EX_PROXY(C_EX_CreateCSR,
 		(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hPublicKey,
 		 CK_CHAR_PTR *dn, CK_ULONG dnLength, CK_BYTE_PTR *pCsr,
@@ -1026,10 +1139,15 @@ SPY_EX_PROXY(C_EX_CreateCSR,
 		spy_dump_ulong_in("hSession", hSession);
 		spy_dump_ulong_in("hPublicKey", hPublicKey);
 		spy_dump_ulong_in("dnLength", dnLength);
+		spy_ex_dump_strings_in("dn", dn, dnLength);
 		spy_dump_ulong_in("hPrivKey", hPrivKey);
 		spy_dump_ulong_in("ulAttributesLength", ulAttributesLength);
-		spy_dump_ulong_in("ulExtensionsLength", ulExtensionsLength),
-		spy_ex_dump_ulong_out("*pulCsrLength", pulCsrLength, rv))
+		spy_ex_dump_strings_in("pAttributes", pAttributes, ulAttributesLength);
+		spy_dump_ulong_in("ulExtensionsLength", ulExtensionsLength);
+		spy_ex_dump_strings_in("pExtensions", pExtensions, ulExtensionsLength),
+		spy_ex_dump_ulong_out("*pulCsrLength", pulCsrLength, rv);
+		if (rv == CKR_OK && pCsr && *pCsr && pulCsrLength)
+			spy_dump_string_out("*pCsr[*pulCsrLength]", *pCsr, *pulCsrLength))
 SPY_EX_PROXY(C_EX_FreeBuffer, (CK_BYTE_PTR pBuffer), (pBuffer),
 		print_ptr_in("pBuffer", pBuffer), (void)rv)
 SPY_EX_PROXY(C_EX_GetTokenName,
@@ -1204,10 +1322,12 @@ SPY_EX_PROXY(C_EX_PKCS7VerifyInit,
 		 CK_FLAGS flags),
 		(hSession, pCms, ulCmsSize, pStore, ckMode, flags),
 		spy_dump_ulong_in("hSession", hSession);
-		spy_dump_ulong_in("ulCmsSize", ulCmsSize);
+		spy_dump_string_in("pCms[ulCmsSize]", pCms, ulCmsSize);
 		print_ptr_in("pStore", pStore);
-		spy_dump_ulong_in("ckMode", ckMode);
-		spy_dump_ulong_in("flags", flags), (void)rv)
+		spy_ex_dump_store_in(pStore);
+		fprintf(spy_output, "[in] ckMode = %lu %s\n", ckMode,
+				spy_ex_crl_mode(ckMode));
+		spy_ex_dump_flags_in("flags", flags, spy_ex_verify_flags), (void)rv)
 SPY_EX_PROXY(C_EX_PKCS7Verify,
 		(CK_SESSION_HANDLE hSession, CK_BYTE_PTR_PTR ppData,
 		 CK_ULONG_PTR pulDataSize, CK_VENDOR_BUFFER_PTR_PTR ppSignerCertificates,
@@ -1217,14 +1337,19 @@ SPY_EX_PROXY(C_EX_PKCS7Verify,
 		spy_dump_ulong_in("hSession", hSession);
 		print_ptr_in("ppData", ppData);
 		print_ptr_in("ppSignerCertificates", ppSignerCertificates),
-		spy_ex_dump_ulong_out("*pulDataSize", pulDataSize, rv);
-		spy_ex_dump_ulong_out("*pulSignerCertificatesCount",
+		if ((rv == CKR_OK || rv == CKR_CERT_CHAIN_NOT_VERIFIED) && ppData &&
+				*ppData && pulDataSize)
+			spy_dump_string_out("*ppData[*pulDataSize]", *ppData,
+					*pulDataSize);
+		else
+			spy_ex_dump_ulong_out("*pulDataSize", pulDataSize, rv);
+		spy_ex_dump_signers_out(ppSignerCertificates,
 				pulSignerCertificatesCount, rv))
 SPY_EX_PROXY(C_EX_PKCS7VerifyUpdate,
 		(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData, CK_ULONG ulDataSize),
 		(hSession, pData, ulDataSize),
 		spy_dump_ulong_in("hSession", hSession);
-		spy_dump_ulong_in("ulDataSize", ulDataSize), (void)rv)
+		spy_dump_string_in("pData[ulDataSize]", pData, ulDataSize), (void)rv)
 SPY_EX_PROXY(C_EX_PKCS7VerifyFinal,
 		(CK_SESSION_HANDLE hSession,
 		 CK_VENDOR_BUFFER_PTR_PTR ppSignerCertificates,
@@ -1232,7 +1357,7 @@ SPY_EX_PROXY(C_EX_PKCS7VerifyFinal,
 		(hSession, ppSignerCertificates, pulSignerCertificatesCount),
 		spy_dump_ulong_in("hSession", hSession);
 		print_ptr_in("ppSignerCertificates", ppSignerCertificates),
-		spy_ex_dump_ulong_out("*pulSignerCertificatesCount",
+		spy_ex_dump_signers_out(ppSignerCertificates,
 				pulSignerCertificatesCount, rv))
 SPY_EX_PROXY(C_EX_Authenticate,
 		(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hAuthObject,

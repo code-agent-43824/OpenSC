@@ -34,6 +34,7 @@ static const struct test_object objects[] = {
 	{ 103, CKO_CERTIFICATE, "\x05\x06", "\xd2\xe5\xf1\xf2",
 		"Subject: CN=\xd0\xa2\xd0\xb5\xd1\x81\xd1\x82\tTab\n" },
 	{ 201, CKO_PRIVATE_KEY, "\x01\x02", "Test key", NULL },
+	{ 202, CKO_PUBLIC_KEY, "\x01\x02", "Test key", NULL },
 };
 #define OBJECT_COUNT (sizeof(objects) / sizeof(objects[0]))
 
@@ -117,6 +118,39 @@ C_GetSlotInfo(CK_SLOT_ID slotID, CK_SLOT_INFO_PTR pInfo)
 		return CKR_ARGUMENTS_BAD;
 	memset(pInfo, 0, sizeof(*pInfo));
 	pInfo->flags = CKF_TOKEN_PRESENT;
+	return CKR_OK;
+}
+
+static void
+pad_string(CK_UTF8CHAR *field, size_t size, const char *text)
+{
+	memset(field, ' ', size);
+	memcpy(field, text, strlen(text) < size ? strlen(text) : size);
+}
+
+CK_RV
+C_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo)
+{
+	if (slotID != 7)
+		return CKR_SLOT_ID_INVALID;
+	if (!pInfo)
+		return CKR_ARGUMENTS_BAD;
+	memset(pInfo, 0, sizeof(*pInfo));
+	pad_string(pInfo->label, sizeof(pInfo->label), "Test Rutoken");
+	pad_string(pInfo->manufacturerID, sizeof(pInfo->manufacturerID),
+			"OpenSC test");
+	pad_string(pInfo->model, sizeof(pInfo->model), "Rutoken stub");
+	pad_string(pInfo->serialNumber, sizeof(pInfo->serialNumber), "12345678");
+	pInfo->flags = CKF_RNG | CKF_LOGIN_REQUIRED | CKF_USER_PIN_INITIALIZED |
+		CKF_TOKEN_INITIALIZED;
+	pInfo->ulMaxSessionCount = CK_EFFECTIVELY_INFINITE;
+	pInfo->ulMaxRwSessionCount = CK_EFFECTIVELY_INFINITE;
+	pInfo->ulMaxPinLen = 32;
+	pInfo->ulMinPinLen = 6;
+	pInfo->ulTotalPublicMemory = CK_UNAVAILABLE_INFORMATION;
+	pInfo->ulFreePublicMemory = CK_UNAVAILABLE_INFORMATION;
+	pInfo->ulTotalPrivateMemory = CK_UNAVAILABLE_INFORMATION;
+	pInfo->ulFreePrivateMemory = CK_UNAVAILABLE_INFORMATION;
 	return CKR_OK;
 }
 
@@ -627,6 +661,9 @@ C_EX_GetTokenInfoExtended(CK_SLOT_ID slotID,
 	pInfo->flags = TOKEN_FLAGS_USER_CHANGE_USER_PIN |
 		TOKEN_FLAGS_HAS_FLASH_DRIVE | TOKEN_FLAGS_SUPPORT_JOURNAL |
 		TOKEN_FLAGS_USER_PIN_UTF8 | TOKEN_FLAGS_ADMIN_PIN_UTF8;
+	/* a Rutoken Touch for the --rutoken-confirm-by-touch tests */
+	if (getenv("RUTOKEN_STUB_HAS_BUTTON"))
+		pInfo->flags |= TOKEN_FLAGS_HAS_BUTTON;
 	memcpy(pInfo->ATR, "\x3b\x8b\x01Rutoken DS \xc1", 15);
 	pInfo->ulATRLen = 15;
 	pInfo->ulBatteryVoltage = 0;
@@ -1304,6 +1341,7 @@ static CK_FUNCTION_LIST standard_functions = {
 	.C_GetFunctionList = C_GetFunctionList,
 	.C_GetSlotList = C_GetSlotList,
 	.C_GetSlotInfo = C_GetSlotInfo,
+	.C_GetTokenInfo = C_GetTokenInfo,
 	.C_OpenSession = C_OpenSession,
 	.C_CloseSession = C_CloseSession,
 	.C_Login = C_Login,
