@@ -57,7 +57,7 @@ fi
 # The probe creates the --save-dir directory.
 probe_out="$test_dir/probe-out"
 probe_write="$test_dir/probe-write.log"
-if ! RUTOKEN_PROBE_PIN=1234 "$probe" --pause-ms 0 --login \
+if ! RUTOKEN_PROBE_PIN=12345678 "$probe" --pause-ms 0 --login \
 		--pin-env RUTOKEN_PROBE_PIN --write-tests --assume-yes \
 		--save-dir "$probe_out" "$stub" > "$probe_write" ||
 		! grep -q '^PROBE COMPLETE' "$probe_write" ||
@@ -79,6 +79,28 @@ for file in certificate-temporary.der pkcs7-attached.der pkcs7-detached.der \
 		exit 1
 	fi
 done
+# Version 3: the functions that change the token, ending with two formats;
+# the stub checks PINs, sessions and the objects left behind.
+probe_modify="$test_dir/probe-modify.log"
+if ! "$probe" --pause-ms 0 --modify-tests --default-pins --assume-yes \
+		"$stub" > "$probe_modify" ||
+		! grep -q '^PROBE COMPLETE' "$probe_modify" ||
+		! grep -q '^  C_EX_SetTokenName -> CKR_OK' "$probe_modify" ||
+		! grep -q '^  SetLocalPIN(4): CKR_OK' "$probe_modify" ||
+		! grep -q '^  license 1: 72 bytes, the probe pattern' "$probe_modify" ||
+		! grep -q '^  attempt [0-9]*: CKR_PIN_LOCKED' "$probe_modify" ||
+		! grep -q '^  UnblockUserPIN as the Administrator: CKR_OK' \
+			"$probe_modify" ||
+		! grep -q '^  C_Login(CKU_USER, custom default PIN): CKR_OK' \
+			"$probe_modify" ||
+		! grep -q '^  C_EX_InitToken -> CKR_SESSION_EXISTS' "$probe_modify" ||
+		! grep -q '^  C_EX_InitToken -> CKR_OK' "$probe_modify" ||
+		! grep -q 'MODE_RESTORE_FACTORY_DEFAULTS) -> CKR_OK' "$probe_modify" ||
+		! grep -q '^  CKA_VENDOR_CONFIRM_BY_TOUCH: 0x01' "$probe_modify" ||
+		! grep -q '^  C_Finalize -> CKR_OK' "$probe_modify"; then
+	cat "$probe_modify"
+	exit 1
+fi
 "$probe" --selftest-certificate "$test_dir/selftest.der" > /dev/null
 if command -v openssl > /dev/null 2>&1; then
 	for certificate in "$probe_out/certificate-temporary.der" \
@@ -267,4 +289,4 @@ RUTOKEN_STUB_HAS_BUTTON=1 keygen > "$text" 2>&1
 grep -q '0x80002003' "$touch_log"
 
 echo "PASS: all Rutoken wrappers and the --rutoken-* commands through pkcs11-spy"
-echo "PASS: Rutoken hardware probe runs against the stub module, write tests included"
+echo "PASS: Rutoken hardware probe runs against the stub module, write and modify tests included"

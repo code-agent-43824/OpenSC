@@ -57,6 +57,103 @@ static CK_ULONG search_count;
 static CK_ULONG search_position;
 static int search_active;
 static int logged_in;
+static CK_USER_TYPE login_user;
+
+/* Token state that the stage 5 functions change.  It survives C_Finalize,
+ * as a token does, until the process ends. */
+#define STUB_PIN_MAX 32
+#define STUB_LABEL_MAX 32
+#define STUB_STANDARD_USER_PIN "12345678"
+#define STUB_STANDARD_SO_PIN "87654321"
+
+struct stub_pin {
+	char value[STUB_PIN_MAX + 1];
+	CK_ULONG retries;
+	CK_ULONG max_retries;
+	int change_required;
+};
+
+struct stub_local_pin {
+	int present;
+	char value[STUB_PIN_MAX + 1];
+	CK_LOCAL_PIN_INFO info;
+};
+
+static struct {
+	int ready;
+	struct stub_pin user;
+	struct stub_pin so;
+	char custom_user_default[STUB_PIN_MAX + 1];	/* empty: standard PIN */
+	CK_BYTE label[STUB_LABEL_MAX];
+	CK_ULONG label_length;
+	struct stub_local_pin local[32];
+	CK_BYTE licenses[4][72];
+	int license4_corrupted;
+	int journal_present;
+	int sessions;
+} token;
+
+static void
+set_local_pin(CK_ULONG id, const char *value, CK_ULONG min, CK_ULONG max,
+		CK_ULONG max_retries, CK_ULONG retries, CK_FLAGS flags)
+{
+	struct stub_local_pin *pin = &token.local[id];
+
+	pin->present = 1;
+	strcpy(pin->value, value);
+	pin->info.ulPinID = id;
+	pin->info.ulMinSize = min;
+	pin->info.ulMaxSize = max;
+	pin->info.ulMaxRetryCount = max_retries;
+	pin->info.ulCurrentRetryCount = retries;
+	pin->info.flags = flags;
+}
+
+static void
+token_ready(void)
+{
+	CK_ULONG i;
+
+	if (token.ready)
+		return;
+	token.ready = 1;
+	strcpy(token.user.value, STUB_STANDARD_USER_PIN);
+	token.user.max_retries = 10;
+	token.user.retries = 8;
+	strcpy(token.so.value, STUB_STANDARD_SO_PIN);
+	token.so.max_retries = 10;
+	token.so.retries = 9;
+	token.so.change_required = 1;
+	memcpy(token.label, "Test Rutoken", 12);
+	token.label_length = 12;
+	set_local_pin(3, "33333333", 1, 249, 10, 10, LOCAL_PIN_FLAGS_NOT_DEFAULT);
+	set_local_pin(5, "5555", 4, 32, 5, 3, LOCAL_PIN_FLAGS_IS_UTF8);
+	for (i = 0; i < 72; i++)
+		token.licenses[1][i] = (CK_BYTE)(i + 1);
+	token.license4_corrupted = 1;
+	token.journal_present = 1;
+}
+
+static int
+pin_matches(const struct stub_pin *pin, CK_UTF8CHAR_PTR value, CK_ULONG length)
+{
+	return value && length == strlen(pin->value) &&
+			!memcmp(value, pin->value, length);
+}
+
+/* A wrong PIN costs an attempt; the last one blocks the PIN. */
+static CK_RV
+check_pin(struct stub_pin *pin, CK_UTF8CHAR_PTR value, CK_ULONG length)
+{
+	if (!pin->retries)
+		return CKR_PIN_LOCKED;
+	if (!pin_matches(pin, value, length)) {
+		pin->retries--;
+		return pin->retries ? CKR_PIN_INCORRECT : CKR_PIN_LOCKED;
+	}
+	pin->retries = pin->max_retries;
+	return CKR_OK;
+}
 static int sign_active;
 static int verify_active;
 static CK_MECHANISM_TYPE sign_mechanism;
@@ -135,8 +232,10 @@ C_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo)
 		return CKR_SLOT_ID_INVALID;
 	if (!pInfo)
 		return CKR_ARGUMENTS_BAD;
+	token_ready();
 	memset(pInfo, 0, sizeof(*pInfo));
-	pad_string(pInfo->label, sizeof(pInfo->label), "Test Rutoken");
+	memset(pInfo->label, ' ', sizeof(pInfo->label));
+	memcpy(pInfo->label, token.label, token.label_length);
 	pad_string(pInfo->manufacturerID, sizeof(pInfo->manufacturerID),
 			"OpenSC test");
 	pad_string(pInfo->model, sizeof(pInfo->model), "Rutoken stub");
@@ -165,28 +264,75 @@ C_OpenSession(CK_SLOT_ID slotID, CK_FLAGS flags, CK_VOID_PTR pApplication,
 	if (!phSession)
 		return CKR_ARGUMENTS_BAD;
 	*phSession = (flags & CKF_RW_SESSION) ? SESSION_RW : SESSION_RO;
+	token.sessions++;
 	return CKR_OK;
 }
 
 CK_RV
 C_CloseSession(CK_SESSION_HANDLE hSession)
 {
-	return session_valid(hSession) ? CKR_OK : CKR_SESSION_HANDLE_INVALID;
+	if (!session_valid(hSession))
+		return CKR_SESSION_HANDLE_INVALID;
+	if (token.sessions > 0 && --token.sessions == 0)
+		logged_in = 0;
+	return CKR_OK;
+}
+
+CK_RV
+C_CloseAllSessions(CK_SLOT_ID slotID)
+{
+	if (slotID != 7)
+		return CKR_SLOT_ID_INVALID;
+	token.sessions = 0;
+	logged_in = 0;
+	return CKR_OK;
 }
 
 CK_RV
 C_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR_PTR pPin,
 		CK_ULONG ulPinLen)
 {
+	CK_RV rv;
+
 	if (!session_valid(hSession))
 		return CKR_SESSION_HANDLE_INVALID;
-	if (userType != CKU_USER)
+	token_ready();
+	if (userType != CKU_USER && userType != CKU_SO)
 		return CKR_USER_TYPE_INVALID;
-	if (!pPin || !ulPinLen)
-		return CKR_PIN_INCORRECT;
 	if (logged_in)
-		return CKR_USER_ALREADY_LOGGED_IN;
+		return login_user == userType ? CKR_USER_ALREADY_LOGGED_IN :
+				CKR_USER_ANOTHER_ALREADY_LOGGED_IN;
+	rv = check_pin(userType == CKU_SO ? &token.so : &token.user, pPin,
+			ulPinLen);
+	if (rv != CKR_OK)
+		return rv;
 	logged_in = 1;
+	login_user = userType;
+	return CKR_OK;
+}
+
+CK_RV
+C_SetPIN(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pOldPin,
+		CK_ULONG ulOldLen, CK_UTF8CHAR_PTR pNewPin, CK_ULONG ulNewLen)
+{
+	struct stub_pin *pin;
+	CK_RV rv;
+
+	if (!session_valid(hSession))
+		return CKR_SESSION_HANDLE_INVALID;
+	if (hSession != SESSION_RW)
+		return CKR_SESSION_READ_ONLY;
+	if (!logged_in)
+		return CKR_USER_NOT_LOGGED_IN;
+	if (!pNewPin || ulNewLen < 6 || ulNewLen > STUB_PIN_MAX)
+		return CKR_PIN_LEN_RANGE;
+	pin = login_user == CKU_SO ? &token.so : &token.user;
+	rv = check_pin(pin, pOldPin, ulOldLen);
+	if (rv != CKR_OK)
+		return rv;
+	memcpy(pin->value, pNewPin, ulNewLen);
+	pin->value[ulNewLen] = '\0';
+	pin->change_required = 0;
 	return CKR_OK;
 }
 
@@ -652,10 +798,11 @@ C_EX_GetTokenInfoExtended(CK_SLOT_ID slotID,
 	pInfo->ulMaxAdminPinLen = 32;
 	pInfo->ulMinUserPinLen = 6;
 	pInfo->ulMaxUserPinLen = 32;
-	pInfo->ulMaxAdminRetryCount = 10;
-	pInfo->ulAdminRetryCountLeft = 9;
-	pInfo->ulMaxUserRetryCount = 10;
-	pInfo->ulUserRetryCountLeft = 8;
+	token_ready();
+	pInfo->ulMaxAdminRetryCount = token.so.max_retries;
+	pInfo->ulAdminRetryCountLeft = token.so.retries;
+	pInfo->ulMaxUserRetryCount = token.user.max_retries;
+	pInfo->ulUserRetryCountLeft = token.user.retries;
 	memcpy(pInfo->serialNumber, "12345678", sizeof(pInfo->serialNumber));
 	/* the remaining values were reported by a Rutoken ECP 3.0 Flash */
 	pInfo->flags = TOKEN_FLAGS_USER_CHANGE_USER_PIN |
@@ -678,9 +825,10 @@ CK_RV CK_SPEC
 C_EX_GetTokenName(CK_SESSION_HANDLE hSession, CK_CHAR_PTR pLabel,
 		CK_ULONG_PTR pulLabelLen)
 {
-	static const char label[] = "Test Rutoken";
-	CK_ULONG needed = sizeof(label) - 1;
+	CK_ULONG needed;
 
+	token_ready();
+	needed = token.label_length;
 	if (!session_valid(hSession))
 		return CKR_SESSION_HANDLE_INVALID;
 	if (!pulLabelLen)
@@ -693,7 +841,7 @@ C_EX_GetTokenName(CK_SESSION_HANDLE hSession, CK_CHAR_PTR pLabel,
 		*pulLabelLen = needed;
 		return CKR_BUFFER_TOO_SMALL;
 	}
-	memcpy(pLabel, label, needed);
+	memcpy(pLabel, token.label, needed);
 	*pulLabelLen = needed;
 	return CKR_OK;
 }
@@ -711,9 +859,10 @@ C_EX_GetLicense(CK_SESSION_HANDLE hSession, CK_ULONG ulLicenseNum,
 		return ORDER_CODE(6);
 	if (!session_valid(hSession))
 		return CKR_SESSION_HANDLE_INVALID;
+	token_ready();
 	if (!pulLicenseLen || ulLicenseNum < 1 || ulLicenseNum > 4)
 		return CKR_ARGUMENTS_BAD;
-	if (ulLicenseNum == 4)
+	if (ulLicenseNum == 4 && token.license4_corrupted)
 		return CKR_RTPKCS11_DATA_CORRUPTED;
 	if (!pLicense) {
 		*pulLicenseLen = 72;
@@ -724,7 +873,7 @@ C_EX_GetLicense(CK_SESSION_HANDLE hSession, CK_ULONG ulLicenseNum,
 		return CKR_BUFFER_TOO_SMALL;
 	}
 	for (i = 0; i < 72; i++)
-		pLicense[i] = ulLicenseNum == 2 ? (CK_BYTE)(i + 1) : 0;
+		pLicense[i] = token.licenses[ulLicenseNum - 1][i];
 	*pulLicenseLen = 72;
 	return CKR_OK;
 }
@@ -1186,6 +1335,11 @@ C_EX_GetJournal(CK_SLOT_ID slotID, CK_BYTE_PTR pJournal,
 		return CKR_SLOT_ID_INVALID;
 	if (!pulJournalSize)
 		return CKR_ARGUMENTS_BAD;
+	token_ready();
+	if (!token.journal_present) {
+		*pulJournalSize = 0;
+		return CKR_OK;
+	}
 	if (!pJournal) {
 		*pulJournalSize = sizeof(journal);
 		return CKR_OK;
@@ -1201,6 +1355,225 @@ C_EX_GetJournal(CK_SLOT_ID slotID, CK_BYTE_PTR pJournal,
 
 /* The User PIN need not be changed, the SO PIN must be; local PINs 3 and 5
  * exist. The real library code for a missing local PIN is unknown. */
+/* Stage 5: functions that change the token */
+
+static int
+so_logged_in(void)
+{
+	return logged_in && login_user == CKU_SO;
+}
+
+/* InitToken and MODE_RESTORE_FACTORY_DEFAULTS format the token: new PINs,
+ * counters and label; objects, local PINs and the journal are erased,
+ * licenses stay. */
+static CK_RV
+format_token(const CK_RUTOKEN_INIT_PARAM *init)
+{
+	size_t i;
+
+	if (init->ulSizeofThisStructure != sizeof(*init) ||
+			!init->pNewAdminPin || !init->pNewUserPin ||
+			init->ulNewAdminPinLen < init->ulMinAdminPinLen ||
+			init->ulNewAdminPinLen > STUB_PIN_MAX ||
+			init->ulNewUserPinLen < init->ulMinUserPinLen ||
+			init->ulNewUserPinLen > STUB_PIN_MAX ||
+			init->ulMaxAdminRetryCount < 3 || init->ulMaxAdminRetryCount > 10 ||
+			init->ulMaxUserRetryCount < 1 || init->ulMaxUserRetryCount > 10 ||
+			init->ulLabelLen > STUB_LABEL_MAX ||
+			(!init->pTokenLabel && init->ulLabelLen))
+		return CKR_ARGUMENTS_BAD;
+	memset(&token.user, 0, sizeof(token.user));
+	memset(&token.so, 0, sizeof(token.so));
+	memcpy(token.so.value, init->pNewAdminPin, init->ulNewAdminPinLen);
+	memcpy(token.user.value, init->pNewUserPin, init->ulNewUserPinLen);
+	token.so.max_retries = token.so.retries = init->ulMaxAdminRetryCount;
+	token.user.max_retries = token.user.retries = init->ulMaxUserRetryCount;
+	if (init->ulLabelLen)
+		memcpy(token.label, init->pTokenLabel, init->ulLabelLen);
+	token.label_length = init->ulLabelLen;
+	memset(token.local, 0, sizeof(token.local));
+	token.journal_present = 0;
+	for (i = 0; i < DYNAMIC_OBJECTS; i++)
+		if (dynamic_objects[i].handle)
+			release_dynamic(&dynamic_objects[i]);
+	return CKR_OK;
+}
+
+CK_RV CK_SPEC
+C_EX_InitToken(CK_SLOT_ID slotID, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen,
+		CK_RUTOKEN_INIT_PARAM_PTR pInitInfo)
+{
+	CK_RV rv;
+
+	if (slotID == ORDER_PROBE)
+		return ORDER_CODE(1);
+	if (slotID != 7)
+		return CKR_SLOT_ID_INVALID;
+	token_ready();
+	if (token.sessions)
+		return CKR_SESSION_EXISTS;
+	if (!pInitInfo)
+		return CKR_ARGUMENTS_BAD;
+	if (!pInitInfo->UseRepairMode &&
+			(rv = check_pin(&token.so, pPin, ulPinLen)) != CKR_OK)
+		return rv;
+	return format_token(pInitInfo);
+}
+
+static CK_RV
+restore_factory_defaults(CK_VENDOR_RESTORE_FACTORY_DEFAULTS_PARAMS *params)
+{
+	CK_RV rv;
+
+	if (params->ulSizeofThisStructure != sizeof(*params) ||
+			!params->pInitParam || !params->pNewEmitentKey ||
+			params->ulNewEmitentKeyLen != 32)
+		return CKR_ARGUMENTS_BAD;
+	if (token.sessions)
+		return CKR_SESSION_EXISTS;
+	rv = check_pin(&token.so, params->pAdminPin, params->ulAdminPinLen);
+	if (rv != CKR_OK)
+		return rv;
+	return format_token(params->pInitParam);
+}
+
+CK_RV CK_SPEC
+C_EX_UnblockUserPIN(CK_SESSION_HANDLE hSession)
+{
+	if (hSession == ORDER_PROBE)
+		return ORDER_CODE(3);
+	if (!session_valid(hSession))
+		return CKR_SESSION_HANDLE_INVALID;
+	if (hSession != SESSION_RW)
+		return CKR_SESSION_READ_ONLY;
+	if (!so_logged_in())
+		return CKR_USER_NOT_LOGGED_IN;
+	token.user.retries = token.user.max_retries;
+	return CKR_OK;
+}
+
+CK_RV CK_SPEC
+C_EX_SetTokenName(CK_SESSION_HANDLE hSession, CK_CHAR_PTR pLabel,
+		CK_ULONG ulLabelLen)
+{
+	if (hSession == ORDER_PROBE)
+		return ORDER_CODE(4);
+	if (!session_valid(hSession))
+		return CKR_SESSION_HANDLE_INVALID;
+	if (hSession != SESSION_RW)
+		return CKR_SESSION_READ_ONLY;
+	if (!logged_in || login_user != CKU_USER)
+		return CKR_USER_NOT_LOGGED_IN;
+	if ((!pLabel && ulLabelLen) || ulLabelLen > STUB_LABEL_MAX)
+		return CKR_ARGUMENTS_BAD;
+	if (ulLabelLen)
+		memcpy(token.label, pLabel, ulLabelLen);
+	token.label_length = ulLabelLen;
+	return CKR_OK;
+}
+
+CK_RV CK_SPEC
+C_EX_SetLicense(CK_SESSION_HANDLE hSession, CK_ULONG ulLicenseNum,
+		CK_BYTE_PTR pLicense, CK_ULONG ulLicenseLen)
+{
+	if (hSession == ORDER_PROBE)
+		return ORDER_CODE(5);
+	if (!session_valid(hSession))
+		return CKR_SESSION_HANDLE_INVALID;
+	if (hSession != SESSION_RW)
+		return CKR_SESSION_READ_ONLY;
+	if (!logged_in)
+		return CKR_USER_NOT_LOGGED_IN;
+	if (ulLicenseNum < 1 || ulLicenseNum > 4 || !pLicense ||
+			ulLicenseLen != 72)
+		return CKR_ARGUMENTS_BAD;
+	memcpy(token.licenses[ulLicenseNum - 1], pLicense, 72);
+	if (ulLicenseNum == 4)
+		token.license4_corrupted = 0;
+	return CKR_OK;
+}
+
+/* Authorized by the user PIN or by the old value of the local PIN. */
+CK_RV CK_SPEC
+C_EX_SetLocalPIN(CK_SLOT_ID slotID, CK_UTF8CHAR_PTR pUserPin,
+		CK_ULONG ulUserPinLen, CK_UTF8CHAR_PTR pNewLocalPin,
+		CK_ULONG ulNewLocalPinLen, CK_ULONG ulLocalID)
+{
+	struct stub_local_pin *local;
+	char value[STUB_PIN_MAX + 1];
+
+	if (slotID == ORDER_PROBE)
+		return ORDER_CODE(12);
+	if (slotID != 7)
+		return CKR_SLOT_ID_INVALID;
+	token_ready();
+	if (ulLocalID < 3 || ulLocalID > 31 || !pUserPin || !pNewLocalPin ||
+			!ulNewLocalPinLen || ulNewLocalPinLen > STUB_PIN_MAX)
+		return CKR_ARGUMENTS_BAD;
+	local = &token.local[ulLocalID];
+	if (!pin_matches(&token.user, pUserPin, ulUserPinLen) &&
+			!(local->present && ulUserPinLen == strlen(local->value) &&
+			  !memcmp(pUserPin, local->value, ulUserPinLen))) {
+		if (token.user.retries)
+			token.user.retries--;
+		return CKR_PIN_INCORRECT;
+	}
+	memcpy(value, pNewLocalPin, ulNewLocalPinLen);
+	value[ulNewLocalPinLen] = '\0';
+	set_local_pin(ulLocalID, value, 1, 249, 10, 10,
+			LOCAL_PIN_FLAGS_NOT_DEFAULT);
+	return CKR_OK;
+}
+
+CK_RV CK_SPEC
+C_EX_TokenManage(CK_SESSION_HANDLE hSession, CK_ULONG ulMode,
+		CK_VOID_PTR pValue)
+{
+	CK_VENDOR_PIN_PARAMS *params = pValue;
+
+	if (hSession == ORDER_PROBE)
+		return ORDER_CODE(19);
+	if (!session_valid(hSession))
+		return CKR_SESSION_HANDLE_INVALID;
+	/* modes 1 and 2 need Rutoken ECP Bluetooth */
+	if (ulMode == MODE_SET_BLUETOOTH_POWEROFF_TIMEOUT ||
+			ulMode == MODE_SET_CHANNEL_TYPE)
+		return CKR_FUNCTION_NOT_SUPPORTED;
+	if (!so_logged_in())
+		return CKR_USER_NOT_LOGGED_IN;
+	if (!pValue)
+		return CKR_ARGUMENTS_BAD;
+	switch (ulMode) {
+	case MODE_FORCE_USER_TO_CHANGE_PIN:
+		if (*(CK_USER_TYPE *)pValue != CKU_USER)
+			return CKR_ARGUMENTS_BAD;
+		token.user.change_required = 1;
+		return CKR_OK;
+	case MODE_CHANGE_DEFAULT_PIN:
+		if (params->userType != CKU_USER || !params->pPinValue ||
+				params->ulPinLength < 6 || params->ulPinLength > STUB_PIN_MAX)
+			return CKR_ARGUMENTS_BAD;
+		memcpy(token.custom_user_default, params->pPinValue,
+				params->ulPinLength);
+		token.custom_user_default[params->ulPinLength] = '\0';
+		return CKR_OK;
+	case MODE_RESET_PIN_TO_DEFAULT:
+		if (*(CK_USER_TYPE *)pValue != CKU_USER)
+			return CKR_ARGUMENTS_BAD;
+		strcpy(token.user.value, token.custom_user_default[0] ?
+				token.custom_user_default : STUB_STANDARD_USER_PIN);
+		token.user.retries = token.user.max_retries;
+		return CKR_OK;
+	case MODE_RESET_CUSTOM_PIN_TO_STANDARD:
+		if (*(CK_USER_TYPE *)pValue != CKU_USER)
+			return CKR_ARGUMENTS_BAD;
+		token.custom_user_default[0] = '\0';
+		return CKR_OK;
+	default:
+		return CKR_ARGUMENTS_BAD;
+	}
+}
+
 CK_RV CK_SPEC
 C_EX_SlotManage(CK_SLOT_ID slotID, CK_ULONG ulMode, CK_VOID_PTR pValue)
 {
@@ -1210,37 +1583,28 @@ C_EX_SlotManage(CK_SLOT_ID slotID, CK_ULONG ulMode, CK_VOID_PTR pValue)
 		return ORDER_CODE(24);
 	if (slotID != 7)
 		return CKR_SLOT_ID_INVALID;
+	token_ready();
 	if (!pValue)
 		return CKR_ARGUMENTS_BAD;
 	switch (ulMode) {
 	case MODE_GET_PIN_SET_TO_BE_CHANGED:
 		if (*(CK_USER_TYPE *)pValue == CKU_USER)
-			return CKR_OK;
+			return token.user.change_required ? CKR_PIN_EXPIRED : CKR_OK;
 		if (*(CK_USER_TYPE *)pValue == CKU_SO)
-			return CKR_PIN_EXPIRED;
+			return token.so.change_required ? CKR_PIN_EXPIRED : CKR_OK;
 		/* the library answers other user types so */
 		return CKR_ARGUMENTS_BAD;
 	case MODE_GET_LOCAL_PIN_INFO:
-		if (pin->ulPinID == 3) {
-			pin->ulMinSize = 1;
-			pin->ulMaxSize = 249;
-			pin->ulMaxRetryCount = 10;
-			pin->ulCurrentRetryCount = 10;
-			pin->flags = LOCAL_PIN_FLAGS_NOT_DEFAULT;
-			return CKR_OK;
-		}
-		if (pin->ulPinID == 5) {
-			pin->ulMinSize = 4;
-			pin->ulMaxSize = 32;
-			pin->ulMaxRetryCount = 5;
-			pin->ulCurrentRetryCount = 3;
-			pin->flags = LOCAL_PIN_FLAGS_IS_UTF8;
-			return CKR_OK;
-		}
 		/* local PINs are 3..31; the library reports a missing one as a
 		 * device error (the token answers SELECT with 6A 82) */
-		return pin->ulPinID >= 3 && pin->ulPinID <= 31 ?
-				CKR_DEVICE_ERROR : CKR_ARGUMENTS_BAD;
+		if (pin->ulPinID < 3 || pin->ulPinID > 31)
+			return CKR_ARGUMENTS_BAD;
+		if (!token.local[pin->ulPinID].present)
+			return CKR_DEVICE_ERROR;
+		*pin = token.local[pin->ulPinID].info;
+		return CKR_OK;
+	case MODE_RESTORE_FACTORY_DEFAULTS:
+		return restore_factory_defaults(pValue);
 	default:
 		return CKR_FUNCTION_NOT_SUPPORTED;
 	}
@@ -1260,6 +1624,7 @@ C_Finalize(CK_VOID_PTR pReserved)
 		}
 	}
 	logged_in = 0;
+	token.sessions = 0;
 	cms_verify_reset();
 	/* a buffer returned by an extension function was not released or a
 	 * created object was not destroyed */
@@ -1275,19 +1640,6 @@ C_EX_GetFunctionListExtended(CK_FUNCTION_LIST_EXTENDED_PTR_PTR ppFunctionList)
 	return CKR_OK;
 }
 
-STUB_FUNCTION(C_EX_InitToken, 1,
-		(CK_SLOT_ID slotID, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen,
-		 CK_RUTOKEN_INIT_PARAM_PTR pInitInfo))
-STUB_FUNCTION(C_EX_UnblockUserPIN, 3, (CK_SESSION_HANDLE hSession))
-STUB_FUNCTION(C_EX_SetTokenName, 4,
-		(CK_SESSION_HANDLE hSession, CK_CHAR_PTR pLabel, CK_ULONG ulLabelLen))
-STUB_FUNCTION(C_EX_SetLicense, 5,
-		(CK_SESSION_HANDLE hSession, CK_ULONG ulLicenseNum,
-		 CK_BYTE_PTR pLicense, CK_ULONG ulLicenseLen))
-STUB_FUNCTION(C_EX_SetLocalPIN, 12,
-		(CK_SLOT_ID slotID, CK_UTF8CHAR_PTR pUserPin, CK_ULONG ulUserPinLen,
-		 CK_UTF8CHAR_PTR pNewLocalPin, CK_ULONG ulNewLocalPinLen,
-		 CK_ULONG ulLocalID))
 STUB_FUNCTION(C_EX_LoadActivationKey, 13,
 		(CK_SESSION_HANDLE hSession, CK_BYTE_PTR key, CK_ULONG keySize))
 STUB_FUNCTION(C_EX_SetActivationPassword, 14,
@@ -1300,8 +1652,6 @@ STUB_FUNCTION(C_EX_FormatDrive, 18,
 		(CK_SLOT_ID slotID, CK_USER_TYPE userType, CK_UTF8CHAR_PTR pPin,
 		 CK_ULONG ulPinLen, CK_VOLUME_FORMAT_INFO_EXTENDED_PTR pInitParams,
 		 CK_ULONG ulInitParamsCount))
-STUB_FUNCTION(C_EX_TokenManage, 19,
-		(CK_SESSION_HANDLE hSession, CK_ULONG ulMode, CK_VOID_PTR pValue))
 STUB_FUNCTION(C_EX_GenerateActivationPassword, 20,
 		(CK_SESSION_HANDLE hSession, CK_ULONG ulPasswordNumber,
 		 CK_UTF8CHAR_PTR pPassword, CK_ULONG_PTR pulPasswordSize,
@@ -1344,8 +1694,10 @@ static CK_FUNCTION_LIST standard_functions = {
 	.C_GetTokenInfo = C_GetTokenInfo,
 	.C_OpenSession = C_OpenSession,
 	.C_CloseSession = C_CloseSession,
+	.C_CloseAllSessions = C_CloseAllSessions,
 	.C_Login = C_Login,
 	.C_Logout = C_Logout,
+	.C_SetPIN = C_SetPIN,
 	.C_CreateObject = C_CreateObject,
 	.C_DestroyObject = C_DestroyObject,
 	.C_GetAttributeValue = C_GetAttributeValue,

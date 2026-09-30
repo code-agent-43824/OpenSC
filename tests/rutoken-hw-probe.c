@@ -13,6 +13,10 @@
  * certificate, runs the journal, certificate text, PKCS #7 and CSR checks
  * with them and deletes them again.
  *
+ * --modify-tests (version 3) skips the reading checks and calls the
+ * functions that change the token, ending with C_EX_InitToken and
+ * MODE_RESTORE_FACTORY_DEFAULTS: it is meant for a disposable token.
+ *
  * Build on Linux from the OpenSC source tree:
  *   cc -I src -o rutoken-hw-probe tests/rutoken-hw-probe.c -ldl
  */
@@ -23,6 +27,7 @@
 
 #include <dlfcn.h>
 #include <errno.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -31,14 +36,14 @@
 #include <sys/stat.h>
 #include <termios.h>
 #include <time.h>
+#include <unistd.h>
 
-#define PROBE_VERSION 2
+#define PROBE_VERSION 3
 #define SENTINEL 0xA5
 #define MAX_OBJECTS 64
 #define EXTENDED_FUNCTIONS 34
 #define MAX_VOLUMES 20
 #define CKH_VENDOR_TOKEN_INFO (CKH_VENDOR_DEFINED + 0x01UL)
-#define CKA_VENDOR_KEY_JOURNAL (CKA_VENDOR_DEFINED | 0x2002UL)
 
 /* The loop in probe_extended_table() relies on this layout. */
 typedef char probe_table_layout[
@@ -68,7 +73,10 @@ static struct {
 	const char *pin_env;
 	int assume_yes;
 	const char *selftest_certificate;
-} opt = { NULL, 0, 0, 0, 500, 0, NULL, NULL, 0, NULL, 0, NULL };
+	int modify_tests;
+	int default_pins;
+	const char *so_pin_env;
+} opt = { NULL, 0, 0, 0, 500, 0, NULL, NULL, 0, NULL, 0, NULL, 0, 0, NULL };
 
 static void *module;
 static CK_FUNCTION_LIST_PTR f;
@@ -428,6 +436,12 @@ parse_options(int argc, char **argv)
 			opt.pin_env = argv[++i];
 		} else if (!strcmp(argv[i], "--assume-yes")) {
 			opt.assume_yes = 1;
+		} else if (!strcmp(argv[i], "--modify-tests")) {
+			opt.modify_tests = 1;
+		} else if (!strcmp(argv[i], "--default-pins")) {
+			opt.default_pins = 1;
+		} else if (!strcmp(argv[i], "--so-pin-env") && i + 1 < argc) {
+			opt.so_pin_env = argv[++i];
 		} else if (!strcmp(argv[i], "--selftest-certificate") && i + 1 < argc) {
 			opt.selftest_certificate = argv[++i];
 		} else if (argv[i][0] == '-' || opt.module) {
@@ -438,7 +452,12 @@ parse_options(int argc, char **argv)
 	}
 	if (opt.selftest_certificate)
 		return 1;
+	if (opt.modify_tests)
+		return opt.module != NULL && !opt.login && !opt.pkcs7_id &&
+				!opt.write_tests;
 	if ((opt.pkcs7_id || opt.write_tests || opt.pin_env) && !opt.login)
+		return 0;
+	if (opt.default_pins || opt.so_pin_env)
 		return 0;
 	return opt.module != NULL;
 }
@@ -448,7 +467,9 @@ usage(const char *name)
 {
 	fprintf(stderr,
 		"usage: %s [--slot ID] [--login] [--pause-ms N] [--show-text]\n"
-		"          [--pkcs7 HEX_CKA_ID] [--write-tests] [--save-dir DIR] MODULE\n\n"
+		"          [--pkcs7 HEX_CKA_ID] [--write-tests] [--save-dir DIR] MODULE\n"
+		"       %s --modify-tests [--default-pins] [--slot ID] [--pause-ms N]\n"
+		"          MODULE\n\n"
 		"Reads Rutoken extension data through MODULE (librtpkcs11ecp.so or\n"
 		"pkcs11-spy.so). Without --pkcs7 and --write-tests nothing on the token\n"
 		"changes.\n"
@@ -468,10 +489,19 @@ usage(const char *name)
 		"  --pin-env NAME   with --login: take the PIN from this environment\n"
 		"                   variable (for automated tests)\n"
 		"  --assume-yes     answer confirmations (for automated tests)\n"
+		"  --modify-tests   instead of the reading checks, call the functions\n"
+		"                   that change the token: name, local PINs, licenses,\n"
+		"                   unblocking, PIN management, touch-confirmed keys,\n"
+		"                   InitToken and restoring factory defaults. THE TOKEN\n"
+		"                   IS ERASED; asks for the word ERASE\n"
+		"  --default-pins   with --modify-tests: the factory PINs 12345678 and\n"
+		"                   87654321 instead of asking\n"
+		"  --so-pin-env NAME with --modify-tests: the Administrator PIN from this\n"
+		"                   variable, the user PIN from --pin-env\n"
 		"  --selftest-certificate FILE\n"
 		"                   write a certificate built from fixed test values\n"
 		"                   to FILE and exit; checks the certificate encoder\n",
-		name);
+		name, name);
 }
 
 static int
@@ -2258,6 +2288,677 @@ probe_write_tests(CK_SLOT_ID slot)
 	show_rv("C_CloseSession", f->C_CloseSession(session));
 }
 
+/*
+ * --modify-tests: the functions that change the token (stage 5).  Every
+ * step is followed by the smallest read that shows its effect.  The token
+ * ends formatted with the factory PINs.
+ */
+
+#define STANDARD_USER_PIN "12345678"
+#define STANDARD_SO_PIN "87654321"
+#define CUSTOM_DEFAULT_PIN "13572468"
+#define PROBE_LABEL "OpenSC probe 3"
+
+static char user_pin[64], so_pin[64];
+static CK_SLOT_ID modify_slot;
+
+static int
+read_pin(const char *env, const char *prompt, const char *standard,
+		char *pin, size_t size)
+{
+	const char *value;
+
+	if (opt.default_pins) {
+		memcpy(pin, standard, strlen(standard) + 1);
+		return 1;
+	}
+	if (env) {
+		value = getenv(env);
+		if (!value || !value[0] || strlen(value) >= size)
+			return 0;
+		memcpy(pin, value, strlen(value) + 1);
+		return 1;
+	}
+	return read_tty_line(prompt, pin, size, 1);
+}
+
+static CK_RV
+modify_login(CK_SESSION_HANDLE session, CK_USER_TYPE user, const char *pin,
+		const char *title)
+{
+	CK_RV rv;
+
+	rv = f->C_Login(session, user, (CK_UTF8CHAR_PTR)pin, (CK_ULONG)strlen(pin));
+	line("%s: %s (0x%lx)", title, rv_name(rv), (unsigned long)rv);
+	return rv;
+}
+
+static void
+modify_logout(CK_SESSION_HANDLE session)
+{
+	CK_RV rv = f->C_Logout(session);
+
+	if (rv != CKR_OK)
+		show_rv("C_Logout", rv);
+}
+
+static CK_SESSION_HANDLE
+modify_session(CK_SLOT_ID slot)
+{
+	CK_SESSION_HANDLE session = CK_INVALID_HANDLE;
+	CK_RV rv;
+
+	rv = f->C_OpenSession(slot, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL_PTR,
+			NULL, &session);
+	if (rv != CKR_OK) {
+		show_rv("C_OpenSession(read-write)", rv);
+		return CK_INVALID_HANDLE;
+	}
+	return session;
+}
+
+static void
+modify_close(CK_SESSION_HANDLE session)
+{
+	CK_RV rv = f->C_CloseSession(session);
+
+	if (rv != CKR_OK)
+		show_rv("C_CloseSession", rv);
+}
+
+/* Retry counters and PIN flags of the extended token information */
+static void
+show_counters(CK_SLOT_ID slot)
+{
+	CK_TOKEN_INFO_EXTENDED info;
+	CK_RV rv;
+
+	memset(&info, 0, sizeof(info));
+	info.ulSizeofThisStructure = sizeof(info);
+	rv = fx->C_EX_GetTokenInfoExtended(slot, &info);
+	if (rv != CKR_OK) {
+		show_rv("C_EX_GetTokenInfoExtended", rv);
+		return;
+	}
+	line("user PIN %lu of %lu attempts, Administrator PIN %lu of %lu, "
+			"flags 0x%lx", info.ulUserRetryCountLeft,
+			info.ulMaxUserRetryCount, info.ulAdminRetryCountLeft,
+			info.ulMaxAdminRetryCount, info.flags);
+}
+
+static void
+show_name(CK_SESSION_HANDLE session)
+{
+	CK_BYTE name[512];
+	CK_ULONG length = sizeof(name);
+	CK_TOKEN_INFO info;
+	CK_RV rv;
+
+	rv = fx->C_EX_GetTokenName(session, name, &length);
+	if (rv != CKR_OK) {
+		show_rv("C_EX_GetTokenName", rv);
+	} else {
+		line("C_EX_GetTokenName: %lu bytes", length);
+		print_hex("name", name, length, 256);
+		line("  as text: \"%.*s\"", (int)length, (const char *)name);
+	}
+	if (f->C_GetTokenInfo(modify_slot, &info) == CKR_OK)
+		print_padded("C_GetTokenInfo label", info.label, sizeof(info.label));
+}
+
+static void
+show_local_pin(CK_SLOT_ID slot, CK_ULONG id)
+{
+	CK_LOCAL_PIN_INFO pin;
+	CK_RV rv;
+
+	memset(&pin, 0, sizeof(pin));
+	pin.ulPinID = id;
+	rv = fx->C_EX_SlotManage(slot, MODE_GET_LOCAL_PIN_INFO, &pin);
+	if (rv != CKR_OK)
+		line("local PIN %lu: %s (0x%lx)", id, rv_name(rv), (unsigned long)rv);
+	else
+		line("local PIN %lu: length %lu..%lu, %lu of %lu attempts, flags 0x%lx",
+				id, pin.ulMinSize, pin.ulMaxSize, pin.ulCurrentRetryCount,
+				pin.ulMaxRetryCount, pin.flags);
+}
+
+static void
+license_pattern(CK_ULONG number, CK_BYTE *license)
+{
+	CK_ULONG i;
+
+	for (i = 0; i < 72; i++)
+		license[i] = (CK_BYTE)(0x40 + number * 8 + i);
+}
+
+/* Only equality with the probe pattern and emptiness are printed. */
+static void
+show_license(CK_SESSION_HANDLE session, CK_ULONG number)
+{
+	CK_BYTE license[128], pattern[72];
+	CK_ULONG length = sizeof(license), i;
+	int empty = 1;
+	CK_RV rv;
+
+	rv = fx->C_EX_GetLicense(session, number, license, &length);
+	if (rv != CKR_OK) {
+		line("license %lu: %s (0x%lx)", number, rv_name(rv), (unsigned long)rv);
+		return;
+	}
+	license_pattern(number, pattern);
+	for (i = 0; i < length; i++)
+		if (license[i])
+			empty = 0;
+	line("license %lu: %lu bytes, %s", number, length,
+			length == 72 && !memcmp(license, pattern, 72) ?
+			"the probe pattern" : empty ? "empty" : "other data");
+	wipe(license, sizeof(license));
+}
+
+static void
+show_objects(CK_SESSION_HANDLE session)
+{
+	CK_OBJECT_HANDLE objects[MAX_OBJECTS];
+	CK_OBJECT_CLASS object_class;
+	CK_ATTRIBUTE attribute = { CKA_CLASS, &object_class, sizeof(object_class) };
+	CK_ULONG count = 0, i, classes[5] = { 0 };
+	CK_RV rv;
+
+	rv = f->C_FindObjectsInit(session, NULL_PTR, 0);
+	if (rv == CKR_OK) {
+		rv = f->C_FindObjects(session, objects, MAX_OBJECTS, &count);
+		f->C_FindObjectsFinal(session);
+	}
+	if (rv != CKR_OK) {
+		show_rv("C_FindObjects", rv);
+		return;
+	}
+	for (i = 0; i < count; i++) {
+		attribute.ulValueLen = sizeof(object_class);
+		if (f->C_GetAttributeValue(session, objects[i], &attribute, 1) == CKR_OK &&
+				object_class < 4)
+			classes[object_class]++;
+		else
+			classes[4]++;
+	}
+	line("%lu objects: %lu data, %lu certificates, %lu public keys, "
+			"%lu private keys, %lu other", count, classes[0], classes[1],
+			classes[2], classes[3], classes[4]);
+}
+
+static void
+show_journal_size(CK_SLOT_ID slot)
+{
+	CK_ULONG length = 0;
+	CK_RV rv = fx->C_EX_GetJournal(slot, NULL_PTR, &length);
+
+	line("journal: %s (0x%lx), %lu bytes", rv_name(rv), (unsigned long)rv,
+			length);
+}
+
+/* After a format: what stayed and what was erased */
+static void
+show_state(CK_SLOT_ID slot)
+{
+	CK_SESSION_HANDLE session;
+	CK_ULONG id;
+
+	show_counters(slot);
+	show_journal_size(slot);
+	for (id = 3; id <= 5; id++)
+		show_local_pin(slot, id);
+	session = modify_session(slot);
+	if (session == CK_INVALID_HANDLE)
+		return;
+	show_name(session);
+	for (id = 1; id <= 4; id++)
+		show_license(session, id);
+	if (modify_login(session, CKU_USER, STANDARD_USER_PIN,
+			"C_Login(CKU_USER, factory PIN)") == CKR_OK) {
+		show_objects(session);
+		modify_logout(session);
+	}
+	modify_close(session);
+}
+
+static void
+init_parameters(CK_RUTOKEN_INIT_PARAM *init)
+{
+	static CK_BYTE new_so_pin[] = STANDARD_SO_PIN;
+	static CK_BYTE new_user_pin[] = STANDARD_USER_PIN;
+	static CK_BYTE label[] = PROBE_LABEL;
+
+	memset(init, 0, sizeof(*init));
+	init->ulSizeofThisStructure = sizeof(*init);
+	init->UseRepairMode = 0;
+	init->pNewAdminPin = new_so_pin;
+	init->ulNewAdminPinLen = sizeof(new_so_pin) - 1;
+	init->pNewUserPin = new_user_pin;
+	init->ulNewUserPinLen = sizeof(new_user_pin) - 1;
+	init->ChangeUserPINPolicy = TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN |
+			TOKEN_FLAGS_USER_CHANGE_USER_PIN;
+	init->ulMinAdminPinLen = 6;
+	init->ulMinUserPinLen = 6;
+	init->ulMaxAdminRetryCount = 10;
+	init->ulMaxUserRetryCount = 10;
+	init->pTokenLabel = label;
+	init->ulLabelLen = sizeof(label) - 1;
+	init->ulSmMode = 0;
+}
+
+static void
+set_name(CK_SESSION_HANDLE session, const char *title, const CK_BYTE *name,
+		CK_ULONG length)
+{
+	CK_BYTE copy[512];
+	CK_RV rv;
+
+	step("C_EX_SetTokenName: %s, %lu bytes", title, length);
+	memcpy(copy, name, length);
+	rv = fx->C_EX_SetTokenName(session, copy, length);
+	show_rv("C_EX_SetTokenName", rv);
+	show_name(session);
+}
+
+static void
+modify_names(CK_SESSION_HANDLE session)
+{
+	static const char cyrillic[] = "\xd0\x9f\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb5"
+			"\xd1\x80\xd0\xba\xd0\xb0 OpenSC";
+	CK_BYTE longer[256];
+
+	set_name(session, "ASCII", (const CK_BYTE *)PROBE_LABEL,
+			sizeof(PROBE_LABEL) - 1);
+	set_name(session, "UTF-8 Cyrillic", (const CK_BYTE *)cyrillic,
+			sizeof(cyrillic) - 1);
+	memset(longer, 'N', sizeof(longer));
+	set_name(session, "32 characters", longer, 32);
+	set_name(session, "33 characters", longer, 33);
+	set_name(session, "255 characters", longer, 255);
+	set_name(session, "empty", longer, 0);
+}
+
+static CK_RV
+set_local(CK_SLOT_ID slot, const char *authorization, const char *new_pin,
+		CK_ULONG id, const char *title)
+{
+	CK_BYTE old_copy[64], new_copy[64];
+	CK_RV rv;
+
+	memcpy(old_copy, authorization, strlen(authorization) + 1);
+	memcpy(new_copy, new_pin, strlen(new_pin) + 1);
+	rv = fx->C_EX_SetLocalPIN(slot, old_copy, (CK_ULONG)strlen(authorization),
+			new_copy, (CK_ULONG)strlen(new_pin), id);
+	line("%s: %s (0x%lx)", title, rv_name(rv), (unsigned long)rv);
+	return rv;
+}
+
+static void
+modify_local_pins(CK_SLOT_ID slot)
+{
+	step("C_EX_SetLocalPIN: new local PIN 4 authorized by the user PIN");
+	set_local(slot, user_pin, "11111111", 4, "SetLocalPIN(4)");
+	show_local_pin(slot, 4);
+	show_counters(slot);
+
+	step("C_EX_SetLocalPIN: local PIN 4 authorized by its old value");
+	set_local(slot, "11111111", "22222222", 4, "SetLocalPIN(4)");
+	show_local_pin(slot, 4);
+
+	step("C_EX_SetLocalPIN: existing local PIN 3 by the user PIN, IDs 2 and "
+			"32, a wrong PIN");
+	set_local(slot, user_pin, "33333333", 3, "SetLocalPIN(3)");
+	show_local_pin(slot, 3);
+	set_local(slot, user_pin, "22222222", 2, "SetLocalPIN(2)");
+	set_local(slot, user_pin, "22222222", 32, "SetLocalPIN(32)");
+	set_local(slot, "00000000", "44444444", 4, "SetLocalPIN(4) with a wrong PIN");
+	show_local_pin(slot, 4);
+	show_counters(slot);
+}
+
+static void
+set_license(CK_SESSION_HANDLE session, CK_ULONG number, CK_ULONG length,
+		const char *title)
+{
+	CK_BYTE license[80];
+	CK_RV rv;
+
+	license_pattern(number, license);
+	rv = fx->C_EX_SetLicense(session, number, license, length);
+	line("%s: %s (0x%lx)", title, rv_name(rv), (unsigned long)rv);
+}
+
+static void
+modify_licenses(CK_SESSION_HANDLE session)
+{
+	step("C_EX_SetLicense(1) as the user, then again");
+	set_license(session, 1, 72, "SetLicense(1)");
+	show_license(session, 1);
+	set_license(session, 1, 72, "SetLicense(1) a second time");
+
+	step("C_EX_SetLicense: number 5, 71 bytes");
+	set_license(session, 5, 72, "SetLicense(5)");
+	set_license(session, 2, 71, "SetLicense(2) with 71 bytes");
+	show_license(session, 2);
+}
+
+static void
+modify_unblock(CK_SLOT_ID slot, CK_SESSION_HANDLE session)
+{
+	CK_RV rv = CKR_OK;
+	unsigned int attempt;
+
+	step("block the user PIN with wrong PINs");
+	modify_logout(session);
+	for (attempt = 1; attempt <= 12; attempt++) {
+		rv = f->C_Login(session, CKU_USER, (CK_UTF8CHAR_PTR)"00000000", 8);
+		line("attempt %u: %s (0x%lx)", attempt, rv_name(rv), (unsigned long)rv);
+		if (rv == CKR_PIN_LOCKED || rv == CKR_OK)
+			break;
+	}
+	if (rv == CKR_OK)
+		modify_logout(session);
+	show_counters(slot);
+
+	step("C_EX_UnblockUserPIN without and with the Administrator");
+	rv = fx->C_EX_UnblockUserPIN(session);
+	line("UnblockUserPIN, not logged in: %s (0x%lx)", rv_name(rv),
+			(unsigned long)rv);
+	if (modify_login(session, CKU_SO, so_pin, "C_Login(CKU_SO)") == CKR_OK) {
+		rv = fx->C_EX_UnblockUserPIN(session);
+		line("UnblockUserPIN as the Administrator: %s (0x%lx)", rv_name(rv),
+				(unsigned long)rv);
+		modify_logout(session);
+	}
+	show_counters(slot);
+	if (modify_login(session, CKU_USER, user_pin, "C_Login(CKU_USER)") ==
+			CKR_OK)
+		modify_logout(session);
+}
+
+static CK_RV
+token_manage(CK_SESSION_HANDLE session, CK_ULONG mode, void *value,
+		const char *title)
+{
+	CK_RV rv = fx->C_EX_TokenManage(session, mode, value);
+
+	line("TokenManage(%s): %s (0x%lx)", title, rv_name(rv), (unsigned long)rv);
+	return rv;
+}
+
+static void
+show_pin_change(CK_SLOT_ID slot)
+{
+	CK_USER_TYPE user = CKU_USER;
+	CK_RV rv = fx->C_EX_SlotManage(slot, MODE_GET_PIN_SET_TO_BE_CHANGED, &user);
+
+	line("MODE_GET_PIN_SET_TO_BE_CHANGED(CKU_USER): %s (0x%lx)", rv_name(rv),
+			(unsigned long)rv);
+}
+
+static void
+modify_pin_management(CK_SLOT_ID slot, CK_SESSION_HANDLE session)
+{
+	CK_USER_TYPE user = CKU_USER;
+	CK_ULONG timeout = BLUETOOTH_POWEROFF_TIMEOUT_DEFAULT;
+	CK_ULONG channel = CHANNEL_TYPE_USB;
+	CK_BYTE custom[] = CUSTOM_DEFAULT_PIN;
+	CK_VENDOR_PIN_PARAMS params;
+	CK_RV rv;
+
+	step("C_EX_TokenManage: Bluetooth modes 1 and 2");
+	if (modify_login(session, CKU_SO, so_pin, "C_Login(CKU_SO)") != CKR_OK)
+		return;
+	token_manage(session, MODE_SET_BLUETOOTH_POWEROFF_TIMEOUT, &timeout,
+			"MODE_SET_BLUETOOTH_POWEROFF_TIMEOUT");
+	token_manage(session, MODE_SET_CHANNEL_TYPE, &channel,
+			"MODE_SET_CHANNEL_TYPE");
+
+	step("C_EX_TokenManage(MODE_FORCE_USER_TO_CHANGE_PIN), then C_SetPIN");
+	token_manage(session, MODE_FORCE_USER_TO_CHANGE_PIN, &user,
+			"MODE_FORCE_USER_TO_CHANGE_PIN");
+	modify_logout(session);
+	show_pin_change(slot);
+	if (modify_login(session, CKU_USER, user_pin, "C_Login(CKU_USER)") ==
+			CKR_OK) {
+		rv = f->C_SetPIN(session, (CK_UTF8CHAR_PTR)user_pin,
+				(CK_ULONG)strlen(user_pin), (CK_UTF8CHAR_PTR)user_pin,
+				(CK_ULONG)strlen(user_pin));
+		line("C_SetPIN to the same PIN: %s (0x%lx)", rv_name(rv),
+				(unsigned long)rv);
+		modify_logout(session);
+	}
+	show_pin_change(slot);
+
+	step("C_EX_TokenManage: custom default user PIN, reset to it, back to "
+			"the standard one");
+	if (modify_login(session, CKU_SO, so_pin, "C_Login(CKU_SO)") != CKR_OK)
+		return;
+	params.userType = CKU_USER;
+	params.pPinValue = custom;
+	params.ulPinLength = sizeof(custom) - 1;
+	token_manage(session, MODE_CHANGE_DEFAULT_PIN, &params,
+			"MODE_CHANGE_DEFAULT_PIN");
+	token_manage(session, MODE_RESET_PIN_TO_DEFAULT, &user,
+			"MODE_RESET_PIN_TO_DEFAULT");
+	modify_logout(session);
+	if (modify_login(session, CKU_USER, CUSTOM_DEFAULT_PIN,
+			"C_Login(CKU_USER, custom default PIN)") == CKR_OK)
+		modify_logout(session);
+	show_counters(slot);
+	if (modify_login(session, CKU_SO, so_pin, "C_Login(CKU_SO)") != CKR_OK)
+		return;
+	token_manage(session, MODE_RESET_CUSTOM_PIN_TO_STANDARD, &user,
+			"MODE_RESET_CUSTOM_PIN_TO_STANDARD");
+	token_manage(session, MODE_RESET_PIN_TO_DEFAULT, &user,
+			"MODE_RESET_PIN_TO_DEFAULT");
+	modify_logout(session);
+	if (modify_login(session, CKU_USER, STANDARD_USER_PIN,
+			"C_Login(CKU_USER, factory PIN)") == CKR_OK)
+		modify_logout(session);
+	show_counters(slot);
+}
+
+static void
+modify_format(CK_SLOT_ID slot, CK_SESSION_HANDLE *session)
+{
+	CK_RUTOKEN_INIT_PARAM init;
+	CK_VENDOR_RESTORE_FACTORY_DEFAULTS_PARAMS restore;
+	CK_BYTE emitent_key[32];
+	CK_BYTE pin_copy[64];
+	CK_ULONG i;
+	CK_RV rv;
+
+	init_parameters(&init);
+	memcpy(pin_copy, so_pin, strlen(so_pin) + 1);
+	step("C_EX_InitToken with a session open");
+	rv = fx->C_EX_InitToken(slot, pin_copy, (CK_ULONG)strlen(so_pin), &init);
+	show_rv("C_EX_InitToken", rv);
+	if (rv != CKR_OK) {
+		modify_close(*session);
+		step("C_EX_InitToken: factory PINs, 10 attempts, label \""
+				PROBE_LABEL "\"");
+		rv = fx->C_EX_InitToken(slot, pin_copy, (CK_ULONG)strlen(so_pin),
+				&init);
+		show_rv("C_EX_InitToken", rv);
+	} else {
+		modify_close(*session);
+	}
+	*session = CK_INVALID_HANDLE;
+	show_state(slot);
+
+	step("C_EX_SlotManage(MODE_RESTORE_FACTORY_DEFAULTS), Kuznyechik "
+			"emitent key");
+	for (i = 0; i < sizeof(emitent_key); i++)
+		emitent_key[i] = (CK_BYTE)i;
+	print_hex("new emitent key (test value)", emitent_key,
+			sizeof(emitent_key), 32);
+	memset(&restore, 0, sizeof(restore));
+	restore.ulSizeofThisStructure = sizeof(restore);
+	memcpy(pin_copy, STANDARD_SO_PIN, sizeof(STANDARD_SO_PIN));
+	restore.pAdminPin = pin_copy;
+	restore.ulAdminPinLen = sizeof(STANDARD_SO_PIN) - 1;
+	restore.pInitParam = &init;
+	restore.pNewEmitentKey = emitent_key;
+	restore.ulNewEmitentKeyLen = sizeof(emitent_key);
+	restore.ulNewEmitentKeyRetryCount = 10;
+	restore.newEmitentKeyType = 0xD4321004UL;	/* CKK_KUZNECHIK */
+	rv = fx->C_EX_SlotManage(slot, MODE_RESTORE_FACTORY_DEFAULTS, &restore);
+	show_rv("C_EX_SlotManage(MODE_RESTORE_FACTORY_DEFAULTS)", rv);
+	show_state(slot);
+}
+
+static void
+on_alarm(int signal_number)
+{
+	static const char message[] =
+		"\nno answer for 30 s: the token waits for a button press\n";
+
+	(void)signal_number;
+	if (write(STDOUT_FILENO, message, sizeof(message) - 1) < 0)
+		_exit(3);
+	_exit(3);
+}
+
+/* CKA_VENDOR_CONFIRM_BY_TOUCH on a token without a button */
+static void
+modify_touch(CK_SLOT_ID slot)
+{
+	static const CK_BYTE gost_parameters[] = {
+		0x06, 0x07, 0x2A, 0x85, 0x03, 0x02, 0x02, 0x23, 0x01 };
+	static const CK_BYTE digest_parameters[] = {
+		0x06, 0x08, 0x2A, 0x85, 0x03, 0x07, 0x01, 0x01, 0x02, 0x02 };
+	CK_OBJECT_CLASS public_class = CKO_PUBLIC_KEY, private_class = CKO_PRIVATE_KEY;
+	CK_OBJECT_CLASS feature_class = CKO_HW_FEATURE;
+	CK_HW_FEATURE_TYPE touch_type = CKH_VENDOR_DEFINED + 0x07UL;
+	CK_KEY_TYPE key_type = CKK_GOSTR3410;
+	CK_BBOOL yes = CK_TRUE, no = CK_FALSE;
+	CK_ATTRIBUTE public_template[] = {
+		{ CKA_CLASS, &public_class, sizeof(public_class) },
+		{ CKA_KEY_TYPE, &key_type, sizeof(key_type) },
+		{ CKA_TOKEN, &yes, sizeof(yes) },
+		{ CKA_PRIVATE, &no, sizeof(no) },
+		{ CKA_GOSTR3410_PARAMS, (CK_VOID_PTR)gost_parameters,
+			sizeof(gost_parameters) },
+		{ CKA_GOSTR3411_PARAMS, (CK_VOID_PTR)digest_parameters,
+			sizeof(digest_parameters) }
+	};
+	CK_ATTRIBUTE private_template[] = {
+		{ CKA_CLASS, &private_class, sizeof(private_class) },
+		{ CKA_KEY_TYPE, &key_type, sizeof(key_type) },
+		{ CKA_TOKEN, &yes, sizeof(yes) },
+		{ CKA_PRIVATE, &yes, sizeof(yes) },
+		{ CKA_GOSTR3410_PARAMS, (CK_VOID_PTR)gost_parameters,
+			sizeof(gost_parameters) },
+		{ CKA_GOSTR3411_PARAMS, (CK_VOID_PTR)digest_parameters,
+			sizeof(digest_parameters) },
+		{ CKA_VENDOR_CONFIRM_BY_TOUCH, &yes, sizeof(yes) }
+	};
+	CK_ATTRIBUTE touch_search[] = {
+		{ CKA_CLASS, &feature_class, sizeof(feature_class) },
+		{ CKA_HW_FEATURE_TYPE, &touch_type, sizeof(touch_type) }
+	};
+	CK_MECHANISM generation = { CKM_GOSTR3410_KEY_PAIR_GEN, NULL_PTR, 0 };
+	CK_MECHANISM signing = { CKM_GOSTR3410, NULL_PTR, 0 };
+	CK_OBJECT_HANDLE public_key, private_key, objects[4];
+	CK_BYTE hash[32], signature[128];
+	CK_ULONG signature_length = sizeof(signature), count = 0;
+	CK_SESSION_HANDLE session;
+	CK_RV rv;
+
+	step("C_GenerateKeyPair with CKA_VENDOR_CONFIRM_BY_TOUCH on a token "
+			"without a button");
+	session = modify_session(slot);
+	if (session == CK_INVALID_HANDLE)
+		return;
+	if (f->C_FindObjectsInit(session, touch_search, 2) == CKR_OK) {
+		f->C_FindObjects(session, objects, 4, &count);
+		f->C_FindObjectsFinal(session);
+	}
+	line("CKH_VENDOR_TOUCH_INTERFACE objects: %lu", count);
+	if (modify_login(session, CKU_USER, STANDARD_USER_PIN,
+			"C_Login(CKU_USER, factory PIN)") != CKR_OK) {
+		modify_close(session);
+		return;
+	}
+	rv = f->C_GenerateKeyPair(session, &generation, public_template,
+			sizeof(public_template) / sizeof(public_template[0]),
+			private_template,
+			sizeof(private_template) / sizeof(private_template[0]),
+			&public_key, &private_key);
+	show_rv("C_GenerateKeyPair", rv);
+	if (rv == CKR_OK) {
+		print_attribute(session, private_key, CKA_VENDOR_CONFIRM_BY_TOUCH,
+				"CKA_VENDOR_CONFIRM_BY_TOUCH", 0);
+		memset(hash, 0x5A, sizeof(hash));
+		signal(SIGALRM, on_alarm);
+		alarm(30);
+		rv = f->C_SignInit(session, &signing, private_key);
+		if (rv == CKR_OK)
+			rv = f->C_Sign(session, hash, sizeof(hash), signature,
+					&signature_length);
+		alarm(0);
+		show_rv("C_SignInit and C_Sign", rv);
+		show_rv("C_DestroyObject(public key)",
+				f->C_DestroyObject(session, public_key));
+		show_rv("C_DestroyObject(private key)",
+				f->C_DestroyObject(session, private_key));
+	}
+	modify_logout(session);
+	modify_close(session);
+}
+
+static void
+probe_modify_tests(CK_SLOT_ID slot)
+{
+	CK_SESSION_HANDLE session;
+
+	step("--modify-tests: PINs and confirmation");
+	if (!HAVE(fx, C_EX_SetTokenName) || !HAVE(fx, C_EX_SetLocalPIN) ||
+			!HAVE(fx, C_EX_SetLicense) || !HAVE(fx, C_EX_UnblockUserPIN) ||
+			!HAVE(fx, C_EX_TokenManage) || !HAVE(fx, C_EX_InitToken) ||
+			!HAVE(fx, C_EX_SlotManage) || !HAVE(fx, C_EX_GetTokenName) ||
+			!HAVE(fx, C_EX_GetLicense) || !HAVE(fx, C_EX_GetJournal) ||
+			!HAVE(fx, C_EX_GetTokenInfoExtended) || !HAVE(f, C_SetPIN) ||
+			!HAVE(f, C_GetTokenInfo))
+		return;
+	modify_slot = slot;
+	if (!read_pin(opt.pin_env, "User PIN (hidden): ", STANDARD_USER_PIN,
+			user_pin, sizeof(user_pin)) ||
+			!read_pin(opt.so_pin_env, "Administrator PIN (hidden): ",
+				STANDARD_SO_PIN, so_pin, sizeof(so_pin))) {
+		line("no PINs: modify tests skipped");
+		return;
+	}
+	if (!confirmed("The probe will change the name, PINs, local PINs and "
+			"licenses, then\nformat the token twice: ALL OBJECTS ON THE TOKEN "
+			"ARE ERASED. Type ERASE\nto continue: ", "ERASE")) {
+		line("not confirmed: modify tests skipped");
+		return;
+	}
+	show_counters(slot);
+
+	step("open a read-write session and log in as the user");
+	session = modify_session(slot);
+	if (session == CK_INVALID_HANDLE)
+		return;
+	if (modify_login(session, CKU_USER, user_pin, "C_Login(CKU_USER)") !=
+			CKR_OK) {
+		modify_close(session);
+		return;
+	}
+	modify_names(session);
+	modify_licenses(session);
+	modify_local_pins(slot);
+	modify_unblock(slot, session);
+	modify_pin_management(slot, session);
+	modify_format(slot, &session);
+	modify_touch(slot);
+	wipe(user_pin, sizeof(user_pin));
+	wipe(so_pin, sizeof(so_pin));
+}
+
 int
 main(int argc, char **argv)
 {
@@ -2266,6 +2967,7 @@ main(int argc, char **argv)
 	CK_OBJECT_HANDLE feature;
 	CK_BYTE id[128];
 	CK_ULONG id_length = 0, number;
+	int selected;
 	CK_RV rv;
 
 	setvbuf(stdout, NULL, _IOLBF, 0);
@@ -2289,10 +2991,15 @@ main(int argc, char **argv)
 		return 1;
 	}
 	printf("OpenSC Rutoken hardware probe %d\n", PROBE_VERSION);
-	printf("module %s, pause %ld ms, login %s, pkcs7 %s, write tests %s\n",
-			opt.module, opt.pause_ms, opt.login ? "yes" : "no",
-			opt.pkcs7_id ? opt.pkcs7_id : "no", opt.write_tests ? "yes" : "no");
-	if (opt.pkcs7_id || opt.write_tests)
+	printf("module %s, pause %ld ms, login %s, pkcs7 %s, write tests %s, "
+			"modify tests %s\n", opt.module, opt.pause_ms,
+			opt.login ? "yes" : "no", opt.pkcs7_id ? opt.pkcs7_id : "no",
+			opt.write_tests ? "yes" : "no", opt.modify_tests ? "yes" : "no");
+	if (opt.modify_tests)
+		printf("Only functions that change the token are checked, after the "
+				"confirmation\nasked below; the token is formatted at the "
+				"end.\n");
+	else if (opt.pkcs7_id || opt.write_tests)
 		printf("Functions that change the token are called only after the "
 				"confirmation\nasked below; the rest only read.\n");
 	else
@@ -2301,12 +3008,17 @@ main(int argc, char **argv)
 
 	if (!load_module())
 		return 1;
-	probe_extended_table("before C_Initialize");
-	probe_before_initialize();
+	if (!opt.modify_tests) {
+		probe_extended_table("before C_Initialize");
+		probe_before_initialize();
+	}
 	if (!initialize())
 		return 1;
 	probe_extended_table("after C_Initialize");
-	if (select_slot(&slot)) {
+	selected = select_slot(&slot);
+	if (selected && opt.modify_tests) {
+		probe_modify_tests(slot);
+	} else if (selected) {
 		probe_mechanisms(slot);
 		probe_token_info(slot);
 		probe_flash(slot, "without login");

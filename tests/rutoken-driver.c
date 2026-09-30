@@ -187,15 +187,15 @@ main(int argc, char **argv)
 	REQUIRE_POINTER(C_EX_Deauthenticate);
 	REQUIRE_POINTER(C_EX_UnblockAuthenticator);
 
-	EXPECT_VENDOR(functions->C_EX_InitToken(7, NULL, 0, NULL), 1);
+	EXPECT_VENDOR(functions->C_EX_InitToken(ORDER_PROBE, NULL, 0, NULL), 1);
 	memset(&info, 0, sizeof(info));
 	info.ulSizeofThisStructure = sizeof(info);
 	if (functions->C_EX_GetTokenInfoExtended(7, &info) != CKR_OK ||
 			info.ulTokenType != 1 || info.ulTokenClass != 1)
 		return 1;
-	EXPECT_VENDOR(functions->C_EX_UnblockUserPIN(23), 3);
-	EXPECT_VENDOR(functions->C_EX_SetTokenName(23, NULL, 0), 4);
-	EXPECT_VENDOR(functions->C_EX_SetLicense(23, 1, NULL, 0), 5);
+	EXPECT_VENDOR(functions->C_EX_UnblockUserPIN(ORDER_PROBE), 3);
+	EXPECT_VENDOR(functions->C_EX_SetTokenName(ORDER_PROBE, NULL, 0), 4);
+	EXPECT_VENDOR(functions->C_EX_SetLicense(ORDER_PROBE, 1, NULL, 0), 5);
 	EXPECT_VENDOR(functions->C_EX_GetLicense(ORDER_PROBE, 1, NULL, NULL), 6);
 	EXPECT_VENDOR(functions->C_EX_GetCertificateInfoText(ORDER_PROBE, 1, NULL,
 			NULL), 7);
@@ -211,7 +211,8 @@ main(int argc, char **argv)
 	if (functions->C_EX_GetTokenName(23, name, &name_len) != CKR_OK ||
 			name_len != 12 || memcmp(name, "Test Rutoken", 12))
 		return 1;
-	EXPECT_VENDOR(functions->C_EX_SetLocalPIN(7, NULL, 0, NULL, 0, 1), 12);
+	EXPECT_VENDOR(functions->C_EX_SetLocalPIN(ORDER_PROBE, NULL, 0, NULL, 0,
+			1), 12);
 	EXPECT_VENDOR(functions->C_EX_LoadActivationKey(23, NULL, 0), 13);
 	EXPECT_VENDOR(functions->C_EX_SetActivationPassword(7, NULL), 14);
 	EXPECT_VENDOR(functions->C_EX_GetVolumesInfo(ORDER_PROBE, NULL, NULL), 15);
@@ -219,7 +220,7 @@ main(int argc, char **argv)
 	EXPECT_VENDOR(functions->C_EX_ChangeVolumeAttributes(7, CKU_USER, NULL, 0,
 			1, 1, CK_FALSE), 17);
 	EXPECT_VENDOR(functions->C_EX_FormatDrive(7, CKU_USER, NULL, 0, NULL, 0), 18);
-	EXPECT_VENDOR(functions->C_EX_TokenManage(23, 1, NULL), 19);
+	EXPECT_VENDOR(functions->C_EX_TokenManage(ORDER_PROBE, 1, NULL), 19);
 	EXPECT_VENDOR(functions->C_EX_GenerateActivationPassword(23, 1, NULL,
 			NULL, 0), 20);
 	EXPECT_VENDOR(functions->C_EX_GetJournal(ORDER_PROBE, NULL, NULL), 21);
