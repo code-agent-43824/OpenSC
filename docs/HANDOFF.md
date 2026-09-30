@@ -19,10 +19,13 @@ Portable CI для `pkcs11-tool` и `pkcs11-spy` завершен и наход�
 - Этап 3 реализован: `--rutoken-license`, `--rutoken-journal`,
   `--rutoken-volumes`, `--rutoken-cert-text`, `--rutoken-pin-status` и
   `--rutoken-json`; spy логирует их результаты без содержимого лицензий.
-  Следующий этап — 4 (PKCS#7, CSR, аутентификаторы).
 - Probe 2 (`tests/rutoken-hw-probe.c`) прогнана на устройстве с
   `--write-tests`: журнал, текст сертификата, PKCS#7, CSR, генерация ключа,
   подпись и хранение объектов разобраны на уровне APDU.
+- Этап 4 реализован: `--rutoken-pkcs7-sign`, `--rutoken-pkcs7-verify`,
+  `--rutoken-csr` и `--rutoken-confirm-by-touch`; биометрия и разделы Flash
+  отложены. Probe 3 (`--modify-tests`) ждет прогона на устройстве; следующий
+  этап — 5 (изменяющие функции).
 - Workflow выпуска требует новый тег и не перезаписывает существующие теги и
   релизы.
 - Локальный `pkcs11-spy.conf` имеет приоритет над environment/Registry;

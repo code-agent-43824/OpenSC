@@ -7,6 +7,9 @@
 
 Ветка слита в `master`. Probe 2 с `--write-tests` прогнана на устройстве,
 результаты — в `docs/RUTOKEN-APDU.md` (раздел «Запись, подпись и PKCS#7») и
-`docs/RUTOKEN-FUNCTIONS.md`. Следующий шаг — этап 4: команды PKCS#7 и CSR в
-`pkcs11-tool`. Работа с разделами Flash отложена владельцем (раздел
-«Отложено» в `docs/PLAN.md`).
+`docs/RUTOKEN-FUNCTIONS.md`. Работа с разделами Flash отложена владельцем
+(раздел «Отложено» в `docs/PLAN.md`).
+
+Этап 4 реализован (PKCS#7, CSR, `--rutoken-confirm-by-touch`), биометрия
+отложена. Ждем прогона probe 3 (`--modify-tests`, стирает токен) владельцем,
+затем этап 5.
