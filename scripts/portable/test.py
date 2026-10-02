@@ -264,6 +264,61 @@ def verify_rutoken_cli(
     if request_path.read_bytes() != b"stub CSR: CN=Test":
         raise RuntimeError("pkcs11-tool wrote a wrong Rutoken request")
 
+    # Stage 5: each run starts from the stub's factory state. PINs that a
+    # function takes directly come from the environment.
+    secrets = {
+        "RUTOKEN_TEST_NEW_SO_PIN": "24680135",
+        "RUTOKEN_TEST_NEW_USER_PIN": "13572460",
+        "RUTOKEN_TEST_LOCAL_PIN": "97531864",
+    }
+    cli_env.update(secrets)
+    cli_env["RUTOKEN_TEST_USER_PIN"] = "12345678"
+    cli_env["RUTOKEN_TEST_SO_PIN"] = "87654321"
+    license_in_path = work_dir / "rutoken-license-in.bin"
+    license_in_path.write_bytes(b"L" * 72)
+    emitent_key_path = work_dir / "rutoken-emitent.key"
+    emitent_key_path.write_bytes(b"K" * 32)
+    so_login = ["--login", "--login-type", "so", "--so-pin", "87654321"]
+    new_pins = ["--rutoken-new-so-pin", "env:RUTOKEN_TEST_NEW_SO_PIN",
+                "--new-pin", "env:RUTOKEN_TEST_NEW_USER_PIN"]
+    license_write = login + ["--rutoken-set-license", "3", "--input-file",
+                             str(license_in_path)]
+    stage5 = (
+        (login + ["--rutoken-set-name", "Stage 5 name", "--rutoken-name"], 0,
+         "Rutoken name: Stage 5 name"),
+        (license_write, 1, "Repeat with --rutoken-confirm=set-license"),
+        (license_write + ["--rutoken-confirm", "set-license"], 0,
+         "Rutoken license 3 written: 72 bytes"),
+        (["--rutoken-set-local-pin", "4", "--rutoken-auth-pin",
+          "env:RUTOKEN_TEST_USER_PIN", "--new-pin", "env:RUTOKEN_TEST_LOCAL_PIN",
+          "--rutoken-pin-status"], 0,
+         "local PIN 4        : length 6..249, retries 10 / 10"),
+        (so_login + ["--rutoken-unblock-user-pin"], 0,
+         "Rutoken user PIN unblocked"),
+        (so_login + ["--rutoken-token-manage", "default-user-pin", "--new-pin",
+                     "env:RUTOKEN_TEST_NEW_USER_PIN", "--rutoken-info"], 0,
+         "USER_PIN_NOT_DEFAULT"),
+        (so_login + ["--rutoken-token-manage", "reset-user-pin",
+                     "--rutoken-confirm", "reset-user-pin"], 1,
+         "TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN)"),
+        (["--rutoken-init-token", "--so-pin", "env:RUTOKEN_TEST_SO_PIN",
+          *new_pins, "--label", "Stage 5", "--rutoken-confirm", "init-token"], 0,
+         'label              : "Stage 5"'),
+        (["--rutoken-init-token", "--so-pin", "87654321", *new_pins,
+          "--rutoken-confirm", "init-token"], 1,
+         "--so-pin: give this PIN as env:<name>"),
+        (["--rutoken-restore-factory-defaults", "--so-pin",
+          "env:RUTOKEN_TEST_SO_PIN", *new_pins, "--rutoken-emitent-key",
+          str(emitent_key_path), "--rutoken-confirm",
+          "restore-factory-defaults"], 0,
+         "emitent key        : Kuznyechik, 10 attempts"),
+    )
+    for arguments, code, expected in stage5:
+        output = tool_output(arguments, expected_code=code)
+        if expected not in output:
+            print(output, end="")
+            raise RuntimeError(f"pkcs11-tool Rutoken output lacks: {expected}")
+
     log = log_path.read_text(encoding="utf-8", errors="replace")
     if "CKR_GENERAL_ERROR" in log:
         raise RuntimeError("a Rutoken buffer was not released through pkcs11-spy")
@@ -271,7 +326,19 @@ def verify_rutoken_cli(
         raise RuntimeError("the pkcs11-spy log lacks the Rutoken request subject")
     if "01 02 03 04 05 06 07 08" in log:
         raise RuntimeError("the pkcs11-spy log contains the Rutoken license")
-    print("PASS: pkcs11-tool Rutoken commands through pkcs11-spy")
+    for expected in (
+        "[in] pInitInfo->pNewAdminPin = <redacted>, length = 8",
+        "[in] ulMode = 0x6 (MODE_RESTORE_FACTORY_DEFAULTS)",
+        "[in] pValue->pNewEmitentKey = <redacted>, length = 32",
+        "[in] pValue->pPinValue = <redacted>, length = 8",
+    ):
+        if expected not in log:
+            raise RuntimeError(f"the pkcs11-spy log lacks: {expected}")
+    for secret in (*secrets.values(), "LLLLLLLL", "KKKKKKKK"):
+        if secret in log:
+            raise RuntimeError("the pkcs11-spy log contains a Rutoken secret")
+    print("PASS: pkcs11-tool Rutoken commands through pkcs11-spy, stage 5 "
+          "included")
 
 
 def verify_spy_config(

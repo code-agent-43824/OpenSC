@@ -302,5 +302,134 @@ expect "$text" 'the token has no button'
 RUTOKEN_STUB_HAS_BUTTON=1 keygen > "$text" 2>&1
 grep -q '0x80002003' "$touch_log"
 
-echo "PASS: all Rutoken wrappers and the --rutoken-* commands through pkcs11-spy"
+# Stage 5: commands that change the token, each in a new process with the
+# stub's factory state. PINs that a function takes directly come only from
+# the environment and, like the license and the emitent key, never reach
+# the spy log; C_Login PINs still do.
+stage5_log="$test_dir/stage5.log"
+run_change() {
+	PKCS11SPY="$stub" PKCS11SPY_OUTPUT="$stage5_log" \
+		"$tool" --module "$spy" --slot 7 "$@"
+}
+fails() {
+	if run_change "$@" > "$text" 2>&1; then
+		echo "pkcs11-tool $* must fail"
+		cat "$text"
+		exit 1
+	fi
+}
+RUTOKEN_TEST_USER_PIN=12345678
+RUTOKEN_TEST_SO_PIN=87654321
+RUTOKEN_TEST_NEW_SO_PIN=24680135
+RUTOKEN_TEST_NEW_USER_PIN=13572460
+RUTOKEN_TEST_LOCAL_PIN=97531864
+export RUTOKEN_TEST_USER_PIN RUTOKEN_TEST_SO_PIN RUTOKEN_TEST_NEW_SO_PIN \
+	RUTOKEN_TEST_NEW_USER_PIN RUTOKEN_TEST_LOCAL_PIN
+so_login="--login --login-type so --so-pin 87654321"
+new_pins="--rutoken-new-so-pin env:RUTOKEN_TEST_NEW_SO_PIN --new-pin env:RUTOKEN_TEST_NEW_USER_PIN"
+
+run_change --login --pin 12345678 --rutoken-set-name 'Stage 5 name' \
+	--rutoken-name > "$text"
+expect "$text" 'Rutoken name set: "Stage 5 name" (12 bytes)'
+expect "$text" 'Rutoken name: Stage 5 name'
+fails --rutoken-set-name 'No login'
+expect "$text" '--rutoken-set-name needs --login'
+
+license_in="$test_dir/license-in.bin"
+printf '%072d' 0 | tr 0 L > "$license_in"
+fails --login --pin 12345678 --rutoken-set-license 3 --input-file "$license_in"
+expect "$text" 'Repeat with --rutoken-confirm=set-license to do it.'
+run_change --login --pin 12345678 --rutoken-set-license 3 \
+	--input-file "$license_in" --rutoken-confirm=set-license \
+	--rutoken-license 3 > "$text"
+expect "$text" 'Rutoken license 3 written: 72 bytes from'
+expect "$text" 'Rutoken license 3: 72 bytes, not empty'
+fails --login --pin 12345678 --rutoken-set-license 5 --input-file "$license_in" \
+	--rutoken-confirm=set-license
+expect "$text" 'licenses are numbered 1 to 4 and hold 72 bytes'
+fails --login --pin 12345678 --rutoken-set-license 3 --input-file "$license_in" \
+	--rutoken-confirm=init-token
+expect "$text" 'needs --rutoken-confirm=set-license'
+
+run_change --rutoken-set-local-pin 4 --rutoken-auth-pin env:RUTOKEN_TEST_USER_PIN \
+	--new-pin env:RUTOKEN_TEST_LOCAL_PIN --rutoken-pin-status > "$text"
+expect "$text" 'Rutoken local PIN 4 set'
+expect "$text" 'local PIN 4        : length 6..249, retries 10 / 10, flags 0x5 (NOT_DEFAULT IS_UTF8)'
+fails --rutoken-set-local-pin 3 --rutoken-auth-pin env:RUTOKEN_TEST_USER_PIN \
+	--new-pin env:RUTOKEN_TEST_LOCAL_PIN
+expect "$text" 'an existing one only with its current value'
+fails --rutoken-set-local-pin 4 --rutoken-auth-pin 12345678 \
+	--new-pin env:RUTOKEN_TEST_LOCAL_PIN
+expect "$text" '--rutoken-auth-pin: give this PIN as env:<name>'
+fails --rutoken-set-local-pin 4 --pin env:RUTOKEN_TEST_USER_PIN \
+	--new-pin env:RUTOKEN_TEST_LOCAL_PIN
+expect "$text" 'do not use --login or --pin'
+
+# shellcheck disable=SC2086
+run_change $so_login --rutoken-unblock-user-pin > "$text"
+expect "$text" 'Rutoken user PIN unblocked'
+fails --login --pin 12345678 --rutoken-unblock-user-pin
+expect "$text" 'needs --login --login-type so'
+# shellcheck disable=SC2086
+run_change $so_login --rutoken-token-manage force-user-pin-change \
+	--rutoken-pin-status > "$text"
+expect "$text" 'Rutoken token manage force-user-pin-change: done'
+expect "$text" 'User PIN change    : required'
+# shellcheck disable=SC2086
+run_change $so_login --rutoken-token-manage default-user-pin \
+	--new-pin env:RUTOKEN_TEST_NEW_USER_PIN --rutoken-info > "$text"
+expect "$text" 'USER_PIN_NOT_DEFAULT'
+# shellcheck disable=SC2086
+fails $so_login --rutoken-token-manage reset-user-pin
+expect "$text" 'Repeat with --rutoken-confirm=reset-user-pin to do it.'
+# shellcheck disable=SC2086
+fails $so_login --rutoken-token-manage reset-user-pin \
+	--rutoken-confirm=reset-user-pin
+expect "$text" 'TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN)'
+# shellcheck disable=SC2086
+fails $so_login --rutoken-token-manage bluetooth-timeout:10 --rutoken-json
+expect "$text" '"token_manage":{"mode":"bluetooth-timeout","mode_code":1,"error":{"function":"C_EX_TokenManage","rv":"CKR_FUNCTION_NOT_SUPPORTED"'
+
+# shellcheck disable=SC2086
+fails --rutoken-init-token --so-pin env:RUTOKEN_TEST_SO_PIN $new_pins
+expect "$text" 'Repeat with --rutoken-confirm=init-token to do it.'
+# shellcheck disable=SC2086
+fails --rutoken-init-token --so-pin 87654321 $new_pins \
+	--rutoken-confirm=init-token
+expect "$text" '--so-pin: give this PIN as env:<name>'
+# shellcheck disable=SC2086
+fails --rutoken-info --rutoken-init-token --so-pin env:RUTOKEN_TEST_SO_PIN \
+	$new_pins --rutoken-confirm=init-token
+expect "$text" 'cannot be combined with other --rutoken-* commands'
+# shellcheck disable=SC2086
+run_change --rutoken-init-token --so-pin env:RUTOKEN_TEST_SO_PIN $new_pins \
+	--label 'Stage 5' --rutoken-user-pin-policy both \
+	--rutoken-min-pin-length 6:8 --rutoken-retries 5:7 \
+	--rutoken-confirm=init-token --rutoken-json > "$json"
+expect "$json" '"init_token":{"label":"Stage 5","user_pin_policy":3,"user_pin_policy_names":["ADMIN_CHANGE_USER_PIN","USER_CHANGE_USER_PIN"],"min_so_pin_length":6,"min_user_pin_length":8,"so_retries":5,"user_retries":7,"sm_mode":0,"repair_mode":false}'
+emitent_key="$test_dir/emitent.key"
+printf '%032d' 0 | tr 0 K > "$emitent_key"
+# shellcheck disable=SC2086
+run_change --rutoken-restore-factory-defaults --so-pin env:RUTOKEN_TEST_SO_PIN \
+	$new_pins --rutoken-emitent-key "$emitent_key" \
+	--rutoken-emitent-key-type magma \
+	--rutoken-confirm=restore-factory-defaults > "$text"
+expect "$text" 'Rutoken factory defaults restored:'
+expect "$text" 'emitent key        : Magma, 10 attempts'
+
+expect "$stage5_log" '[in] pInitInfo->ChangeUserPINPolicy = 0x3 TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN TOKEN_FLAGS_USER_CHANGE_USER_PIN'
+expect "$stage5_log" '[in] pInitInfo->pNewAdminPin = <redacted>, length = 8'
+expect "$stage5_log" '[in] ulMode = 0x6 (MODE_RESTORE_FACTORY_DEFAULTS)'
+expect "$stage5_log" '[in] pValue->pNewEmitentKey = <redacted>, length = 32'
+expect "$stage5_log" '[in] ulMode = 0x5 (MODE_CHANGE_DEFAULT_PIN)'
+expect "$stage5_log" '[in] pValue->pPinValue = <redacted>, length = 8'
+for secret in "$RUTOKEN_TEST_NEW_SO_PIN" "$RUTOKEN_TEST_NEW_USER_PIN" \
+		"$RUTOKEN_TEST_LOCAL_PIN" LLLLLLLL KKKKKKKK; do
+	if grep -q "$secret" "$stage5_log"; then
+		echo "the spy log contains $secret"
+		exit 1
+	fi
+done
+
+echo "PASS: all Rutoken wrappers and the --rutoken-* commands through pkcs11-spy, stage 5 included"
 echo "PASS: Rutoken hardware probe runs against the stub module, write and modify tests included"

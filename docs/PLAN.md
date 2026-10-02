@@ -79,9 +79,16 @@
   PIN, форматирование, сброс к заводским настройкам, ключ с кнопкой) — на
   Рутокен ЭЦП 3.0 3127 USB, ответы в `RUTOKEN-FUNCTIONS.md` и
   `RUTOKEN-APDU.md`, заглушка приведена к ним.
-- [ ] Добавить `InitToken`, `UnblockUserPIN`, `SetTokenName`, `SetLicense`,
-  `SetLocalPIN`, `TokenManage` и режимы записи `SlotManage` с обязательным
-  явным подтверждением разрушительных режимов.
+- [x] Добавить `InitToken`, `UnblockUserPIN`, `SetTokenName`, `SetLicense`,
+  `SetLocalPIN`, `TokenManage` и режим `MODE_RESTORE_FACTORY_DEFAULTS` с
+  обязательным явным подтверждением разрушительных режимов: команды
+  `--rutoken-set-name`, `--rutoken-set-license`, `--rutoken-set-local-pin`,
+  `--rutoken-unblock-user-pin`, `--rutoken-token-manage`,
+  `--rutoken-init-token`, `--rutoken-restore-factory-defaults`; PIN только
+  из `env:` или ввода без эха; spy расшифровывает параметры, скрывая PIN и
+  ключ эмитента.
+- [ ] Прогнать команды этапа 5 `pkcs11-tool` на токене, который можно
+  стереть.
 - [ ] Добавить явно помеченные legacy-команды для семи устаревших функций,
   сохранив полную совместимость spy и таблицы.
 

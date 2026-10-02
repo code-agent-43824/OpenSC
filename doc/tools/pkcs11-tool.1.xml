@@ -510,6 +510,128 @@
 
 				<varlistentry>
 					<term>
+						<option>--rutoken-set-name</option> <replaceable>name</replaceable>
+					</term>
+					<listitem><para>Set the Rutoken name with
+					<option>C_EX_SetTokenName</option>; an empty name restores the
+					default one. Requires <option>--login</option> as the
+					user.</para></listitem>
+				</varlistentry>
+
+				<varlistentry>
+					<term>
+						<option>--rutoken-set-license</option> <replaceable>number</replaceable>
+					</term>
+					<listitem><para>Write license <replaceable>number</replaceable>
+					(1 to 4, 72 bytes) from the file given with
+					<option>--input-file</option> with
+					<option>C_EX_SetLicense</option>. Requires
+					<option>--login</option> and
+					<option>--rutoken-confirm</option>=set-license.</para></listitem>
+				</varlistentry>
+
+				<varlistentry>
+					<term>
+						<option>--rutoken-set-local-pin</option> <replaceable>id</replaceable>
+					</term>
+					<listitem><para>Set local PIN <replaceable>id</replaceable> (3 to
+					31) with <option>C_EX_SetLocalPIN</option> to the PIN given with
+					<option>--new-pin</option>. A new local PIN is authorized by the
+					User PIN, an existing one only by its current value; this PIN is
+					given with <option>--rutoken-auth-pin</option>
+					env:<replaceable>VARIABLE</replaceable>. Both PINs are typed at
+					the prompt if the options are absent. Do not use
+					<option>--login</option> or <option>--pin</option>.</para></listitem>
+				</varlistentry>
+
+				<varlistentry>
+					<term>
+						<option>--rutoken-unblock-user-pin</option>
+					</term>
+					<listitem><para>Unblock the User PIN with
+					<option>C_EX_UnblockUserPIN</option>. Requires
+					<option>--login</option> <option>--login-type</option>
+					so.</para></listitem>
+				</varlistentry>
+
+				<varlistentry>
+					<term>
+						<option>--rutoken-token-manage</option> <replaceable>mode</replaceable>
+					</term>
+					<listitem><para>Call <option>C_EX_TokenManage</option> under
+					<option>--login</option> <option>--login-type</option> so.
+					Modes: <literal>force-user-pin-change</literal> (the user must
+					change the PIN), <literal>default-user-pin</literal> (a new
+					default User PIN, given with <option>--new-pin</option>),
+					<literal>standard-default-user-pin</literal> (back to the factory
+					default), <literal>reset-user-pin</literal> (reset the User PIN
+					to the default one; requires
+					<option>--rutoken-confirm</option>=reset-user-pin and a token
+					that lets the SO change the User PIN), and for Rutoken ECP
+					Bluetooth <literal>bluetooth-timeout:</literal><replaceable>minutes</replaceable>
+					(0 to 70, 0 for the default) and
+					<literal>channel:usb</literal> or
+					<literal>channel:bluetooth</literal>.</para></listitem>
+				</varlistentry>
+
+				<varlistentry>
+					<term>
+						<option>--rutoken-init-token</option>
+					</term>
+					<listitem><para>Format the token with
+					<option>C_EX_InitToken</option>: all objects and local PINs are
+					erased, licenses and the journal record stay. The current SO PIN
+					is given with <option>--so-pin</option>, the new SO PIN with
+					<option>--rutoken-new-so-pin</option> and the new User PIN with
+					<option>--new-pin</option>, each as
+					env:<replaceable>VARIABLE</replaceable> or typed at the prompt.
+					The token label is given with <option>--label</option>.
+					<option>--rutoken-user-pin-policy</option> is
+					<literal>user</literal> (default), <literal>admin</literal> or
+					<literal>both</literal>;
+					<option>--rutoken-min-pin-length</option> and
+					<option>--rutoken-retries</option> take
+					<replaceable>so</replaceable>:<replaceable>user</replaceable>
+					(defaults 6:6 and 10:10); <option>--rutoken-sm-mode</option> sets
+					the secure messaging mode (default 0);
+					<option>--rutoken-repair-mode</option> formats without the SO
+					PIN. Requires <option>--rutoken-confirm</option>=init-token and
+					cannot be combined with other commands or with
+					<option>--login</option>.</para></listitem>
+				</varlistentry>
+
+				<varlistentry>
+					<term>
+						<option>--rutoken-restore-factory-defaults</option>
+					</term>
+					<listitem><para>Format the token like
+					<option>--rutoken-init-token</option> and replace the emitent key
+					with <option>C_EX_SlotManage</option>
+					(MODE_RESTORE_FACTORY_DEFAULTS). The 32-byte key is read from the
+					file given with <option>--rutoken-emitent-key</option>;
+					<option>--rutoken-emitent-key-type</option> is
+					<literal>kuznyechik</literal> (default) or
+					<literal>magma</literal> and
+					<option>--rutoken-emitent-key-retries</option> sets its attempts
+					(default 10). Requires
+					<option>--rutoken-confirm</option>=restore-factory-defaults.
+					</para></listitem>
+				</varlistentry>
+
+				<varlistentry>
+					<term>
+						<option>--rutoken-confirm</option> <replaceable>operation</replaceable>
+					</term>
+					<listitem><para>Confirm a command that erases data or resets a
+					PIN: <literal>init-token</literal>,
+					<literal>restore-factory-defaults</literal>,
+					<literal>set-license</literal> or
+					<literal>reset-user-pin</literal>. Without it the command only
+					says what it would do and the exit status is 1.</para></listitem>
+				</varlistentry>
+
+				<varlistentry>
+					<term>
 						<option>--puk</option> <replaceable>puk</replaceable>
 					</term>
 					<listitem><para>Supply User PUK on the command line.</para></listitem>

@@ -921,6 +921,134 @@ spy_ex_dump_flags_in(const char *name, CK_ULONG flags,
 	fprintf(spy_output, "\n");
 }
 
+static const struct spy_ex_flag spy_ex_pin_policy[] = {
+	{ TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN, "TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN" },
+	{ TOKEN_FLAGS_USER_CHANGE_USER_PIN, "TOKEN_FLAGS_USER_CHANGE_USER_PIN" },
+	{ 0, NULL }
+};
+
+/* Formatting parameters; the new PINs are shown by length only and the
+ * fields beyond ulSizeofThisStructure are not read. */
+static void
+spy_ex_dump_init_param(const char *name, const CK_RUTOKEN_INIT_PARAM *init)
+{
+	char field[80];
+
+#define SPY_EX_INIT_HAS(member) \
+	(init->ulSizeofThisStructure >= \
+	 offsetof(CK_RUTOKEN_INIT_PARAM, member) + sizeof(init->member))
+#define SPY_EX_INIT_ULONG(member) \
+	do { \
+		if (SPY_EX_INIT_HAS(member)) \
+			fprintf(spy_output, "[in] %s->" #member " = %lu\n", name, \
+					init->member); \
+	} while (0)
+	if (!init) {
+		fprintf(spy_output, "[in] %s = NULL\n", name);
+		return;
+	}
+	fprintf(spy_output, "[in] %s->ulSizeofThisStructure = %lu\n", name,
+			init->ulSizeofThisStructure);
+	SPY_EX_INIT_ULONG(UseRepairMode);
+	if (SPY_EX_INIT_HAS(ulNewAdminPinLen)) {
+		snprintf(field, sizeof(field), "%s->pNewAdminPin", name);
+		spy_ex_dump_redacted(field, init->ulNewAdminPinLen);
+	}
+	if (SPY_EX_INIT_HAS(ulNewUserPinLen)) {
+		snprintf(field, sizeof(field), "%s->pNewUserPin", name);
+		spy_ex_dump_redacted(field, init->ulNewUserPinLen);
+	}
+	if (SPY_EX_INIT_HAS(ChangeUserPINPolicy)) {
+		snprintf(field, sizeof(field), "%s->ChangeUserPINPolicy", name);
+		spy_ex_dump_flags_in(field, init->ChangeUserPINPolicy,
+				spy_ex_pin_policy);
+	}
+	SPY_EX_INIT_ULONG(ulMinAdminPinLen);
+	SPY_EX_INIT_ULONG(ulMinUserPinLen);
+	SPY_EX_INIT_ULONG(ulMaxAdminRetryCount);
+	SPY_EX_INIT_ULONG(ulMaxUserRetryCount);
+	if (SPY_EX_INIT_HAS(ulLabelLen)) {
+		snprintf(field, sizeof(field), "%s->pTokenLabel[ulLabelLen]", name);
+		spy_dump_string_in(field, init->pTokenLabel, init->ulLabelLen);
+	}
+	SPY_EX_INIT_ULONG(ulSmMode);
+#undef SPY_EX_INIT_ULONG
+#undef SPY_EX_INIT_HAS
+}
+
+static const char *
+spy_ex_token_manage_mode(CK_ULONG mode)
+{
+	switch (mode) {
+	case MODE_SET_BLUETOOTH_POWEROFF_TIMEOUT:
+		return "MODE_SET_BLUETOOTH_POWEROFF_TIMEOUT";
+	case MODE_SET_CHANNEL_TYPE: return "MODE_SET_CHANNEL_TYPE";
+	case MODE_RESET_CUSTOM_PIN_TO_STANDARD:
+		return "MODE_RESET_CUSTOM_PIN_TO_STANDARD";
+	case MODE_RESET_PIN_TO_DEFAULT: return "MODE_RESET_PIN_TO_DEFAULT";
+	case MODE_CHANGE_DEFAULT_PIN: return "MODE_CHANGE_DEFAULT_PIN";
+	case MODE_FORCE_USER_TO_CHANGE_PIN: return "MODE_FORCE_USER_TO_CHANGE_PIN";
+	default: return "unknown";
+	}
+}
+
+static const char *
+spy_ex_slot_manage_mode(CK_ULONG mode)
+{
+	switch (mode) {
+	case MODE_GET_IMIT: return "MODE_GET_IMIT";
+	case MODE_GET_LOCAL_PIN_INFO: return "MODE_GET_LOCAL_PIN_INFO";
+	case MODE_RESTORE_FACTORY_DEFAULTS: return "MODE_RESTORE_FACTORY_DEFAULTS";
+	case MODE_GET_PIN_SET_TO_BE_CHANGED: return "MODE_GET_PIN_SET_TO_BE_CHANGED";
+	default: return "unknown";
+	}
+}
+
+static void
+spy_ex_dump_token_manage_in(CK_ULONG mode, CK_VOID_PTR value)
+{
+	fprintf(spy_output, "[in] ulMode = 0x%lx (%s)\n", mode,
+			spy_ex_token_manage_mode(mode));
+	print_ptr_in("pValue", value);
+	if (!value)
+		return;
+	switch (mode) {
+	case MODE_SET_BLUETOOTH_POWEROFF_TIMEOUT:
+	case MODE_SET_CHANNEL_TYPE:
+		spy_dump_ulong_in("*(CK_ULONG *)pValue", *(CK_ULONG *)value);
+		break;
+	case MODE_RESET_CUSTOM_PIN_TO_STANDARD:
+	case MODE_RESET_PIN_TO_DEFAULT:
+	case MODE_FORCE_USER_TO_CHANGE_PIN:
+		spy_dump_ulong_in("*(CK_USER_TYPE *)pValue", *(CK_USER_TYPE *)value);
+		break;
+	case MODE_CHANGE_DEFAULT_PIN: {
+		CK_VENDOR_PIN_PARAMS *params = value;
+
+		spy_dump_ulong_in("pValue->userType", params->userType);
+		spy_ex_dump_redacted("pValue->pPinValue", params->ulPinLength);
+		break;
+	}
+	}
+}
+
+/* MODE_RESTORE_FACTORY_DEFAULTS: the Administrator PIN, the new PINs and
+ * the emitent key are shown by length only. */
+static void
+spy_ex_dump_restore_in(const CK_VENDOR_RESTORE_FACTORY_DEFAULTS_PARAMS *params)
+{
+	fprintf(spy_output, "[in] pValue->ulSizeofThisStructure = %lu\n",
+			params->ulSizeofThisStructure);
+	if (params->ulSizeofThisStructure < sizeof(*params))
+		return;
+	spy_ex_dump_redacted("pValue->pAdminPin", params->ulAdminPinLen);
+	spy_ex_dump_init_param("pValue->pInitParam", params->pInitParam);
+	spy_ex_dump_redacted("pValue->pNewEmitentKey", params->ulNewEmitentKeyLen);
+	fprintf(spy_output, "[in] pValue->ulNewEmitentKeyRetryCount = %lu\n",
+			params->ulNewEmitentKeyRetryCount);
+	spy_dump_ulong_in("pValue->newEmitentKeyType", params->newEmitentKeyType);
+}
+
 static void
 spy_ex_dump_handles_in(const char *name, CK_OBJECT_HANDLE_PTR handles,
 		CK_ULONG count)
@@ -1016,7 +1144,9 @@ SPY_EX_PROXY(C_EX_InitToken,
 		(slotID, pPin, ulPinLen, pInitInfo),
 		spy_dump_ulong_in("slotID", slotID);
 		spy_ex_dump_redacted("pPin", ulPinLen);
-		print_ptr_in("pInitInfo", pInitInfo),
+		print_ptr_in("pInitInfo", pInitInfo);
+		if (pInitInfo)
+			spy_ex_dump_init_param("pInitInfo", pInitInfo),
 		(void)rv)
 
 static void
@@ -1227,8 +1357,7 @@ SPY_EX_PROXY(C_EX_TokenManage,
 		(CK_SESSION_HANDLE hSession, CK_ULONG ulMode, CK_VOID_PTR pValue),
 		(hSession, ulMode, pValue),
 		spy_dump_ulong_in("hSession", hSession);
-		spy_dump_ulong_in("ulMode", ulMode);
-		print_ptr_in("pValue", pValue), (void)rv)
+		spy_ex_dump_token_manage_in(ulMode, pValue), (void)rv)
 SPY_EX_PROXY(C_EX_GenerateActivationPassword,
 		(CK_SESSION_HANDLE hSession, CK_ULONG ulPasswordNumber,
 		 CK_UTF8CHAR_PTR pPassword, CK_ULONG_PTR pulPasswordSize,
@@ -1265,14 +1394,16 @@ SPY_EX_PROXY(C_EX_SignInvisible,
 		spy_dump_ulong_in("ulDataLen", ulDataLen);
 		print_ptr_in("pSignature", pSignature),
 		spy_ex_dump_ulong_out("*pulSignatureLen", pulSignatureLen, rv))
-/* Only the two reading modes are decoded: MODE_GET_IMIT carries a key and
- * MODE_RESTORE_FACTORY_DEFAULTS the Administrator PIN. */
+/* MODE_GET_IMIT is not decoded: it carries a key. */
 SPY_EX_PROXY(C_EX_SlotManage,
 		(CK_SLOT_ID slotID, CK_ULONG ulMode, CK_VOID_PTR pValue),
 		(slotID, ulMode, pValue),
 		spy_dump_ulong_in("slotID", slotID);
-		spy_dump_ulong_in("ulMode", ulMode);
+		fprintf(spy_output, "[in] ulMode = 0x%lx (%s)\n", ulMode,
+				spy_ex_slot_manage_mode(ulMode));
 		print_ptr_in("pValue", pValue);
+		if (pValue && ulMode == MODE_RESTORE_FACTORY_DEFAULTS)
+			spy_ex_dump_restore_in(pValue);
 		if (pValue && ulMode == MODE_GET_PIN_SET_TO_BE_CHANGED)
 			spy_dump_ulong_in("*(CK_USER_TYPE *)pValue",
 					*(CK_USER_TYPE *)pValue);

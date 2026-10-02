@@ -27,8 +27,13 @@ Portable CI для `pkcs11-tool` и `pkcs11-spy` завершен и наход�
   отложены.
 - Probe 3 прогнана на Рутокен ЭЦП 3.0 3127 USB во всех режимах, включая
   `--modify-tests`; изменяющие функции разобраны в `docs/RUTOKEN-APDU.md` и
-  `docs/RUTOKEN-FUNCTIONS.md`, заглушка отвечает как устройство. Следующий
-  этап — 5: команды изменяющих функций в `pkcs11-tool`.
+  `docs/RUTOKEN-FUNCTIONS.md`, заглушка отвечает как устройство.
+- Этап 5 реализован: `--rutoken-set-name`, `--rutoken-set-license`,
+  `--rutoken-set-local-pin`, `--rutoken-unblock-user-pin`,
+  `--rutoken-token-manage`, `--rutoken-init-token`,
+  `--rutoken-restore-factory-defaults` с `--rutoken-confirm` и PIN только из
+  `env:` или ввода без эха. На устройстве команды еще не запускались;
+  устаревшие функции и разделы Flash не реализованы.
 - Workflow выпуска требует новый тег и не перезаписывает существующие теги и
   релизы.
 - Локальный `pkcs11-spy.conf` имеет приоритет над environment/Registry;

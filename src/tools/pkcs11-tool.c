@@ -275,6 +275,24 @@ enum {
 	OPT_RUTOKEN_CSR_ATTR,
 	OPT_RUTOKEN_CSR_EXT,
 	OPT_RUTOKEN_CONFIRM_BY_TOUCH,
+	OPT_RUTOKEN_SET_NAME,
+	OPT_RUTOKEN_SET_LICENSE,
+	OPT_RUTOKEN_SET_LOCAL_PIN,
+	OPT_RUTOKEN_AUTH_PIN,
+	OPT_RUTOKEN_UNBLOCK_USER_PIN,
+	OPT_RUTOKEN_TOKEN_MANAGE,
+	OPT_RUTOKEN_INIT_TOKEN,
+	OPT_RUTOKEN_RESTORE_DEFAULTS,
+	OPT_RUTOKEN_CONFIRM,
+	OPT_RUTOKEN_NEW_SO_PIN,
+	OPT_RUTOKEN_PIN_POLICY,
+	OPT_RUTOKEN_MIN_PIN_LENGTH,
+	OPT_RUTOKEN_RETRIES,
+	OPT_RUTOKEN_SM_MODE,
+	OPT_RUTOKEN_REPAIR_MODE,
+	OPT_RUTOKEN_EMITENT_KEY,
+	OPT_RUTOKEN_EMITENT_KEY_TYPE,
+	OPT_RUTOKEN_EMITENT_KEY_RETRIES,
 	OPT_URI,
 	OPT_URI_WITH_SLOT_ID
 };
@@ -396,6 +414,24 @@ static const struct option options[] = {
 	{ "rutoken-csr-attr",	1, NULL,		OPT_RUTOKEN_CSR_ATTR},
 	{ "rutoken-csr-ext",	1, NULL,		OPT_RUTOKEN_CSR_EXT},
 	{ "rutoken-confirm-by-touch", 0, NULL,		OPT_RUTOKEN_CONFIRM_BY_TOUCH},
+	{ "rutoken-set-name",	1, NULL,		OPT_RUTOKEN_SET_NAME},
+	{ "rutoken-set-license", 1, NULL,		OPT_RUTOKEN_SET_LICENSE},
+	{ "rutoken-set-local-pin", 1, NULL,		OPT_RUTOKEN_SET_LOCAL_PIN},
+	{ "rutoken-auth-pin",	1, NULL,		OPT_RUTOKEN_AUTH_PIN},
+	{ "rutoken-unblock-user-pin", 0, NULL,		OPT_RUTOKEN_UNBLOCK_USER_PIN},
+	{ "rutoken-token-manage", 1, NULL,		OPT_RUTOKEN_TOKEN_MANAGE},
+	{ "rutoken-init-token",	0, NULL,		OPT_RUTOKEN_INIT_TOKEN},
+	{ "rutoken-restore-factory-defaults", 0, NULL,	OPT_RUTOKEN_RESTORE_DEFAULTS},
+	{ "rutoken-confirm",	1, NULL,		OPT_RUTOKEN_CONFIRM},
+	{ "rutoken-new-so-pin",	1, NULL,		OPT_RUTOKEN_NEW_SO_PIN},
+	{ "rutoken-user-pin-policy", 1, NULL,		OPT_RUTOKEN_PIN_POLICY},
+	{ "rutoken-min-pin-length", 1, NULL,		OPT_RUTOKEN_MIN_PIN_LENGTH},
+	{ "rutoken-retries",	1, NULL,		OPT_RUTOKEN_RETRIES},
+	{ "rutoken-sm-mode",	1, NULL,		OPT_RUTOKEN_SM_MODE},
+	{ "rutoken-repair-mode", 0, NULL,		OPT_RUTOKEN_REPAIR_MODE},
+	{ "rutoken-emitent-key", 1, NULL,		OPT_RUTOKEN_EMITENT_KEY},
+	{ "rutoken-emitent-key-type", 1, NULL,		OPT_RUTOKEN_EMITENT_KEY_TYPE},
+	{ "rutoken-emitent-key-retries", 1, NULL,	OPT_RUTOKEN_EMITENT_KEY_RETRIES},
 	{ "uri",		1, NULL,		OPT_URI},
 	{ "uri-with-slot-id",	0, NULL,		OPT_URI_WITH_SLOT_ID},
 	{ NULL, 0, NULL, 0 },
@@ -518,6 +554,24 @@ static const char *option_help[] = {
 		"Request attribute <type>=<value> for --rutoken-csr",
 		"Request extension <type>=<value> for --rutoken-csr",
 		"With --keypairgen: sign with the private key only after the token button is pressed (Rutoken with a button)",
+		"Set the Rutoken name to <arg> (needs --login)",
+		"Write Rutoken license <arg> from --input-file (needs --login and --rutoken-confirm=set-license)",
+		"Set Rutoken local PIN <arg> (3..31) to --new-pin, authorized by --rutoken-auth-pin",
+		"The user PIN for a new local PIN or the current value of an existing one, as env:<name>; asked if absent",
+		"Unblock the Rutoken user PIN (needs --login --login-type so)",
+		"Rutoken PIN policy or Bluetooth mode: force-user-pin-change, default-user-pin, standard-default-user-pin, reset-user-pin, bluetooth-timeout:<minutes> or channel:usb|bluetooth (needs --login --login-type so)",
+		"Format the Rutoken: all objects and local PINs are erased (needs --rutoken-confirm=init-token)",
+		"Format the Rutoken and replace its emitent key (needs --rutoken-confirm=restore-factory-defaults)",
+		"Confirm a Rutoken command that erases data or resets a PIN: init-token, restore-factory-defaults, set-license or reset-user-pin",
+		"New SO PIN of --rutoken-init-token and --rutoken-restore-factory-defaults, as env:<name>; asked if absent",
+		"Who may change the user PIN after formatting: user (default), admin or both",
+		"Minimum SO and user PIN lengths after formatting, <so>:<user> (default 6:6)",
+		"SO and user PIN attempts after formatting, <so>:<user> (default 10:10)",
+		"Secure messaging mode of the formatted Rutoken (default 0)",
+		"Format with --rutoken-init-token without the SO PIN (repair mode)",
+		"File with the new 32-byte emitent key of --rutoken-restore-factory-defaults",
+		"Emitent key type: kuznyechik (default) or magma",
+		"Emitent key attempts (default 10)",
 		"Specify the PKCS#11 URI for module, slot, token or object",
 		"Include SlotId in PKCS#11 URI",
 		"",
@@ -530,6 +584,13 @@ static const char *	opt_input = NULL;
 static const char *	opt_output = NULL;
 static int		opt_rutoken_json = 0;
 static int		opt_rutoken_touch = 0;
+/* As given in the command line, to refuse PIN values for the Rutoken
+ * functions that take PINs directly */
+static const char *	opt_pin_argument = NULL;
+static const char *	opt_so_pin_argument = NULL;
+static const char *	opt_new_pin_argument = NULL;
+static const char *	opt_rutoken_auth_pin = NULL;
+static const char *	opt_rutoken_new_so_pin = NULL;
 static const char *	opt_signature_file = NULL;
 static const char *opt_module = NULL;
 static int		opt_slot_set = 0;
@@ -723,13 +784,49 @@ struct rutoken_request {
 	struct rutoken_list dn;
 	struct rutoken_list csr_attrs;
 	struct rutoken_list csr_exts;
+	/* Stage 5: at most one command that changes the token */
+	int change;			/* RUTOKEN_SET_NAME ... RUTOKEN_RESTORE_DEFAULTS */
+	const char *new_name;		/* --rutoken-set-name */
+	CK_ULONG change_number;		/* license number or local PIN ID */
+	CK_ULONG manage_mode;		/* MODE_* of --rutoken-token-manage */
+	CK_ULONG manage_value;		/* timeout or channel type */
+	const char *manage_name;	/* the mode as given */
+	const char *confirm;		/* --rutoken-confirm */
+	CK_FLAGS pin_policy;		/* formatting parameters */
+	CK_ULONG min_so_pin, min_user_pin;
+	CK_ULONG so_retries, user_retries;
+	CK_ULONG sm_mode;
+	int repair_mode;
+	const char *emitent_key_file;
+	CK_KEY_TYPE emitent_key_type;
+	CK_ULONG emitent_key_retries;
 };
+#define RUTOKEN_LOCAL_PIN_FIRST	3
+#define RUTOKEN_LOCAL_PIN_LAST	31
+#define RUTOKEN_SET_NAME		1
+#define RUTOKEN_SET_LICENSE		2
+#define RUTOKEN_SET_LOCAL_PIN		3
+#define RUTOKEN_UNBLOCK_USER_PIN	4
+#define RUTOKEN_TOKEN_MANAGE		5
+#define RUTOKEN_INIT_TOKEN		6
+#define RUTOKEN_RESTORE_DEFAULTS	7
 /* Option groups that belong to one --rutoken-* command */
 #define RUTOKEN_SIGN_MODIFIER	0x01
 #define RUTOKEN_VERIFY_MODIFIER	0x02
 #define RUTOKEN_CSR_MODIFIER	0x04
+#define RUTOKEN_FORMAT_MODIFIER	0x08
+#define RUTOKEN_EMITENT_MODIFIER	0x10
 static void rutoken_list_add(struct rutoken_list *list, const char *item);
 static CK_FLAGS rutoken_verify_flag(const char *name);
+static void rutoken_set_change(struct rutoken_request *request, int change);
+static CK_ULONG rutoken_number(const char *option, const char *text,
+		CK_ULONG minimum, CK_ULONG maximum);
+static void rutoken_number_pair(const char *option, const char *text,
+		CK_ULONG minimum, CK_ULONG maximum, CK_ULONG *first, CK_ULONG *second);
+static void rutoken_token_manage_mode(struct rutoken_request *request,
+		const char *text);
+static void rutoken_check_change(const struct rutoken_request *request,
+		int modifiers, int action_count, int rutoken_action_count, int login);
 static void rutoken_check_touch(CK_SLOT_ID slot);
 static void load_rutoken_extension(void);
 static int run_rutoken_actions(CK_SLOT_ID slot, CK_SESSION_HANDLE session,
@@ -990,6 +1087,13 @@ int main(int argc, char * argv[])
 	legacy_provider = OSSL_PROVIDER_try_load(NULL, "legacy", 1);
 #endif
 
+	/* Formatting parameters of a Rutoken as it leaves the factory */
+	rutoken.pin_policy = TOKEN_FLAGS_USER_CHANGE_USER_PIN;
+	rutoken.min_so_pin = rutoken.min_user_pin = 6;
+	rutoken.so_retries = rutoken.user_retries = 10;
+	rutoken.emitent_key_type = CKK_KUZNECHIK;
+	rutoken.emitent_key_retries = 10;
+
 	while (1) {
 		c = getopt_long(argc, argv, "ILMOTa:bd:e:hi:klm:o:p:scvf:ty:w:z:r",
 		                options, &long_optind);
@@ -1122,6 +1226,7 @@ int main(int argc, char * argv[])
 		case 'p':
 			need_session |= NEED_SESSION_RO;
 			opt_login = 1;
+			opt_pin_argument = optarg;
 			util_get_pin(optarg, &opt_pin);
 			break;
 		case 'c':
@@ -1228,6 +1333,7 @@ int main(int argc, char * argv[])
 			opt_subject = optarg;
 			break;
 		case OPT_NEW_PIN:
+			opt_new_pin_argument = optarg;
 			util_get_pin(optarg, &opt_new_pin);
 			break;
 		case OPT_PUK:
@@ -1246,6 +1352,7 @@ int main(int argc, char * argv[])
 			}
 			break;
 		case OPT_SO_PIN:
+			opt_so_pin_argument = optarg;
 			util_get_pin(optarg, &opt_so_pin);
 			break;
 		case OPT_INIT_TOKEN:
@@ -1536,6 +1643,113 @@ int main(int argc, char * argv[])
 		case OPT_RUTOKEN_CONFIRM_BY_TOUCH:
 			opt_rutoken_touch = 1;
 			break;
+		case OPT_RUTOKEN_SET_NAME:
+			rutoken_set_change(&rutoken, RUTOKEN_SET_NAME);
+			rutoken.new_name = optarg;
+			need_session |= NEED_SESSION_RW;
+			rutoken_action_count++;
+			action_count++;
+			break;
+		case OPT_RUTOKEN_SET_LICENSE:
+			rutoken_set_change(&rutoken, RUTOKEN_SET_LICENSE);
+			rutoken.change_number = rutoken_number("--rutoken-set-license",
+					optarg, 1, 0xFFFFFFFFUL);
+			need_session |= NEED_SESSION_RW;
+			rutoken_action_count++;
+			action_count++;
+			break;
+		case OPT_RUTOKEN_SET_LOCAL_PIN:
+			rutoken_set_change(&rutoken, RUTOKEN_SET_LOCAL_PIN);
+			rutoken.change_number = rutoken_number("--rutoken-set-local-pin",
+					optarg, RUTOKEN_LOCAL_PIN_FIRST,
+					RUTOKEN_LOCAL_PIN_LAST);
+			rutoken_action_count++;
+			action_count++;
+			break;
+		case OPT_RUTOKEN_AUTH_PIN:
+			opt_rutoken_auth_pin = optarg;
+			break;
+		case OPT_RUTOKEN_UNBLOCK_USER_PIN:
+			rutoken_set_change(&rutoken, RUTOKEN_UNBLOCK_USER_PIN);
+			need_session |= NEED_SESSION_RW;
+			rutoken_action_count++;
+			action_count++;
+			break;
+		case OPT_RUTOKEN_TOKEN_MANAGE:
+			rutoken_set_change(&rutoken, RUTOKEN_TOKEN_MANAGE);
+			rutoken_token_manage_mode(&rutoken, optarg);
+			need_session |= NEED_SESSION_RW;
+			rutoken_action_count++;
+			action_count++;
+			break;
+		case OPT_RUTOKEN_INIT_TOKEN:
+			rutoken_set_change(&rutoken, RUTOKEN_INIT_TOKEN);
+			rutoken_action_count++;
+			action_count++;
+			break;
+		case OPT_RUTOKEN_RESTORE_DEFAULTS:
+			rutoken_set_change(&rutoken, RUTOKEN_RESTORE_DEFAULTS);
+			rutoken_action_count++;
+			action_count++;
+			break;
+		case OPT_RUTOKEN_CONFIRM:
+			rutoken.confirm = optarg;
+			break;
+		case OPT_RUTOKEN_NEW_SO_PIN:
+			opt_rutoken_new_so_pin = optarg;
+			rutoken_modifiers |= RUTOKEN_FORMAT_MODIFIER;
+			break;
+		case OPT_RUTOKEN_PIN_POLICY:
+			if (!strcmp(optarg, "user"))
+				rutoken.pin_policy = TOKEN_FLAGS_USER_CHANGE_USER_PIN;
+			else if (!strcmp(optarg, "admin"))
+				rutoken.pin_policy = TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN;
+			else if (!strcmp(optarg, "both"))
+				rutoken.pin_policy = TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN |
+					TOKEN_FLAGS_USER_CHANGE_USER_PIN;
+			else
+				util_fatal("--rutoken-user-pin-policy: use user, admin or "
+						"both, not \"%s\"", optarg);
+			rutoken_modifiers |= RUTOKEN_FORMAT_MODIFIER;
+			break;
+		case OPT_RUTOKEN_MIN_PIN_LENGTH:
+			rutoken_number_pair("--rutoken-min-pin-length", optarg, 1, 255,
+					&rutoken.min_so_pin, &rutoken.min_user_pin);
+			rutoken_modifiers |= RUTOKEN_FORMAT_MODIFIER;
+			break;
+		case OPT_RUTOKEN_RETRIES:
+			rutoken_number_pair("--rutoken-retries", optarg, 1, 15,
+					&rutoken.so_retries, &rutoken.user_retries);
+			rutoken_modifiers |= RUTOKEN_FORMAT_MODIFIER;
+			break;
+		case OPT_RUTOKEN_SM_MODE:
+			rutoken.sm_mode = rutoken_number("--rutoken-sm-mode", optarg, 0,
+					0xFFFFFFFFUL);
+			rutoken_modifiers |= RUTOKEN_FORMAT_MODIFIER;
+			break;
+		case OPT_RUTOKEN_REPAIR_MODE:
+			rutoken.repair_mode = 1;
+			rutoken_modifiers |= RUTOKEN_FORMAT_MODIFIER;
+			break;
+		case OPT_RUTOKEN_EMITENT_KEY:
+			rutoken.emitent_key_file = optarg;
+			rutoken_modifiers |= RUTOKEN_EMITENT_MODIFIER;
+			break;
+		case OPT_RUTOKEN_EMITENT_KEY_TYPE:
+			if (!strcmp(optarg, "kuznyechik"))
+				rutoken.emitent_key_type = CKK_KUZNECHIK;
+			else if (!strcmp(optarg, "magma"))
+				rutoken.emitent_key_type = CKK_MAGMA;
+			else
+				util_fatal("--rutoken-emitent-key-type: use kuznyechik or "
+						"magma, not \"%s\"", optarg);
+			rutoken_modifiers |= RUTOKEN_EMITENT_MODIFIER;
+			break;
+		case OPT_RUTOKEN_EMITENT_KEY_RETRIES:
+			rutoken.emitent_key_retries = rutoken_number(
+					"--rutoken-emitent-key-retries", optarg, 1, 15);
+			rutoken_modifiers |= RUTOKEN_EMITENT_MODIFIER;
+			break;
 		case OPT_URI_WITH_SLOT_ID:
 			opt_uri_with_slot_id = 1;
 			break;
@@ -1587,6 +1801,8 @@ int main(int argc, char * argv[])
 		util_fatal("--rutoken-csr needs at least one --rutoken-dn");
 	if (opt_rutoken_touch && !do_gen_keypair)
 		util_fatal("--rutoken-confirm-by-touch requires --keypairgen");
+	rutoken_check_change(&rutoken, rutoken_modifiers, action_count,
+			rutoken_action_count, opt_login);
 
 	if (opt_uri) {
 		/* Check that no interfering options were set */
@@ -2092,8 +2308,6 @@ end:
  */
 
 #define RUTOKEN_MAX_LENGTH	(16UL * 1024 * 1024)
-#define RUTOKEN_LOCAL_PIN_FIRST	3
-#define RUTOKEN_LOCAL_PIN_LAST	31
 
 #define RUTOKEN_CALL(name, arguments) \
 	(p11_ex->name ? p11_ex->name arguments : CKR_FUNCTION_NOT_SUPPORTED)
@@ -3407,6 +3621,220 @@ rutoken_verify_flag(const char *name)
 	return 0;
 }
 
+static void
+rutoken_set_change(struct rutoken_request *request, int change)
+{
+	if (request->change)
+		util_fatal("Give one command that changes the Rutoken at a time");
+	request->change = change;
+}
+
+static CK_ULONG
+rutoken_number(const char *option, const char *text, CK_ULONG minimum,
+		CK_ULONG maximum)
+{
+	char *end = NULL;
+	unsigned long number;
+
+	errno = 0;
+	number = strtoul(text, &end, 10);
+	if (errno || !end || end == text || *end || text[0] < '0' ||
+			text[0] > '9' || number < minimum || number > maximum)
+		util_fatal("%s: \"%s\" is not a number from %lu to %lu", option, text,
+				(unsigned long)minimum, (unsigned long)maximum);
+	return (CK_ULONG)number;
+}
+
+/* <SO>:<user> */
+static void
+rutoken_number_pair(const char *option, const char *text, CK_ULONG minimum,
+		CK_ULONG maximum, CK_ULONG *first, CK_ULONG *second)
+{
+	const char *colon = strchr(text, ':');
+	char head[32];
+
+	if (!colon || (size_t)(colon - text) >= sizeof(head))
+		util_fatal("%s: use <SO>:<user>, not \"%s\"", option, text);
+	memcpy(head, text, colon - text);
+	head[colon - text] = '\0';
+	*first = rutoken_number(option, head, minimum, maximum);
+	*second = rutoken_number(option, colon + 1, minimum, maximum);
+}
+
+static const struct rutoken_name rutoken_manage_modes[] = {
+	{ MODE_SET_BLUETOOTH_POWEROFF_TIMEOUT, "bluetooth-timeout" },
+	{ MODE_SET_CHANNEL_TYPE, "channel" },
+	{ MODE_RESET_CUSTOM_PIN_TO_STANDARD, "standard-default-user-pin" },
+	{ MODE_RESET_PIN_TO_DEFAULT, "reset-user-pin" },
+	{ MODE_CHANGE_DEFAULT_PIN, "default-user-pin" },
+	{ MODE_FORCE_USER_TO_CHANGE_PIN, "force-user-pin-change" },
+	{ 0, NULL }
+};
+
+static void
+rutoken_token_manage_mode(struct rutoken_request *request, const char *text)
+{
+	const struct rutoken_name *mode;
+	const char *colon = strchr(text, ':');
+	size_t length = colon ? (size_t)(colon - text) : strlen(text);
+
+	for (mode = rutoken_manage_modes; mode->name; mode++)
+		if (strlen(mode->name) == length && !strncmp(mode->name, text, length))
+			break;
+	if (!mode->name)
+		util_fatal("--rutoken-token-manage: unknown mode \"%s\"", text);
+	request->manage_mode = mode->value;
+	request->manage_name = mode->name;
+	if (mode->value == MODE_SET_BLUETOOTH_POWEROFF_TIMEOUT) {
+		if (!colon)
+			util_fatal("--rutoken-token-manage: use bluetooth-timeout:<minutes>");
+		/* 0 restores the default timeout */
+		request->manage_value = rutoken_number("--rutoken-token-manage",
+				colon + 1, BLUETOOTH_POWEROFF_TIMEOUT_DEFAULT,
+				BLUETOOTH_POWEROFF_TIMEOUT_MAX);
+	} else if (mode->value == MODE_SET_CHANNEL_TYPE) {
+		if (colon && !strcmp(colon + 1, "usb"))
+			request->manage_value = CHANNEL_TYPE_USB;
+		else if (colon && !strcmp(colon + 1, "bluetooth"))
+			request->manage_value = CHANNEL_TYPE_BLUETOOTH;
+		else
+			util_fatal("--rutoken-token-manage: use channel:usb or "
+					"channel:bluetooth");
+	} else if (colon) {
+		util_fatal("--rutoken-token-manage: mode %s takes no argument",
+				mode->name);
+	}
+}
+
+/* A PIN that a stage 5 function takes directly comes from env:<name> or
+ * the prompt; a value in the command line is visible to other users. */
+static void
+rutoken_check_pin_source(const char *option, const char *argument)
+{
+	if (!argument)
+		return;
+	if (strncasecmp(argument, "env:", 4) != 0 || !argument[4])
+		util_fatal("%s: give this PIN as env:<name> or type it at the prompt, "
+				"not in the command line", option);
+	if (!getenv(argument + 4))
+		util_fatal("%s: environment variable %s is not set", option,
+				argument + 4);
+}
+
+static const char *
+rutoken_confirm_word(const struct rutoken_request *request)
+{
+	switch (request->change) {
+	case RUTOKEN_SET_LICENSE:
+		return "set-license";
+	case RUTOKEN_INIT_TOKEN:
+		return "init-token";
+	case RUTOKEN_RESTORE_DEFAULTS:
+		return "restore-factory-defaults";
+	case RUTOKEN_TOKEN_MANAGE:
+		return request->manage_mode == MODE_RESET_PIN_TO_DEFAULT ?
+			"reset-user-pin" : NULL;
+	default:
+		return NULL;
+	}
+}
+
+static void
+rutoken_check_change(const struct rutoken_request *request, int modifiers,
+		int action_count, int rutoken_action_count, int opt_login)
+{
+	const char *word = rutoken_confirm_word(request);
+	int format = request->change == RUTOKEN_INIT_TOKEN ||
+		request->change == RUTOKEN_RESTORE_DEFAULTS;
+
+	if ((modifiers & RUTOKEN_FORMAT_MODIFIER) && !format)
+		util_fatal("--rutoken-new-so-pin, --rutoken-user-pin-policy, "
+				"--rutoken-min-pin-length, --rutoken-retries, "
+				"--rutoken-sm-mode and --rutoken-repair-mode require "
+				"--rutoken-init-token or --rutoken-restore-factory-defaults");
+	if ((modifiers & RUTOKEN_EMITENT_MODIFIER) &&
+			request->change != RUTOKEN_RESTORE_DEFAULTS)
+		util_fatal("--rutoken-emitent-key, --rutoken-emitent-key-type and "
+				"--rutoken-emitent-key-retries require "
+				"--rutoken-restore-factory-defaults");
+	if (opt_rutoken_auth_pin && request->change != RUTOKEN_SET_LOCAL_PIN)
+		util_fatal("--rutoken-auth-pin requires --rutoken-set-local-pin");
+	if (request->confirm && !word)
+		util_fatal("--rutoken-confirm is for --rutoken-init-token, "
+				"--rutoken-restore-factory-defaults, --rutoken-set-license "
+				"and --rutoken-token-manage reset-user-pin");
+	if (request->confirm && strcmp(request->confirm, word))
+		util_fatal("--rutoken-confirm=%s does not match; this command needs "
+				"--rutoken-confirm=%s", request->confirm, word);
+	if (!request->change)
+		return;
+	if (action_count != rutoken_action_count)
+		util_fatal("A command that changes the Rutoken cannot be combined "
+				"with other pkcs11-tool commands");
+	if (request->pkcs7_sign || request->pkcs7_verify || request->csr)
+		util_fatal("A command that changes the Rutoken cannot be combined "
+				"with --rutoken-pkcs7-sign, --rutoken-pkcs7-verify or "
+				"--rutoken-csr");
+
+	switch (request->change) {
+	case RUTOKEN_SET_NAME:
+		if (!opt_login)
+			util_fatal("--rutoken-set-name needs --login");
+		break;
+	case RUTOKEN_SET_LICENSE:
+		if (!opt_login)
+			util_fatal("--rutoken-set-license needs --login");
+		if (!opt_input)
+			util_fatal("--rutoken-set-license needs --input-file");
+		break;
+	case RUTOKEN_SET_LOCAL_PIN:
+		/* a C_Login with a local PIN value would cost a user PIN attempt */
+		if (opt_login || opt_pin_argument)
+			util_fatal("--rutoken-set-local-pin takes the authorizing PIN "
+					"from --rutoken-auth-pin; do not use --login or --pin");
+		rutoken_check_pin_source("--rutoken-auth-pin", opt_rutoken_auth_pin);
+		rutoken_check_pin_source("--new-pin", opt_new_pin_argument);
+		break;
+	case RUTOKEN_UNBLOCK_USER_PIN:
+		if (!opt_login || opt_login_type != CKU_SO)
+			util_fatal("--rutoken-unblock-user-pin needs --login "
+					"--login-type so");
+		break;
+	case RUTOKEN_TOKEN_MANAGE:
+		/* the PIN modes; nothing is known of the Bluetooth ones */
+		if (request->manage_mode != MODE_SET_BLUETOOTH_POWEROFF_TIMEOUT &&
+				request->manage_mode != MODE_SET_CHANNEL_TYPE &&
+				(!opt_login || opt_login_type != CKU_SO))
+			util_fatal("--rutoken-token-manage %s needs --login --login-type so",
+					request->manage_name);
+		if (request->manage_mode == MODE_CHANGE_DEFAULT_PIN)
+			rutoken_check_pin_source("--new-pin", opt_new_pin_argument);
+		break;
+	case RUTOKEN_INIT_TOKEN:
+	case RUTOKEN_RESTORE_DEFAULTS:
+		/* the library refuses to format while a session is open */
+		if (rutoken_action_count != 1)
+			util_fatal("Formatting the Rutoken cannot be combined with other "
+					"--rutoken-* commands");
+		if (opt_login || opt_pin_argument)
+			util_fatal("Formatting the Rutoken takes the SO PIN from "
+					"--so-pin; do not use --login or --pin");
+		if (request->repair_mode && request->change != RUTOKEN_INIT_TOKEN)
+			util_fatal("--rutoken-repair-mode requires --rutoken-init-token");
+		if (request->repair_mode && opt_so_pin_argument)
+			util_fatal("--rutoken-repair-mode formats without the SO PIN; "
+					"do not give --so-pin");
+		if (request->change == RUTOKEN_RESTORE_DEFAULTS &&
+				!request->emitent_key_file)
+			util_fatal("--rutoken-restore-factory-defaults needs "
+					"--rutoken-emitent-key");
+		rutoken_check_pin_source("--so-pin", opt_so_pin_argument);
+		rutoken_check_pin_source("--rutoken-new-so-pin", opt_rutoken_new_so_pin);
+		rutoken_check_pin_source("--new-pin", opt_new_pin_argument);
+		break;
+	}
+}
+
 /* CKA_VENDOR_CONFIRM_BY_TOUCH only means something on a token with a
  * button, so the key is not generated for another one. */
 static void
@@ -3904,6 +4332,456 @@ rutoken_csr(CK_SESSION_HANDLE session, const struct rutoken_request *request)
 	return failed;
 }
 
+/* Stage 5: commands that change the token */
+
+static void
+rutoken_wipe(void *data, size_t length)
+{
+	volatile unsigned char *p = data;
+
+	while (length--)
+		*p++ = 0;
+}
+
+static void
+rutoken_free_secret(char *secret)
+{
+	if (!secret)
+		return;
+	rutoken_wipe(secret, strlen(secret));
+	free(secret);
+}
+
+/* The PIN from env:<name> (checked with the options) or typed without echo;
+ * a new PIN is typed twice. */
+static char *
+rutoken_secret(const char *argument, const char *prompt, int twice)
+{
+	char *pin = NULL, *again = NULL;
+	size_t size = 0, again_size = 0;
+
+	if (argument) {
+		const char *value = getenv(argument + 4);
+
+		if (!value)
+			util_fatal("Environment variable %s is not set", argument + 4);
+		pin = strdup(value);
+		if (!pin)
+			util_fatal("Out of memory");
+		return pin;
+	}
+	fprintf(stderr, "%s: ", prompt);
+	if (util_getpass(&pin, &size, stdin) < 0)
+		util_fatal("util_getpass error");
+	if (twice) {
+		fprintf(stderr, "%s again: ", prompt);
+		if (util_getpass(&again, &again_size, stdin) < 0)
+			util_fatal("util_getpass error");
+		if (strcmp(pin, again)) {
+			rutoken_free_secret(pin);
+			rutoken_free_secret(again);
+			util_fatal("The PINs do not match");
+		}
+		rutoken_free_secret(again);
+	}
+	return pin;
+}
+
+/* The commands that erase data or reset a PIN only say what they would do
+ * until --rutoken-confirm names them. */
+static int
+rutoken_unconfirmed(CK_SLOT_ID slot, const char *key, const char *command,
+		const char *word, const char *effect)
+{
+	CK_TOKEN_INFO info;
+	CK_RV rv;
+
+	rv = p11->C_GetTokenInfo(slot, &info);
+	if (rv == CKR_OK) {
+		fprintf(stderr, "Rutoken: %s would %s on the token \"%s\"", command,
+				effect, p11_utf8_to_local(info.label, sizeof(info.label)));
+		fprintf(stderr, " (serial %s) in slot 0x%lx.\n",
+				p11_utf8_to_local(info.serialNumber, sizeof(info.serialNumber)),
+				(unsigned long)slot);
+	} else {
+		fprintf(stderr, "Rutoken: %s would %s on the token in slot 0x%lx.\n",
+				command, effect, (unsigned long)slot);
+	}
+	fprintf(stderr, "Repeat with --rutoken-confirm=%s to do it.\n", word);
+	if (opt_rutoken_json) {
+		json_begin(key, "{");
+		json_bool("confirmed", 0);
+		json_text("confirm", word);
+		json_end("}");
+	}
+	return 1;
+}
+
+static void
+rutoken_hint(const char *text)
+{
+	fprintf(stderr, "Rutoken: %s\n", text);
+	if (opt_rutoken_json)
+		json_text("hint", text);
+}
+
+static int
+rutoken_set_name(CK_SESSION_HANDLE session,
+		const struct rutoken_request *request)
+{
+	CK_ULONG length = (CK_ULONG)strlen(request->new_name);
+	CK_RV rv;
+
+	rv = RUTOKEN_CALL(C_EX_SetTokenName,
+			(session, (CK_CHAR_PTR)request->new_name, length));
+	if (opt_rutoken_json)
+		json_begin("set_name", "{");
+	if (rv != CKR_OK) {
+		rutoken_error("C_EX_SetTokenName", rv);
+		if (rv == CKR_USER_NOT_LOGGED_IN)
+			rutoken_hint("the name is changed under the user login");
+		if (opt_rutoken_json)
+			json_end("}");
+		return 1;
+	}
+	if (opt_rutoken_json) {
+		json_string("label", request->new_name, length);
+		json_ulong("length", length);
+		json_end("}");
+	} else {
+		printf("Rutoken name set: \"%s\" (%lu bytes)\n", request->new_name,
+				(unsigned long)length);
+	}
+	return 0;
+}
+
+static int
+rutoken_set_license(CK_SLOT_ID slot, CK_SESSION_HANDLE session,
+		const struct rutoken_request *request)
+{
+	CK_BYTE_PTR license;
+	CK_ULONG length;
+	CK_RV rv;
+
+	if (!request->confirm) {
+		char effect[48];
+
+		snprintf(effect, sizeof(effect), "write license %lu",
+				(unsigned long)request->change_number);
+		return rutoken_unconfirmed(slot, "set_license",
+				"--rutoken-set-license", "set-license", effect);
+	}
+	license = rutoken_read_file(opt_input, &length);
+	rv = RUTOKEN_CALL(C_EX_SetLicense,
+			(session, request->change_number, license, length));
+	rutoken_wipe(license, length);
+	free(license);
+	if (opt_rutoken_json)
+		json_begin("set_license", "{");
+	if (rv != CKR_OK) {
+		rutoken_error("C_EX_SetLicense", rv);
+		if (rv == CKR_ARGUMENTS_BAD)
+			rutoken_hint("licenses are numbered 1 to 4 and hold 72 bytes");
+		if (opt_rutoken_json)
+			json_end("}");
+		return 1;
+	}
+	if (opt_rutoken_json) {
+		json_ulong("number", request->change_number);
+		json_ulong("length", length);
+		json_text("input_file", opt_input);
+		json_end("}");
+	} else {
+		printf("Rutoken license %lu written: %lu bytes from %s\n",
+				(unsigned long)request->change_number, (unsigned long)length,
+				opt_input);
+	}
+	return 0;
+}
+
+static int
+rutoken_set_local_pin(CK_SLOT_ID slot, const struct rutoken_request *request)
+{
+	char prompt[96], *authorization, *new_pin;
+	CK_RV rv;
+
+	snprintf(prompt, sizeof(prompt), "User PIN, or the current value of "
+			"local PIN %lu", (unsigned long)request->change_number);
+	authorization = rutoken_secret(opt_rutoken_auth_pin, prompt, 0);
+	snprintf(prompt, sizeof(prompt), "New local PIN %lu",
+			(unsigned long)request->change_number);
+	new_pin = rutoken_secret(opt_new_pin_argument, prompt, 1);
+	rv = RUTOKEN_CALL(C_EX_SetLocalPIN,
+			(slot, (CK_UTF8CHAR_PTR)authorization,
+			 (CK_ULONG)strlen(authorization), (CK_UTF8CHAR_PTR)new_pin,
+			 (CK_ULONG)strlen(new_pin), request->change_number));
+	rutoken_free_secret(authorization);
+	rutoken_free_secret(new_pin);
+	if (opt_rutoken_json)
+		json_begin("set_local_pin", "{");
+	if (rv != CKR_OK) {
+		rutoken_error("C_EX_SetLocalPIN", rv);
+		if (rv == CKR_PIN_INCORRECT)
+			rutoken_hint("a new local PIN is set with the user PIN, an existing "
+					"one only with its current value");
+		if (opt_rutoken_json)
+			json_end("}");
+		return 1;
+	}
+	if (opt_rutoken_json) {
+		json_ulong("id", request->change_number);
+		json_end("}");
+	} else {
+		printf("Rutoken local PIN %lu set\n",
+				(unsigned long)request->change_number);
+	}
+	return 0;
+}
+
+static int
+rutoken_unblock_user_pin(CK_SESSION_HANDLE session)
+{
+	CK_RV rv = RUTOKEN_CALL(C_EX_UnblockUserPIN, (session));
+
+	if (opt_rutoken_json)
+		json_begin("unblock_user_pin", "{");
+	if (rv != CKR_OK) {
+		rutoken_error("C_EX_UnblockUserPIN", rv);
+		if (opt_rutoken_json)
+			json_end("}");
+		return 1;
+	}
+	if (opt_rutoken_json) {
+		json_bool("unblocked", 1);
+		json_end("}");
+	} else {
+		printf("Rutoken user PIN unblocked\n");
+	}
+	return 0;
+}
+
+static int
+rutoken_token_manage(CK_SLOT_ID slot, CK_SESSION_HANDLE session,
+		const struct rutoken_request *request)
+{
+	CK_USER_TYPE user = CKU_USER;
+	CK_ULONG value = request->manage_value;
+	CK_VENDOR_PIN_PARAMS params;
+	char *pin = NULL;
+	void *argument = &user;
+	CK_RV rv;
+
+	if (request->manage_mode == MODE_RESET_PIN_TO_DEFAULT && !request->confirm)
+		return rutoken_unconfirmed(slot, "token_manage",
+				"--rutoken-token-manage reset-user-pin", "reset-user-pin",
+				"reset the user PIN to the default one");
+	if (request->manage_mode == MODE_SET_BLUETOOTH_POWEROFF_TIMEOUT ||
+			request->manage_mode == MODE_SET_CHANNEL_TYPE) {
+		argument = &value;
+	} else if (request->manage_mode == MODE_CHANGE_DEFAULT_PIN) {
+		pin = rutoken_secret(opt_new_pin_argument, "New default user PIN", 1);
+		params.userType = CKU_USER;
+		params.pPinValue = (CK_UTF8CHAR_PTR)pin;
+		params.ulPinLength = (CK_ULONG)strlen(pin);
+		argument = &params;
+	}
+	rv = RUTOKEN_CALL(C_EX_TokenManage,
+			(session, request->manage_mode, argument));
+	rutoken_free_secret(pin);
+	if (opt_rutoken_json) {
+		json_begin("token_manage", "{");
+		json_text("mode", request->manage_name);
+		json_ulong("mode_code", request->manage_mode);
+	}
+	if (rv != CKR_OK) {
+		rutoken_error("C_EX_TokenManage", rv);
+		if (rv == CKR_FUNCTION_NOT_SUPPORTED &&
+				(request->manage_mode == MODE_SET_BLUETOOTH_POWEROFF_TIMEOUT ||
+				 request->manage_mode == MODE_SET_CHANNEL_TYPE))
+			rutoken_hint("the Bluetooth modes need a Rutoken ECP Bluetooth");
+		if (rv == CKR_USER_NOT_LOGGED_IN &&
+				request->manage_mode == MODE_RESET_PIN_TO_DEFAULT)
+			rutoken_hint("the reset changes the user PIN, so the token must "
+					"let the Administrator change it (user PIN policy admin "
+					"or both, TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN)");
+		if (opt_rutoken_json)
+			json_end("}");
+		return 1;
+	}
+	if (opt_rutoken_json) {
+		if (request->manage_mode == MODE_SET_BLUETOOTH_POWEROFF_TIMEOUT)
+			json_ulong("minutes", value);
+		if (request->manage_mode == MODE_SET_CHANNEL_TYPE)
+			json_text("channel", value == CHANNEL_TYPE_USB ? "usb" :
+					"bluetooth");
+		json_end("}");
+	} else {
+		printf("Rutoken token manage %s: done\n", request->manage_name);
+	}
+	return 0;
+}
+
+static void
+rutoken_format_report(const struct rutoken_request *request,
+		const CK_RUTOKEN_INIT_PARAM *init)
+{
+	int restore = request->change == RUTOKEN_RESTORE_DEFAULTS;
+
+	if (opt_rutoken_json) {
+		json_string("label", init->pTokenLabel, init->ulLabelLen);
+		json_ulong("user_pin_policy", init->ChangeUserPINPolicy);
+		json_flag_names("user_pin_policy_names", rutoken_token_flags,
+				init->ChangeUserPINPolicy);
+		json_ulong("min_so_pin_length", init->ulMinAdminPinLen);
+		json_ulong("min_user_pin_length", init->ulMinUserPinLen);
+		json_ulong("so_retries", init->ulMaxAdminRetryCount);
+		json_ulong("user_retries", init->ulMaxUserRetryCount);
+		json_ulong("sm_mode", init->ulSmMode);
+		if (restore) {
+			json_text("emitent_key_type",
+					request->emitent_key_type == CKK_MAGMA ? "magma" :
+					"kuznyechik");
+			json_ulong("emitent_key_retries", request->emitent_key_retries);
+		} else {
+			json_bool("repair_mode", init->UseRepairMode != 0);
+		}
+		return;
+	}
+	printf("Rutoken %s:\n", restore ? "factory defaults restored" :
+			"formatted");
+	printf("  label              : \"%.*s\"\n", (int)init->ulLabelLen,
+			(const char *)init->pTokenLabel);
+	printf("  user PIN policy    : 0x%lx", init->ChangeUserPINPolicy);
+	rutoken_print_flags(rutoken_token_flags, init->ChangeUserPINPolicy);
+	printf("\n");
+	printf("  min PIN length     : SO %lu, user %lu\n", init->ulMinAdminPinLen,
+			init->ulMinUserPinLen);
+	printf("  PIN attempts       : SO %lu, user %lu\n",
+			init->ulMaxAdminRetryCount, init->ulMaxUserRetryCount);
+	if (restore)
+		printf("  emitent key        : %s, %lu attempts\n",
+				request->emitent_key_type == CKK_MAGMA ? "Magma" :
+				"Kuznyechik", (unsigned long)request->emitent_key_retries);
+	else if (init->UseRepairMode)
+		printf("  repair mode        : yes\n");
+}
+
+/* C_EX_InitToken and MODE_RESTORE_FACTORY_DEFAULTS. On the device both
+ * erase objects and local PINs and keep licenses and the journal record. */
+static int
+rutoken_format(CK_SLOT_ID slot, const struct rutoken_request *request)
+{
+	int restore = request->change == RUTOKEN_RESTORE_DEFAULTS;
+	const char *key = restore ? "restore_factory_defaults" : "init_token";
+	const char *function = restore ?
+		"C_EX_SlotManage(MODE_RESTORE_FACTORY_DEFAULTS)" : "C_EX_InitToken";
+	static CK_BYTE no_label[1];
+	CK_VENDOR_RESTORE_FACTORY_DEFAULTS_PARAMS params;
+	CK_RUTOKEN_INIT_PARAM init;
+	char *so_pin = NULL, *new_so_pin, *new_user_pin;
+	CK_BYTE_PTR emitent_key = NULL;
+	CK_ULONG emitent_key_length = 0;
+	CK_RV rv;
+
+	if (!request->confirm)
+		return rutoken_unconfirmed(slot, key, restore ?
+				"--rutoken-restore-factory-defaults" : "--rutoken-init-token",
+				restore ? "restore-factory-defaults" : "init-token",
+				restore ? "erase all objects and local PINs and replace the "
+				"emitent key" : "erase all objects and local PINs");
+	if (restore) {
+		emitent_key = rutoken_read_file(request->emitent_key_file,
+				&emitent_key_length);
+		if (emitent_key_length != 32) {
+			rutoken_wipe(emitent_key, emitent_key_length);
+			util_fatal("%s: the emitent key must be 32 bytes, not %lu",
+					request->emitent_key_file,
+					(unsigned long)emitent_key_length);
+		}
+	}
+	if (!request->repair_mode)
+		so_pin = rutoken_secret(opt_so_pin_argument, "Current SO PIN", 0);
+	new_so_pin = rutoken_secret(opt_rutoken_new_so_pin, "New SO PIN", 1);
+	new_user_pin = rutoken_secret(opt_new_pin_argument, "New user PIN", 1);
+
+	memset(&init, 0, sizeof(init));
+	init.ulSizeofThisStructure = sizeof(init);
+	init.UseRepairMode = request->repair_mode ? CK_TRUE : CK_FALSE;
+	init.pNewAdminPin = (CK_BYTE_PTR)new_so_pin;
+	init.ulNewAdminPinLen = (CK_ULONG)strlen(new_so_pin);
+	init.pNewUserPin = (CK_BYTE_PTR)new_user_pin;
+	init.ulNewUserPinLen = (CK_ULONG)strlen(new_user_pin);
+	init.ChangeUserPINPolicy = request->pin_policy;
+	init.ulMinAdminPinLen = request->min_so_pin;
+	init.ulMinUserPinLen = request->min_user_pin;
+	init.ulMaxAdminRetryCount = request->so_retries;
+	init.ulMaxUserRetryCount = request->user_retries;
+	init.pTokenLabel = opt_object_label ? (CK_BYTE_PTR)opt_object_label :
+		no_label;
+	init.ulLabelLen = opt_object_label ? (CK_ULONG)strlen(opt_object_label) : 0;
+	init.ulSmMode = request->sm_mode;
+
+	if (restore) {
+		memset(&params, 0, sizeof(params));
+		params.ulSizeofThisStructure = sizeof(params);
+		params.pAdminPin = (CK_BYTE_PTR)so_pin;
+		params.ulAdminPinLen = (CK_ULONG)strlen(so_pin);
+		params.pInitParam = &init;
+		params.pNewEmitentKey = emitent_key;
+		params.ulNewEmitentKeyLen = emitent_key_length;
+		params.ulNewEmitentKeyRetryCount = request->emitent_key_retries;
+		params.newEmitentKeyType = request->emitent_key_type;
+		rv = RUTOKEN_CALL(C_EX_SlotManage,
+				(slot, MODE_RESTORE_FACTORY_DEFAULTS, &params));
+		rutoken_wipe(emitent_key, emitent_key_length);
+		free(emitent_key);
+	} else {
+		rv = RUTOKEN_CALL(C_EX_InitToken, (slot, (CK_UTF8CHAR_PTR)so_pin,
+				so_pin ? (CK_ULONG)strlen(so_pin) : 0, &init));
+	}
+	rutoken_free_secret(so_pin);
+	rutoken_free_secret(new_so_pin);
+	rutoken_free_secret(new_user_pin);
+	init.pNewAdminPin = init.pNewUserPin = NULL;
+
+	if (opt_rutoken_json)
+		json_begin(key, "{");
+	if (rv != CKR_OK) {
+		rutoken_error(function, rv);
+		if (rv == CKR_SESSION_EXISTS)
+			rutoken_hint("another program has a session with the token");
+		if (opt_rutoken_json)
+			json_end("}");
+		return 1;
+	}
+	rutoken_format_report(request, &init);
+	if (opt_rutoken_json)
+		json_end("}");
+	return 0;
+}
+
+static int
+rutoken_run_change(CK_SLOT_ID slot, CK_SESSION_HANDLE session,
+		const struct rutoken_request *request)
+{
+	switch (request->change) {
+	case RUTOKEN_SET_NAME:
+		return rutoken_set_name(session, request);
+	case RUTOKEN_SET_LICENSE:
+		return rutoken_set_license(slot, session, request);
+	case RUTOKEN_SET_LOCAL_PIN:
+		return rutoken_set_local_pin(slot, request);
+	case RUTOKEN_UNBLOCK_USER_PIN:
+		return rutoken_unblock_user_pin(session);
+	case RUTOKEN_TOKEN_MANAGE:
+		return rutoken_token_manage(slot, session, request);
+	case RUTOKEN_INIT_TOKEN:
+	case RUTOKEN_RESTORE_DEFAULTS:
+		return rutoken_format(slot, request);
+	}
+	return 0;
+}
+
 static int
 run_rutoken_actions(CK_SLOT_ID slot, CK_SESSION_HANDLE session,
 		const struct rutoken_request *request)
@@ -3914,6 +4792,9 @@ run_rutoken_actions(CK_SLOT_ID slot, CK_SESSION_HANDLE session,
 		json_begin(NULL, "{");
 		json_ulong("slot", slot);
 	}
+	/* a change first, so that reading commands show its result */
+	if (request->change)
+		failed |= rutoken_run_change(slot, session, request);
 	if (request->info)
 		failed |= rutoken_show_info(slot);
 	if (request->name)
@@ -5632,6 +6513,10 @@ static int gen_keypair(CK_SLOT_ID slot, CK_SESSION_HANDLE session,
 		{CKA_SENSITIVE, &_true, sizeof(_true)},
 	};
 	unsigned long int gost_key_type = -1;
+	/* The GOST templates point here until C_GenerateKeyPair, after the
+	 * branch that fills them has ended. */
+	struct sc_aid key_paramset_encoded_oid;
+	struct sc_aid hash_paramset_encoded_oid;
 	CK_ML_DSA_PARAMETER_SET_TYPE ml_dsa_parameter_set = 0;
 	CK_ML_KEM_PARAMETER_SET_TYPE ml_kem_parameter_set = 0;
 	CK_SLH_DSA_PARAMETER_SET_TYPE slh_dsa_parameter_set = 0;
@@ -5768,8 +6653,6 @@ static int gen_keypair(CK_SLOT_ID slot, CK_SESSION_HANDLE session,
 			const struct sc_aid GOST2012_512_PARAMSET_A_OID = { { 0x06, 0x09, 0x2A, 0x85, 0x03, 0x07, 0x01, 0x02, 0x01, 0x02, 0x01 }, 11 };
 			const struct sc_aid GOST2012_512_PARAMSET_B_OID = { { 0x06, 0x09, 0x2A, 0x85, 0x03, 0x07, 0x01, 0x02, 0x01, 0x02, 0x02 }, 11 };
 			const struct sc_aid GOST2012_512_PARAMSET_C_OID = { { 0x06, 0x09, 0x2A, 0x85, 0x03, 0x07, 0x01, 0x02, 0x01, 0x02, 0x03 }, 11 };
-			struct sc_aid key_paramset_encoded_oid;
-			struct sc_aid hash_paramset_encoded_oid;
 			CK_MECHANISM_TYPE mtypes[] = {-1};
 			size_t mtypes_num = sizeof(mtypes)/sizeof(mtypes[0]);
 			const char *p_param_set = type + strlen("GOSTR3410");
