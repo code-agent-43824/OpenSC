@@ -526,8 +526,7 @@
 					(1 to 4, 72 bytes) from the file given with
 					<option>--input-file</option> with
 					<option>C_EX_SetLicense</option>. Requires
-					<option>--login</option> and
-					<option>--rutoken-confirm</option>=set-license.</para></listitem>
+					<option>--login</option>.</para></listitem>
 				</varlistentry>
 
 				<varlistentry>
@@ -565,9 +564,8 @@
 					default User PIN, given with <option>--new-pin</option>),
 					<literal>standard-default-user-pin</literal> (back to the factory
 					default), <literal>reset-user-pin</literal> (reset the User PIN
-					to the default one; requires
-					<option>--rutoken-confirm</option>=reset-user-pin and a token
-					that lets the SO change the User PIN), and for Rutoken ECP
+					to the default one; requires a token that lets the SO change the
+					User PIN), and for Rutoken ECP
 					Bluetooth <literal>bluetooth-timeout:</literal><replaceable>minutes</replaceable>
 					(0 to 70, 0 for the default) and
 					<literal>channel:usb</literal> or
@@ -595,8 +593,7 @@
 					(defaults 6:6 and 10:10); <option>--rutoken-sm-mode</option> sets
 					the secure messaging mode (default 0);
 					<option>--rutoken-repair-mode</option> formats without the SO
-					PIN. Requires <option>--rutoken-confirm</option>=init-token and
-					cannot be combined with other commands or with
+					PIN. It cannot be combined with other commands or with
 					<option>--login</option>.</para></listitem>
 				</varlistentry>
 
@@ -613,21 +610,7 @@
 					<literal>kuznyechik</literal> (default) or
 					<literal>magma</literal> and
 					<option>--rutoken-emitent-key-retries</option> sets its attempts
-					(default 10). Requires
-					<option>--rutoken-confirm</option>=restore-factory-defaults.
-					</para></listitem>
-				</varlistentry>
-
-				<varlistentry>
-					<term>
-						<option>--rutoken-confirm</option> <replaceable>operation</replaceable>
-					</term>
-					<listitem><para>Confirm a command that erases data or resets a
-					PIN: <literal>init-token</literal>,
-					<literal>restore-factory-defaults</literal>,
-					<literal>set-license</literal> or
-					<literal>reset-user-pin</literal>. Without it the command only
-					says what it would do and the exit status is 1.</para></listitem>
+					(default 10).</para></listitem>
 				</varlistentry>
 
 				<varlistentry>

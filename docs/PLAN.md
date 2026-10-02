@@ -80,8 +80,8 @@
   Рутокен ЭЦП 3.0 3127 USB, ответы в `RUTOKEN-FUNCTIONS.md` и
   `RUTOKEN-APDU.md`, заглушка приведена к ним.
 - [x] Добавить `InitToken`, `UnblockUserPIN`, `SetTokenName`, `SetLicense`,
-  `SetLocalPIN`, `TokenManage` и режим `MODE_RESTORE_FACTORY_DEFAULTS` с
-  обязательным явным подтверждением разрушительных режимов: команды
+  `SetLocalPIN`, `TokenManage` и режим `MODE_RESTORE_FACTORY_DEFAULTS` без
+  отдельного подтверждения (решение владельца): команды
   `--rutoken-set-name`, `--rutoken-set-license`, `--rutoken-set-local-pin`,
   `--rutoken-unblock-user-pin`, `--rutoken-token-manage`,
   `--rutoken-init-token`, `--rutoken-restore-factory-defaults`; PIN только
@@ -98,8 +98,8 @@
 `--rutoken-volumes` остается как есть (объем, число разделов и ошибка
 библиотеки).
 
-- [ ] `FormatDrive` и `ChangeVolumeAttributes` в `pkcs11-tool` с явным
-  подтверждением и повторным поиском токена после переподключения.
+- [ ] `FormatDrive` и `ChangeVolumeAttributes` в `pkcs11-tool` с повторным
+  поиском токена после переподключения.
 - [ ] Собственный разбор таблицы разделов (`80 53 11`, размер в байтах
   [2..3] — гипотеза из `RUTOKEN-APDU.md`) вместо неработающего
   `C_EX_GetVolumesInfo`; сверить размеры с `lsblk` на устройстве.

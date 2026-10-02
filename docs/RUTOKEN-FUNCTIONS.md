@@ -89,12 +89,8 @@
 
 ### Разрушительные операции
 
-Команды, которые стирают данные или сбрасывают PIN, требуют
-`--rutoken-confirm=<операция>` с точным именем: `init-token`,
-`restore-factory-defaults`, `set-license`, `reset-user-pin` (в будущем
-`format-drive`). Без него команда пишет в stderr, что сделала бы и с каким
-токеном (метка, серийный номер, слот), и завершается с кодом 1; в JSON —
-`confirmed: false`. Подтверждение другой операции отвергается.
+По решению владельца команды, которые стирают данные или сбрасывают PIN,
+выполняются без отдельного подтверждения.
 
 ## Этап 3 — чтение (реализован)
 
@@ -294,12 +290,12 @@ license, journal, volumes, certificates, PIN status. Все проверены �
 | Функция | Команда | Условия и поведение |
 |---|---|---|
 | `SetTokenName(hSession, label, len)` | `--rutoken-set-name ИМЯ --login` | Сессия RW под Пользователем. Устройство: 0–255 байт UTF-8 приняты, `C_GetTokenInfo` показывает первые 32; пустое имя читается как «Rutoken ECP <no label>» |
-| `SetLicense(hSession, N, 72 байта)` | `--rutoken-set-license N --input-file F --login --rutoken-confirm=set-license` | RW под Пользователем (Администратор не проверялся). Устройство: номера 1–4 и ровно 72 байта, иначе `CKR_ARGUMENTS_BAD`; повторная запись принята. Содержимое не печатается, буфер затирается |
+| `SetLicense(hSession, N, 72 байта)` | `--rutoken-set-license N --input-file F --login` | RW под Пользователем (Администратор не проверялся). Устройство: номера 1–4 и ровно 72 байта, иначе `CKR_ARGUMENTS_BAD`; повторная запись принята. Содержимое не печатается, буфер затирается |
 | `SetLocalPIN(slot, PIN Пользователя или текущий локальный, новый, ID)` | `--rutoken-set-local-pin ID [--rutoken-auth-pin env:A] [--new-pin env:B]` | Без сессии и входа: `--login` и `--pin` отвергаются, чтобы `C_Login` с локальным PIN не тратил попытку PIN Пользователя. ID 3–31. Устройство: новый PIN — по PIN Пользователя, заданный — только по текущему значению (неверное тратит попытку локального PIN); минимальная длина как у PIN Пользователя, 10 попыток |
 | `UnblockUserPIN(hSession)` | `--rutoken-unblock-user-pin --login --login-type so` | Сессия RW под Администратором. Устройство: попытки PIN Пользователя восстановлены, у незаблокированного локального PIN — нет |
-| `TokenManage(hSession, mode, pValue)` | `--rutoken-token-manage РЕЖИМ --login --login-type so` | `force-user-pin-change` (6), `default-user-pin` (5, новый PIN из `--new-pin`), `standard-default-user-pin` (3), `reset-user-pin` (4, с `--rutoken-confirm=reset-user-pin`); для Рутокен Bluetooth `bluetooth-timeout:МИН` (1, 0–70, 0 — по умолчанию) и `channel:usb\|bluetooth` (2), на других токенах `CKR_FUNCTION_NOT_SUPPORTED`. Устройство: режим 4 — смена PIN Пользователя, без права Администратора на нее (`TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN`) — `CKR_USER_NOT_LOGGED_IN`; режим 5 включает `TOKEN_FLAGS_USER_PIN_NOT_DEFAULT` |
-| `InitToken(slot, SO PIN, CK_RUTOKEN_INIT_PARAM)` | `--rutoken-init-token --rutoken-confirm=init-token` | Текущий PIN Администратора — `--so-pin`, новые — `--rutoken-new-so-pin` и `--new-pin`; метка — `--label`; `--rutoken-user-pin-policy user\|admin\|both` (по умолчанию `user`, как с завода), `--rutoken-min-pin-length SO:USER` (6:6), `--rutoken-retries SO:USER` (10:10), `--rutoken-sm-mode N` (0), `--rutoken-repair-mode` — без PIN Администратора. Открытых сессий быть не должно: `CKR_SESSION_EXISTS` без обращения к токену. Устройство: около 3,4 с; удаляются объекты и локальные PIN, остаются лицензии, запись журнала и счетчик изменений |
-| `SlotManage(MODE_RESTORE_FACTORY_DEFAULTS)` | `--rutoken-restore-factory-defaults --rutoken-emitent-key F --rutoken-confirm=restore-factory-defaults` | Те же параметры форматирования, кроме ремонтного режима; ключ эмитента — 32 байта из файла, `--rutoken-emitent-key-type kuznyechik\|magma` (по умолчанию Кузнечик), `--rutoken-emitent-key-retries N` (10). Устройство: как `InitToken` плюс ключ эмитента, Кузнечик с 10 попытками принят, около 3,3 с |
+| `TokenManage(hSession, mode, pValue)` | `--rutoken-token-manage РЕЖИМ --login --login-type so` | `force-user-pin-change` (6), `default-user-pin` (5, новый PIN из `--new-pin`), `standard-default-user-pin` (3), `reset-user-pin` (4); для Рутокен Bluetooth `bluetooth-timeout:МИН` (1, 0–70, 0 — по умолчанию) и `channel:usb\|bluetooth` (2), на других токенах `CKR_FUNCTION_NOT_SUPPORTED`. Устройство: режим 4 — смена PIN Пользователя, без права Администратора на нее (`TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN`) — `CKR_USER_NOT_LOGGED_IN`; режим 5 включает `TOKEN_FLAGS_USER_PIN_NOT_DEFAULT` |
+| `InitToken(slot, SO PIN, CK_RUTOKEN_INIT_PARAM)` | `--rutoken-init-token` | Текущий PIN Администратора — `--so-pin`, новые — `--rutoken-new-so-pin` и `--new-pin`; метка — `--label`; `--rutoken-user-pin-policy user\|admin\|both` (по умолчанию `user`, как с завода), `--rutoken-min-pin-length SO:USER` (6:6), `--rutoken-retries SO:USER` (10:10), `--rutoken-sm-mode N` (0), `--rutoken-repair-mode` — без PIN Администратора. Открытых сессий быть не должно: `CKR_SESSION_EXISTS` без обращения к токену. Устройство: около 3,4 с; удаляются объекты и локальные PIN, остаются лицензии, запись журнала и счетчик изменений |
+| `SlotManage(MODE_RESTORE_FACTORY_DEFAULTS)` | `--rutoken-restore-factory-defaults --rutoken-emitent-key F` | Те же параметры форматирования, кроме ремонтного режима; ключ эмитента — 32 байта из файла, `--rutoken-emitent-key-type kuznyechik\|magma` (по умолчанию Кузнечик), `--rutoken-emitent-key-retries N` (10). Устройство: как `InitToken` плюс ключ эмитента, Кузнечик с 10 попытками принят, около 3,3 с |
 
 Не реализованы:
 
@@ -307,7 +303,7 @@ license, journal, volumes, certificates, PIN status. Все проверены �
 |---|---|---|
 | `SlotManage(MODE_GET_IMIT)` | MAC ГОСТ по переданному ключу, только Рутокен SC 2.0 | `--rutoken-legacy-imit` |
 | `ChangeVolumeAttributes(slot, владелец, PIN, раздел, режим, bPermanent)` | Отложено с разделами Flash. Постоянное изменение переподключает токен, `slotID` может смениться — токен ищется заново по серийному номеру | `--rutoken-volume-access ID:РЕЖИМ [--rutoken-permanent]` |
-| `FormatDrive(slot, CKU_SO, PIN, layout[], n)` | Отложено с разделами Flash. Стирает Flash, 1–8 разделов, переподключение | `--rutoken-format-drive РАЗМЕР:РЕЖИМ:ВЛАДЕЛЕЦ,... --rutoken-confirm=format-drive` |
+| `FormatDrive(slot, CKU_SO, PIN, layout[], n)` | Отложено с разделами Flash. Стирает Flash, 1–8 разделов, переподключение | `--rutoken-format-drive РАЗМЕР:РЕЖИМ:ВЛАДЕЛЕЦ,...` |
 
 Устаревшие функции остаются в таблице и получают команды
 `--rutoken-legacy-*`, скрытые из краткой справки:
@@ -326,8 +322,8 @@ license, journal, volumes, certificates, PIN status. Все проверены �
 1. Заглушка `tests/rutoken-stub.c` получает реалистичное поведение каждой
    функции: два прохода, `CKR_BUFFER_TOO_SMALL`, ошибки, отсутствие
    поддержки, учет выделений и освобождений. Команды этапов 3–5 в тексте и
-   JSON, файлы, коды Рутокен, освобождение буферов, подтверждения, отказ от
-   PIN в командной строке и отсутствие лицензий, новых PIN и ключа эмитента
+   JSON, файлы, коды Рутокен, освобождение буферов, отказ от PIN в
+   командной строке и отсутствие лицензий, новых PIN и ключа эмитента
    в логе spy проверяются в `make check` (`tests/test-rutoken-extensions.sh`)
    и во всех шести test kit (`scripts/portable/test.py`). Порядок таблицы spy проверяется вызовами с
    дескриптором 99, на который заглушка отвечает только кодом функции. Для

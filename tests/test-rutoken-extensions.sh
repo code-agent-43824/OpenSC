@@ -337,19 +337,12 @@ expect "$text" '--rutoken-set-name needs --login'
 
 license_in="$test_dir/license-in.bin"
 printf '%072d' 0 | tr 0 L > "$license_in"
-fails --login --pin 12345678 --rutoken-set-license 3 --input-file "$license_in"
-expect "$text" 'Repeat with --rutoken-confirm=set-license to do it.'
 run_change --login --pin 12345678 --rutoken-set-license 3 \
-	--input-file "$license_in" --rutoken-confirm=set-license \
-	--rutoken-license 3 > "$text"
+	--input-file "$license_in" --rutoken-license 3 > "$text"
 expect "$text" 'Rutoken license 3 written: 72 bytes from'
 expect "$text" 'Rutoken license 3: 72 bytes, not empty'
-fails --login --pin 12345678 --rutoken-set-license 5 --input-file "$license_in" \
-	--rutoken-confirm=set-license
+fails --login --pin 12345678 --rutoken-set-license 5 --input-file "$license_in"
 expect "$text" 'licenses are numbered 1 to 4 and hold 72 bytes'
-fails --login --pin 12345678 --rutoken-set-license 3 --input-file "$license_in" \
-	--rutoken-confirm=init-token
-expect "$text" 'needs --rutoken-confirm=set-license'
 
 run_change --rutoken-set-local-pin 4 --rutoken-auth-pin env:RUTOKEN_TEST_USER_PIN \
 	--new-pin env:RUTOKEN_TEST_LOCAL_PIN --rutoken-pin-status > "$text"
@@ -381,39 +374,29 @@ run_change $so_login --rutoken-token-manage default-user-pin \
 expect "$text" 'USER_PIN_NOT_DEFAULT'
 # shellcheck disable=SC2086
 fails $so_login --rutoken-token-manage reset-user-pin
-expect "$text" 'Repeat with --rutoken-confirm=reset-user-pin to do it.'
-# shellcheck disable=SC2086
-fails $so_login --rutoken-token-manage reset-user-pin \
-	--rutoken-confirm=reset-user-pin
 expect "$text" 'TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN)'
 # shellcheck disable=SC2086
 fails $so_login --rutoken-token-manage bluetooth-timeout:10 --rutoken-json
 expect "$text" '"token_manage":{"mode":"bluetooth-timeout","mode_code":1,"error":{"function":"C_EX_TokenManage","rv":"CKR_FUNCTION_NOT_SUPPORTED"'
 
 # shellcheck disable=SC2086
-fails --rutoken-init-token --so-pin env:RUTOKEN_TEST_SO_PIN $new_pins
-expect "$text" 'Repeat with --rutoken-confirm=init-token to do it.'
-# shellcheck disable=SC2086
-fails --rutoken-init-token --so-pin 87654321 $new_pins \
-	--rutoken-confirm=init-token
+fails --rutoken-init-token --so-pin 87654321 $new_pins
 expect "$text" '--so-pin: give this PIN as env:<name>'
 # shellcheck disable=SC2086
 fails --rutoken-info --rutoken-init-token --so-pin env:RUTOKEN_TEST_SO_PIN \
-	$new_pins --rutoken-confirm=init-token
+	$new_pins
 expect "$text" 'cannot be combined with other --rutoken-* commands'
 # shellcheck disable=SC2086
 run_change --rutoken-init-token --so-pin env:RUTOKEN_TEST_SO_PIN $new_pins \
 	--label 'Stage 5' --rutoken-user-pin-policy both \
-	--rutoken-min-pin-length 6:8 --rutoken-retries 5:7 \
-	--rutoken-confirm=init-token --rutoken-json > "$json"
+	--rutoken-min-pin-length 6:8 --rutoken-retries 5:7 --rutoken-json > "$json"
 expect "$json" '"init_token":{"label":"Stage 5","user_pin_policy":3,"user_pin_policy_names":["ADMIN_CHANGE_USER_PIN","USER_CHANGE_USER_PIN"],"min_so_pin_length":6,"min_user_pin_length":8,"so_retries":5,"user_retries":7,"sm_mode":0,"repair_mode":false}'
 emitent_key="$test_dir/emitent.key"
 printf '%032d' 0 | tr 0 K > "$emitent_key"
 # shellcheck disable=SC2086
 run_change --rutoken-restore-factory-defaults --so-pin env:RUTOKEN_TEST_SO_PIN \
 	$new_pins --rutoken-emitent-key "$emitent_key" \
-	--rutoken-emitent-key-type magma \
-	--rutoken-confirm=restore-factory-defaults > "$text"
+	--rutoken-emitent-key-type magma > "$text"
 expect "$text" 'Rutoken factory defaults restored:'
 expect "$text" 'emitent key        : Magma, 10 attempts'
 

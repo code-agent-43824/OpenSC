@@ -31,8 +31,8 @@ Portable CI для `pkcs11-tool` и `pkcs11-spy` завершен и наход�
 - Этап 5 реализован: `--rutoken-set-name`, `--rutoken-set-license`,
   `--rutoken-set-local-pin`, `--rutoken-unblock-user-pin`,
   `--rutoken-token-manage`, `--rutoken-init-token`,
-  `--rutoken-restore-factory-defaults` с `--rutoken-confirm` и PIN только из
-  `env:` или ввода без эха. На устройстве команды еще не запускались;
+  `--rutoken-restore-factory-defaults`; PIN только из `env:` или ввода без
+  эха, отдельного подтверждения нет (решение владельца). На устройстве команды еще не запускались;
   устаревшие функции и разделы Flash не реализованы.
 - Workflow выпуска требует новый тег и не перезаписывает существующие теги и
   релизы.
