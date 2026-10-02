@@ -62,7 +62,9 @@ static CK_USER_TYPE login_user;
 /* Token state that the stage 5 functions change.  It survives C_Finalize,
  * as a token does, until the process ends. */
 #define STUB_PIN_MAX 32
-#define STUB_LABEL_MAX 32
+/* the device took names of 255 bytes; an empty one reads as the default */
+#define STUB_LABEL_MAX 255
+#define STUB_NO_LABEL "Rutoken ECP <no label>"
 #define STUB_STANDARD_USER_PIN "12345678"
 #define STUB_STANDARD_SO_PIN "87654321"
 
@@ -84,6 +86,8 @@ static struct {
 	struct stub_pin user;
 	struct stub_pin so;
 	char custom_user_default[STUB_PIN_MAX + 1];	/* empty: standard PIN */
+	CK_FLAGS user_pin_policy;	/* TOKEN_FLAGS_*_CHANGE_USER_PIN */
+	int user_pin_not_default;	/* set by MODE_CHANGE_DEFAULT_PIN */
 	CK_BYTE label[STUB_LABEL_MAX];
 	CK_ULONG label_length;
 	struct stub_local_pin local[32];
@@ -124,6 +128,8 @@ token_ready(void)
 	token.so.max_retries = 10;
 	token.so.retries = 9;
 	token.so.change_required = 1;
+	/* both devices: only the user may change the user PIN */
+	token.user_pin_policy = TOKEN_FLAGS_USER_CHANGE_USER_PIN;
 	memcpy(token.label, "Test Rutoken", 12);
 	token.label_length = 12;
 	set_local_pin(3, "33333333", 1, 249, 10, 10, LOCAL_PIN_FLAGS_NOT_DEFAULT);
@@ -134,6 +140,18 @@ token_ready(void)
 	token.journal_present = 1;
 }
 
+/* The name the library reports: the stored one or the default. */
+static const CK_BYTE *
+token_name(CK_ULONG *length)
+{
+	if (!token.label_length) {
+		*length = sizeof(STUB_NO_LABEL) - 1;
+		return (const CK_BYTE *)STUB_NO_LABEL;
+	}
+	*length = token.label_length;
+	return token.label;
+}
+
 static int
 pin_matches(const struct stub_pin *pin, CK_UTF8CHAR_PTR value, CK_ULONG length)
 {
@@ -141,7 +159,8 @@ pin_matches(const struct stub_pin *pin, CK_UTF8CHAR_PTR value, CK_ULONG length)
 			!memcmp(value, pin->value, length);
 }
 
-/* A wrong PIN costs an attempt; the last one blocks the PIN. */
+/* A wrong PIN costs an attempt. As on the device, the attempt that uses up
+ * the counter still answers CKR_PIN_INCORRECT; the next one is locked. */
 static CK_RV
 check_pin(struct stub_pin *pin, CK_UTF8CHAR_PTR value, CK_ULONG length)
 {
@@ -149,7 +168,7 @@ check_pin(struct stub_pin *pin, CK_UTF8CHAR_PTR value, CK_ULONG length)
 		return CKR_PIN_LOCKED;
 	if (!pin_matches(pin, value, length)) {
 		pin->retries--;
-		return pin->retries ? CKR_PIN_INCORRECT : CKR_PIN_LOCKED;
+		return CKR_PIN_INCORRECT;
 	}
 	pin->retries = pin->max_retries;
 	return CKR_OK;
@@ -228,14 +247,19 @@ pad_string(CK_UTF8CHAR *field, size_t size, const char *text)
 CK_RV
 C_GetTokenInfo(CK_SLOT_ID slotID, CK_TOKEN_INFO_PTR pInfo)
 {
+	const CK_BYTE *name;
+	CK_ULONG name_length;
+
 	if (slotID != 7)
 		return CKR_SLOT_ID_INVALID;
 	if (!pInfo)
 		return CKR_ARGUMENTS_BAD;
 	token_ready();
 	memset(pInfo, 0, sizeof(*pInfo));
+	name = token_name(&name_length);
 	memset(pInfo->label, ' ', sizeof(pInfo->label));
-	memcpy(pInfo->label, token.label, token.label_length);
+	memcpy(pInfo->label, name, name_length < sizeof(pInfo->label) ?
+			name_length : sizeof(pInfo->label));
 	pad_string(pInfo->manufacturerID, sizeof(pInfo->manufacturerID),
 			"OpenSC test");
 	pad_string(pInfo->model, sizeof(pInfo->model), "Rutoken stub");
@@ -650,6 +674,11 @@ C_GenerateKeyPair(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
 		return CKR_MECHANISM_INVALID;
 	if (!phPublicKey || !phPrivateKey)
 		return CKR_ARGUMENTS_BAD;
+	/* the device without a button refused the attribute before generating */
+	for (i = 0; i < ulPrivateKeyAttributeCount && pPrivateKeyTemplate; i++)
+		if (pPrivateKeyTemplate[i].type == CKA_VENDOR_CONFIRM_BY_TOUCH &&
+				!getenv("RUTOKEN_STUB_HAS_BUTTON"))
+			return CKR_TEMPLATE_INCONSISTENT;
 	for (i = 0; i < sizeof(value); i++)
 		value[i] = (CK_BYTE)(0x10 + i);
 	rv = store_dynamic(pPublicKeyTemplate, ulPublicKeyAttributeCount,
@@ -805,9 +834,11 @@ C_EX_GetTokenInfoExtended(CK_SLOT_ID slotID,
 	pInfo->ulUserRetryCountLeft = token.user.retries;
 	memcpy(pInfo->serialNumber, "12345678", sizeof(pInfo->serialNumber));
 	/* the remaining values were reported by a Rutoken ECP 3.0 Flash */
-	pInfo->flags = TOKEN_FLAGS_USER_CHANGE_USER_PIN |
-		TOKEN_FLAGS_HAS_FLASH_DRIVE | TOKEN_FLAGS_SUPPORT_JOURNAL |
-		TOKEN_FLAGS_USER_PIN_UTF8 | TOKEN_FLAGS_ADMIN_PIN_UTF8;
+	pInfo->flags = token.user_pin_policy | TOKEN_FLAGS_HAS_FLASH_DRIVE |
+		TOKEN_FLAGS_SUPPORT_JOURNAL | TOKEN_FLAGS_USER_PIN_UTF8 |
+		TOKEN_FLAGS_ADMIN_PIN_UTF8;
+	if (token.user_pin_not_default)
+		pInfo->flags |= TOKEN_FLAGS_USER_PIN_NOT_DEFAULT;
 	/* a Rutoken Touch for the --rutoken-confirm-by-touch tests */
 	if (getenv("RUTOKEN_STUB_HAS_BUTTON"))
 		pInfo->flags |= TOKEN_FLAGS_HAS_BUTTON;
@@ -825,10 +856,11 @@ CK_RV CK_SPEC
 C_EX_GetTokenName(CK_SESSION_HANDLE hSession, CK_CHAR_PTR pLabel,
 		CK_ULONG_PTR pulLabelLen)
 {
+	const CK_BYTE *name;
 	CK_ULONG needed;
 
 	token_ready();
-	needed = token.label_length;
+	name = token_name(&needed);
 	if (!session_valid(hSession))
 		return CKR_SESSION_HANDLE_INVALID;
 	if (!pulLabelLen)
@@ -841,7 +873,7 @@ C_EX_GetTokenName(CK_SESSION_HANDLE hSession, CK_CHAR_PTR pLabel,
 		*pulLabelLen = needed;
 		return CKR_BUFFER_TOO_SMALL;
 	}
-	memcpy(pLabel, token.label, needed);
+	memcpy(pLabel, name, needed);
 	*pulLabelLen = needed;
 	return CKR_OK;
 }
@@ -1353,9 +1385,8 @@ C_EX_GetJournal(CK_SLOT_ID slotID, CK_BYTE_PTR pJournal,
 	return CKR_OK;
 }
 
-/* The User PIN need not be changed, the SO PIN must be; local PINs 3 and 5
- * exist. The real library code for a missing local PIN is unknown. */
-/* Stage 5: functions that change the token */
+/* Stage 5: functions that change the token. The answers follow the run of
+ * probe 3 on a Rutoken ECP 3.0 (docs/RUTOKEN-APDU.md). */
 
 static int
 so_logged_in(void)
@@ -1364,8 +1395,8 @@ so_logged_in(void)
 }
 
 /* InitToken and MODE_RESTORE_FACTORY_DEFAULTS format the token: new PINs,
- * counters and label; objects, local PINs and the journal are erased,
- * licenses stay. */
+ * counters, policy and label; objects and local PINs are erased. As on the
+ * device, licenses and the journal record stay. */
 static CK_RV
 format_token(const CK_RUTOKEN_INIT_PARAM *init)
 {
@@ -1379,6 +1410,10 @@ format_token(const CK_RUTOKEN_INIT_PARAM *init)
 			init->ulNewUserPinLen > STUB_PIN_MAX ||
 			init->ulMaxAdminRetryCount < 3 || init->ulMaxAdminRetryCount > 10 ||
 			init->ulMaxUserRetryCount < 1 || init->ulMaxUserRetryCount > 10 ||
+			!(init->ChangeUserPINPolicy & (TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN |
+				TOKEN_FLAGS_USER_CHANGE_USER_PIN)) ||
+			(init->ChangeUserPINPolicy & ~(TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN |
+				TOKEN_FLAGS_USER_CHANGE_USER_PIN)) ||
 			init->ulLabelLen > STUB_LABEL_MAX ||
 			(!init->pTokenLabel && init->ulLabelLen))
 		return CKR_ARGUMENTS_BAD;
@@ -1391,8 +1426,10 @@ format_token(const CK_RUTOKEN_INIT_PARAM *init)
 	if (init->ulLabelLen)
 		memcpy(token.label, init->pTokenLabel, init->ulLabelLen);
 	token.label_length = init->ulLabelLen;
+	token.user_pin_policy = init->ChangeUserPINPolicy;
+	token.user_pin_not_default = 0;
+	token.custom_user_default[0] = '\0';
 	memset(token.local, 0, sizeof(token.local));
-	token.journal_present = 0;
 	for (i = 0; i < DYNAMIC_OBJECTS; i++)
 		if (dynamic_objects[i].handle)
 			release_dynamic(&dynamic_objects[i]);
@@ -1493,7 +1530,9 @@ C_EX_SetLicense(CK_SESSION_HANDLE hSession, CK_ULONG ulLicenseNum,
 	return CKR_OK;
 }
 
-/* Authorized by the user PIN or by the old value of the local PIN. */
+/* As on the device: a new local PIN is authorized by the user PIN, an
+ * existing one only by its current value, whose counter a wrong value
+ * decreases. A new PIN takes the minimum length of the user PIN. */
 CK_RV CK_SPEC
 C_EX_SetLocalPIN(CK_SLOT_ID slotID, CK_UTF8CHAR_PTR pUserPin,
 		CK_ULONG ulUserPinLen, CK_UTF8CHAR_PTR pNewLocalPin,
@@ -1501,6 +1540,7 @@ C_EX_SetLocalPIN(CK_SLOT_ID slotID, CK_UTF8CHAR_PTR pUserPin,
 {
 	struct stub_local_pin *local;
 	char value[STUB_PIN_MAX + 1];
+	CK_RV rv;
 
 	if (slotID == ORDER_PROBE)
 		return ORDER_CODE(12);
@@ -1511,17 +1551,22 @@ C_EX_SetLocalPIN(CK_SLOT_ID slotID, CK_UTF8CHAR_PTR pUserPin,
 			!ulNewLocalPinLen || ulNewLocalPinLen > STUB_PIN_MAX)
 		return CKR_ARGUMENTS_BAD;
 	local = &token.local[ulLocalID];
-	if (!pin_matches(&token.user, pUserPin, ulUserPinLen) &&
-			!(local->present && ulUserPinLen == strlen(local->value) &&
-			  !memcmp(pUserPin, local->value, ulUserPinLen))) {
-		if (token.user.retries)
-			token.user.retries--;
-		return CKR_PIN_INCORRECT;
+	if (local->present) {
+		if (!local->info.ulCurrentRetryCount)
+			return CKR_PIN_LOCKED;
+		if (ulUserPinLen != strlen(local->value) ||
+				memcmp(pUserPin, local->value, ulUserPinLen)) {
+			local->info.ulCurrentRetryCount--;
+			return CKR_PIN_INCORRECT;
+		}
+	} else if ((rv = check_pin(&token.user, pUserPin, ulUserPinLen)) !=
+			CKR_OK) {
+		return rv;
 	}
 	memcpy(value, pNewLocalPin, ulNewLocalPinLen);
 	value[ulNewLocalPinLen] = '\0';
-	set_local_pin(ulLocalID, value, 1, 249, 10, 10,
-			LOCAL_PIN_FLAGS_NOT_DEFAULT);
+	set_local_pin(ulLocalID, value, 6, 249, 10, 10,
+			LOCAL_PIN_FLAGS_NOT_DEFAULT | LOCAL_PIN_FLAGS_IS_UTF8);
 	return CKR_OK;
 }
 
@@ -1556,13 +1601,20 @@ C_EX_TokenManage(CK_SESSION_HANDLE hSession, CK_ULONG ulMode,
 		memcpy(token.custom_user_default, params->pPinValue,
 				params->ulPinLength);
 		token.custom_user_default[params->ulPinLength] = '\0';
+		/* the device then reports TOKEN_FLAGS_USER_PIN_NOT_DEFAULT */
+		token.user_pin_not_default = 1;
 		return CKR_OK;
 	case MODE_RESET_PIN_TO_DEFAULT:
 		if (*(CK_USER_TYPE *)pValue != CKU_USER)
 			return CKR_ARGUMENTS_BAD;
+		/* the reset changes the user PIN: the device refused it (69 82)
+		 * while only the user might change the user PIN */
+		if (!(token.user_pin_policy & TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN))
+			return CKR_USER_NOT_LOGGED_IN;
 		strcpy(token.user.value, token.custom_user_default[0] ?
 				token.custom_user_default : STUB_STANDARD_USER_PIN);
 		token.user.retries = token.user.max_retries;
+		token.user_pin_not_default = 0;
 		return CKR_OK;
 	case MODE_RESET_CUSTOM_PIN_TO_STANDARD:
 		if (*(CK_USER_TYPE *)pValue != CKU_USER)

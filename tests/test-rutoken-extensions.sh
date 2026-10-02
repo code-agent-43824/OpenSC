@@ -81,6 +81,9 @@ for file in certificate-temporary.der pkcs7-attached.der pkcs7-detached.der \
 done
 # Version 3: the functions that change the token, ending with two formats;
 # the stub checks PINs, sessions and the objects left behind.
+# The stub answers as the device did: the eleventh wrong PIN is locked, the
+# Administrator may not reset a PIN only the user may change, and a key with
+# CKA_VENDOR_CONFIRM_BY_TOUCH needs a button.
 probe_modify="$test_dir/probe-modify.log"
 if ! "$probe" --pause-ms 0 --modify-tests --default-pins --assume-yes \
 		"$stub" > "$probe_modify" ||
@@ -88,14 +91,25 @@ if ! "$probe" --pause-ms 0 --modify-tests --default-pins --assume-yes \
 		! grep -q '^  C_EX_SetTokenName -> CKR_OK' "$probe_modify" ||
 		! grep -q '^  SetLocalPIN(4): CKR_OK' "$probe_modify" ||
 		! grep -q '^  license 1: 72 bytes, the probe pattern' "$probe_modify" ||
-		! grep -q '^  attempt [0-9]*: CKR_PIN_LOCKED' "$probe_modify" ||
+		! grep -q '^  attempt 10: CKR_PIN_INCORRECT' "$probe_modify" ||
+		! grep -q '^  attempt 11: CKR_PIN_LOCKED' "$probe_modify" ||
 		! grep -q '^  UnblockUserPIN as the Administrator: CKR_OK' \
 			"$probe_modify" ||
-		! grep -q '^  C_Login(CKU_USER, custom default PIN): CKR_OK' \
+		! grep -q '^  TokenManage(MODE_RESET_PIN_TO_DEFAULT): CKR_USER_NOT_LOGGED_IN' \
 			"$probe_modify" ||
 		! grep -q '^  C_EX_InitToken -> CKR_SESSION_EXISTS' "$probe_modify" ||
 		! grep -q '^  C_EX_InitToken -> CKR_OK' "$probe_modify" ||
 		! grep -q 'MODE_RESTORE_FACTORY_DEFAULTS) -> CKR_OK' "$probe_modify" ||
+		! grep -q '^  journal: CKR_OK (0x0), 126 bytes' "$probe_modify" ||
+		! grep -q '^  C_GenerateKeyPair -> CKR_TEMPLATE_INCONSISTENT' \
+			"$probe_modify" ||
+		! grep -q '^  C_Finalize -> CKR_OK' "$probe_modify"; then
+	cat "$probe_modify"
+	exit 1
+fi
+# A Rutoken Touch accepts the key; the probe signs with it and deletes it.
+if ! RUTOKEN_STUB_HAS_BUTTON=1 "$probe" --pause-ms 0 --modify-tests \
+		--default-pins --assume-yes "$stub" > "$probe_modify" ||
 		! grep -q '^  CKA_VENDOR_CONFIRM_BY_TOUCH: 0x01' "$probe_modify" ||
 		! grep -q '^  C_Finalize -> CKR_OK' "$probe_modify"; then
 	cat "$probe_modify"

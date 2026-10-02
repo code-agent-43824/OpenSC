@@ -5,9 +5,10 @@
 функции, команды `pkcs11-tool`, правила памяти и секретов, проверки и вопросы
 к устройству. Ответы дает программа
 [`tests/rutoken-hw-probe.c`](../tests/rutoken-hw-probe.c) (раздел «Прогон на
-устройстве»); первый прогон выполнен на Рутокен ЭЦП 3.0 5100 Flash с
-библиотекой 2.21 для Linux ARM64. Команды, которые библиотека при этом
-отправляет токену, разобраны в [`RUTOKEN-APDU.md`](RUTOKEN-APDU.md).
+устройстве»): версии 1 и 2 — на Рутокен ЭЦП 3.0 5100 Flash с библиотекой
+2.21 для Linux ARM64, версия 3 с изменяющими функциями — на Рутокен ЭЦП 3.0
+3127 USB с библиотекой 2.21 для Linux x64. Команды, которые библиотека при
+этом отправляет токену, разобраны в [`RUTOKEN-APDU.md`](RUTOKEN-APDU.md).
 
 ## Источники и совместимость
 
@@ -168,7 +169,9 @@ license, journal, volumes, certificates, PIN status. Все проверены �
   смена не требуется, `CKR_PIN_EXPIRED` — требуется. Устройство: `CKR_OK` для
   Пользователя и Администратора при заводских PIN, `*pValue` не меняется.
   Режим отражает принудительную смену, а не PIN по умолчанию; тот — в флагах
-  `TOKEN_FLAGS_*_PIN_NOT_DEFAULT`.
+  `TOKEN_FLAGS_*_PIN_NOT_DEFAULT`. Probe 3: после
+  `MODE_FORCE_USER_TO_CHANGE_PIN` — `CKR_PIN_EXPIRED`, после `C_SetPIN` —
+  снова `CKR_OK`.
 - `MODE_GET_LOCAL_PIN_INFO`: одна структура `CK_LOCAL_PIN_INFO` с входным
   `ulPinID` (подтверждено: из 32 изменилась только первая). Для PIN 3
   получено 1..249, 10 из 10, `LOCAL_PIN_FLAGS_NOT_DEFAULT`. Код для
@@ -240,8 +243,9 @@ license, journal, volumes, certificates, PIN status. Все проверены �
   шаблоне закрытого ключа: Рутокен с кнопкой (Touch, флаг
   `TOKEN_FLAGS_HAS_BUTTON`) подписывает им только после нажатия.
 - Перед генерацией `pkcs11-tool` читает `C_EX_GetTokenInfoExtended` и не
-  создает ключ, если флага кнопки нет. Поведение библиотеки с этим атрибутом
-  на токене без кнопки проверяет probe 3.
+  создает ключ, если флага кнопки нет. Библиотека на токене без кнопки сама
+  отвергает атрибут: `CKR_TEMPLATE_INCONSISTENT` без команд генерации
+  (probe 3), так что проверка в `pkcs11-tool` лишь дает понятное сообщение.
 - В заголовке определены и остальные атрибуты закрытых ключей:
   `CKA_VENDOR_KEY_JOURNAL`, устаревшие `KEY_PIN_ENTER` и `KEY_CONFIRM_OP`.
 
@@ -272,13 +276,13 @@ license, journal, volumes, certificates, PIN status. Все проверены �
 
 | Функция | Условия | Команда |
 |---|---|---|
-| `InitToken(slot, SO PIN, CK_RUTOKEN_INIT_PARAM)` | Полное форматирование, открытых сессий быть не должно (`CKR_SESSION_EXISTS`). `UseRepairMode` форматирует без PIN Администратора. Новые PIN, политика смены PIN Пользователя, минимальные длины, попытки (Администратор 3–10, Пользователь 1–10), метка, `ulSmMode`. Лицензии сохраняются. | `--rutoken-init-token --rutoken-confirm=init-token` и параметры |
-| `UnblockUserPIN(hSession)` | Сессия RW под Администратором | `--rutoken-unblock-user-pin` |
-| `SetTokenName(hSession, label, len)` | Сессия RW под Пользователем | `--rutoken-set-name ИМЯ` |
-| `SetLicense(hSession, N, 72 байта)` | RW под Пользователем или Администратором, возможен `CKR_LICENSE_READ_ONLY` | `--rutoken-set-license N --input-file F --rutoken-confirm=set-license` |
-| `SetLocalPIN(slot, PIN Пользователя или старый локальный, новый, ID)` | Без сессии | `--rutoken-set-local-pin ID` |
-| `TokenManage(hSession, mode, pValue)` | Режимы 1–2 для Рутокен Bluetooth (таймаут 1–70 мин, канал USB/BT); 3–6 под Администратором: сброс настроенного PIN по умолчанию, сброс PIN, новый PIN по умолчанию (`CK_VENDOR_PIN_PARAMS`), принудительная смена | `--rutoken-token-manage РЕЖИМ[:АРГУМЕНТ]`, подтверждение для сброса PIN |
-| `SlotManage(MODE_RESTORE_FACTORY_DEFAULTS)` | ЭЦП 2.0/3.0 и Flash; PIN Администратора, параметры инициализации, новый ключ эмитента 32 байта, счетчик, тип ключа | `--rutoken-restore-factory-defaults --rutoken-confirm=…` |
+| `InitToken(slot, SO PIN, CK_RUTOKEN_INIT_PARAM)` | Полное форматирование, открытых сессий быть не должно: `CKR_SESSION_EXISTS` без обращения к токену. `UseRepairMode` форматирует без PIN Администратора. Новые PIN, политика смены PIN Пользователя, минимальные длины, попытки (Администратор 3–10, Пользователь 1–10), метка, `ulSmMode`. Устройство: около 3,4 с; удаляются объекты и локальные PIN, остаются лицензии, запись журнала и счетчик изменений | `--rutoken-init-token --rutoken-confirm=init-token` и параметры |
+| `UnblockUserPIN(hSession)` | Сессия RW под Администратором, без входа — `CKR_USER_NOT_LOGGED_IN`. Устройство: попытки PIN Пользователя восстановлены, у незаблокированного локального PIN — нет | `--rutoken-unblock-user-pin` |
+| `SetTokenName(hSession, label, len)` | Сессия RW под Пользователем. Устройство: 0–255 байт UTF-8 приняты, `C_GetTokenInfo` показывает первые 32; пустое имя читается как «Rutoken ECP <no label>» | `--rutoken-set-name ИМЯ` |
+| `SetLicense(hSession, N, 72 байта)` | RW под Пользователем (Администратор не проверялся), возможен `CKR_LICENSE_READ_ONLY`. Устройство: номера 1–4 и ровно 72 байта, иначе `CKR_ARGUMENTS_BAD`; повторная запись принята | `--rutoken-set-license N --input-file F --rutoken-confirm=set-license` |
+| `SetLocalPIN(slot, PIN Пользователя или старый локальный, новый, ID)` | Без сессии, ID 3–31. Устройство: новый PIN — по PIN Пользователя, заданный — только по текущему значению (неверное тратит попытку локального PIN); минимальная длина как у PIN Пользователя, 10 попыток | `--rutoken-set-local-pin ID` |
+| `TokenManage(hSession, mode, pValue)` | Режимы 1–2 только для Рутокен Bluetooth (таймаут 1–70 мин, канал USB/BT), на других `CKR_FUNCTION_NOT_SUPPORTED`; 3–6 под Администратором: сброс настроенного PIN по умолчанию, сброс PIN, новый PIN по умолчанию (`CK_VENDOR_PIN_PARAMS`), принудительная смена. Устройство: режим 4 — смена PIN Пользователя, без права Администратора на нее (`TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN`) — `CKR_USER_NOT_LOGGED_IN`; режим 5 включает `TOKEN_FLAGS_USER_PIN_NOT_DEFAULT` | `--rutoken-token-manage РЕЖИМ[:АРГУМЕНТ]`, подтверждение для сброса PIN |
+| `SlotManage(MODE_RESTORE_FACTORY_DEFAULTS)` | ЭЦП 2.0/3.0 и Flash; PIN Администратора, параметры инициализации, новый ключ эмитента 32 байта, счетчик, тип ключа. Устройство: как `InitToken` плюс ключ эмитента, Кузнечик с 10 попытками принят, около 3,3 с | `--rutoken-restore-factory-defaults --rutoken-confirm=…` |
 | `SlotManage(MODE_GET_IMIT)` | MAC ГОСТ по переданному ключу, только Рутокен SC 2.0 | `--rutoken-legacy-imit` |
 | `ChangeVolumeAttributes(slot, владелец, PIN, раздел, режим, bPermanent)` | Постоянное изменение переподключает токен, `slotID` может смениться — токен ищется заново по серийному номеру | `--rutoken-volume-access ID:РЕЖИМ [--rutoken-permanent]` |
 | `FormatDrive(slot, CKU_SO, PIN, layout[], n)` | Стирает Flash, 1–8 разделов, переподключение | `--rutoken-format-drive РАЗМЕР:РЕЖИМ:ВЛАДЕЛЕЦ,... --rutoken-confirm=format-drive` |
@@ -310,9 +314,9 @@ license, journal, volumes, certificates, PIN status. Все проверены �
    подпись, создание и удаление объектов, `PKCS7Sign`, все `PKCS7Verify*` и
    `CreateCSR` с условными форматами CMS и CSR, а также изменяющие функции
    этапа 5 (метка, лицензии, локальные PIN, разблокировка, `TokenManage`,
-   `InitToken`, сброс к заводским настройкам) и `C_SetPIN`; ее `C_Finalize`
-   возвращает ошибку, если созданный объект не удален или буфер не
-   освобожден.
+   `InitToken`, сброс к заводским настройкам) и `C_SetPIN` с ответами
+   устройства из прогона probe 3; ее `C_Finalize` возвращает ошибку, если
+   созданный объект не удален или буфер не освобожден.
 2. Профиль portable SoftHSM fork — функции, которые он эмулирует.
 3. Аппаратная приемка: `tests/rutoken-hw-probe.c`, затем команды CLI на
    совместимом Рутокене; без устройства — видимый hardware skip.
@@ -373,10 +377,10 @@ sudo systemctl start pcscd.socket
 (`BEGIN_TRANSACTION`…`END_TRANSACTION`): время ответа USB-токена в
 виртуальной машине доходило до 1 с.
 
-В `pcscd.log` при входе без Secure Messaging команда VERIFY содержит PIN
-открытым текстом; перед отправкой лог нужно очистить (команда в
-`RUTOKEN-APDU.md`). `probe.log` PIN не содержит, но включает серийный номер,
-ATR и метки объектов.
+В `pcscd.log` без Secure Messaging PIN передается открытым текстом: в VERIFY,
+а в режиме `--modify-tests` еще в командах смены PIN и PIN по умолчанию;
+перед отправкой лог нужно очистить (команда в `RUTOKEN-APDU.md`). `probe.log`
+PIN не содержит, но включает серийный номер, ATR и метки объектов.
 
 Версия 3 добавляет `--modify-tests` для токена, который можно стереть: без
 проверок чтения предыдущих версий она вызывает изменяющие функции и после
@@ -425,8 +429,17 @@ PIN; блокировка PIN Пользователя неверными PIN и
 | Возможности модели | Flash, собственные PIN, доверенные сертификаты, ФКН 2, KDF_TREE, ремонтное форматирование; SM, биометрии и внешней аутентификации нет |
 | PKCS#7 | Все варианты подписи — `CKR_OK` (конверт 863 байта, открепленный — 819); проверка программная: доверенный сертификат — 1 подписант, `CHECK_SIGNATURE_ONLY` с пустым хранилищем — 0, измененные данные — `CKR_SIGNATURE_INVALID`, `Verify` без `Init` — `CKR_OPERATION_NOT_INITIALIZED` |
 | CSR | `CKR_OK`: 227 байт, с keyUsage — 257; нечетное число строк DN — `CKR_ARGUMENTS_BAD` |
+| Токен без Flash | `GetDriveSize`, `GetVolumesInfo` — `CKR_FUNCTION_NOT_SUPPORTED` без команд Flash |
+| Метка: длина, кириллица, пустая | 0–255 байт UTF-8 приняты, `C_GetTokenInfo` показывает первые 32; пустая читается как «Rutoken ECP <no label>»; файл — заголовок «TN» с длиной и имя |
+| Лицензия: вход, номер 5, 71 байт, повтор | Под Пользователем `CKR_OK`; `CKR_ARGUMENTS_BAD`; `CKR_ARGUMENTS_BAD`; повторная запись принята; лицензия переживает форматирование |
+| Локальный PIN: авторизация, номера 2 и 32, неверный PIN | Новый — по PIN Пользователя, заданный — только по текущему значению; `CKR_ARGUMENTS_BAD`; `CKR_PIN_INCORRECT` и минус попытка локального PIN, PIN Пользователя не тронут |
+| Блокировка и разблокировка PIN Пользователя | 10 неверных — `CKR_PIN_INCORRECT`, 11-й — `CKR_PIN_LOCKED`; `UnblockUserPIN` без входа — `CKR_USER_NOT_LOGGED_IN`, под Администратором — `CKR_OK` |
+| `TokenManage` | Bluetooth — `CKR_FUNCTION_NOT_SUPPORTED`; принудительная смена — `CKR_PIN_EXPIRED` до `C_SetPIN` (тот же PIN принят), вход при этом `CKR_OK`; свой PIN по умолчанию — `CKR_OK` и `USER_PIN_NOT_DEFAULT`; сброс PIN к умолчанию, когда менять PIN может только Пользователь, — `CKR_USER_NOT_LOGGED_IN`; возврат стандартного — `CKR_OK` |
+| `InitToken`, сброс к заводским настройкам | С открытой сессией — `CKR_SESSION_EXISTS`; без нее `CKR_OK` за 3,3–3,4 с; объекты и локальные PIN удалены; лицензии, запись журнала и счетчик изменений остались |
+| Ключ с `CKA_VENDOR_CONFIRM_BY_TOUCH` без кнопки | `CKR_TEMPLATE_INCONSISTENT` без команд генерации; объектов `CKH_VENDOR_TOUCH_INTERFACE` нет |
 
-Открыто: файл заданной метки токена, функции, изменяющие токен (этап 5), и
-аутентификаторы; работа с разделами Flash отложена (`PLAN.md`). Команды
-токена для записи, подписи, хэша, хранения объектов и PKCS#7 разобраны в
-`RUTOKEN-APDU.md`.
+Открыто: режим 4 `TokenManage` при политике с Администратором,
+`SetLicense` под Администратором, `UseRepairMode`, Магма как ключ эмитента,
+имена длиннее 255 байт и аутентификаторы; работа с разделами Flash отложена
+(`PLAN.md`). Команды токена для записи, подписи, хэша, хранения объектов,
+PKCS#7 и изменяющих функций разобраны в `RUTOKEN-APDU.md`.
