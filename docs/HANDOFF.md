@@ -2,8 +2,8 @@
 
 Portable CI для `pkcs11-tool` и `pkcs11-spy` завершен и находится в `master`.
 
-- Успешный workflow: <https://github.com/code-agent-43824/OpenSC/actions/runs/37043678586>
-- Опубликованный релиз: <https://github.com/code-agent-43824/OpenSC/releases/tag/0.27.1-portable.5>
+- Успешный workflow: <https://github.com/code-agent-43824/OpenSC/actions/runs/37122145880>
+- Опубликованный релиз: <https://github.com/code-agent-43824/OpenSC/releases/tag/0.27.1-portable.6>
   (этап 5 включен).
 - В Actions и релизе: шесть product packages и шесть автономных test kits.
 - Каждый verify runner запускает точный test kit, который затем публикуется.
@@ -34,7 +34,8 @@ Portable CI для `pkcs11-tool` и `pkcs11-spy` завершен и наход�
   `--rutoken-token-manage`, `--rutoken-init-token`,
   `--rutoken-restore-factory-defaults`; PIN только из `env:` или ввода без
   эха, отдельного подтверждения нет (решение владельца). Команды прогнаны
-  на Рутокен ЭЦП 2.0 (релиз `0.27.1-portable.5`); устаревшие функции и
+  на Рутокен ЭЦП 2.0 (релиз `0.27.1-portable.5`), исправления собраны в
+  `0.27.1-portable.6`; устаревшие функции и
   разделы Flash не реализованы.
 - По полевому отчёту внесены исправления: чтение открытого ГОСТ-ключа через
   `CKA_VALUE`, R/W-сессия для SO-логина, подсказка про `--login`, проверка
@@ -42,8 +43,8 @@ Portable CI для `pkcs11-tool` и `pkcs11-spy` завершен и наход�
   необязательными новыми PIN, режим `--test-login`; в `pkcs11-spy` — строка
   версии форка, статистика вызовов и выключенный по умолчанию
   `PKCS11SPY_UNSAFE_SECRETS`. Детали — в `RUTOKEN-FUNCTIONS.md`
-  («Полевой отчёт»). Эти правки в `master`, но их еще нет в опубликованном
-  релизе — нужен новый portable-релиз.
+  («Полевой отчёт»). Эти правки в `master` и в релизе
+  `0.27.1-portable.6`.
 - Workflow выпуска требует новый тег и не перезаписывает существующие теги и
   релизы.
 - Локальный `pkcs11-spy.conf` имеет приоритет над environment/Registry;
