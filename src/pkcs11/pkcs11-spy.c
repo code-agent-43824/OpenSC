@@ -77,6 +77,32 @@ static void *modhandle = NULL;
 /* Spy module output */
 static FILE *spy_output = NULL;
 
+/* PKCS11SPY_UNSAFE_SECRETS: log PINs, keys and other secrets in clear for
+ * local debugging.  Off by default, so the log never carries secrets. */
+static int spy_show_secrets = 0;
+
+/* Per-function call counts and wall time, printed as a summary at Finalize. */
+#define SPY_STAT_MAX 160
+static const char *spy_stat_name[SPY_STAT_MAX];
+static unsigned long spy_stat_calls[SPY_STAT_MAX];
+static double spy_stat_seconds[SPY_STAT_MAX];
+static size_t spy_stat_count = 0;
+static const char *spy_current = NULL;
+static double spy_current_start = 0;
+
+static double
+spy_clock(void)
+{
+#ifdef _WIN32
+	return (double)GetTickCount64() / 1000.0;
+#else
+	struct timeval tv;
+
+	gettimeofday(&tv, NULL);
+	return (double)tv.tv_sec + (double)tv.tv_usec / 1000000.0;
+#endif
+}
+
 static void *
 allocate_function_list(int v)
 {
@@ -456,7 +482,14 @@ init_spy(void)
 	if (!spy_output)
 		spy_output = stderr;
 
+	spy_show_secrets = getenv("PKCS11SPY_UNSAFE_SECRETS") != NULL;
+
 	fprintf(spy_output, "\n\n*************** OpenSC PKCS#11 spy *****************\n");
+	fprintf(spy_output, "Version: code-agent-43824/OpenSC fork (Rutoken extensions), "
+			"OpenSC %s\n", PACKAGE_VERSION);
+	if (spy_show_secrets)
+		fprintf(spy_output, "WARNING: PKCS11SPY_UNSAFE_SECRETS is set; PINs and "
+				"keys are written to this log in clear\n");
 
 	module = have_config ? config_module : getenv("PKCS11SPY");
 #ifdef _WIN32
@@ -571,15 +604,66 @@ enter(const char *function)
 			(unsigned long)getpid(), (unsigned long)pthread_self(),
 			time_string, (long)tv.tv_usec / 1000);
 #endif
+	spy_current = function;
+	spy_current_start = spy_clock();
+}
 
+/* Tally the call that enter() opened against its function, for the summary. */
+static void
+spy_account(void)
+{
+	double elapsed;
+	size_t i;
+
+	if (!spy_current)
+		return;
+	elapsed = spy_clock() - spy_current_start;
+	for (i = 0; i < spy_stat_count; i++)
+		if (spy_stat_name[i] == spy_current)
+			break;
+	if (i == spy_stat_count && spy_stat_count < SPY_STAT_MAX) {
+		spy_stat_name[i] = spy_current;
+		spy_stat_calls[i] = 0;
+		spy_stat_seconds[i] = 0;
+		spy_stat_count++;
+	}
+	if (i < SPY_STAT_MAX) {
+		spy_stat_calls[i]++;
+		spy_stat_seconds[i] += elapsed;
+	}
+	spy_current = NULL;
 }
 
 static CK_RV
 retne(CK_RV rv)
 {
 	fprintf(spy_output, "Returned:  %ld %s\n", (unsigned long) rv, lookup_enum (RV_T, rv ));
+	spy_account();
 	fflush(spy_output);
 	return rv;
+}
+
+/* Per-function call counts and wall time; printed at C_Finalize. */
+static void
+spy_dump_summary(void)
+{
+	double total = 0;
+	unsigned long calls = 0;
+	size_t i;
+
+	if (!spy_output || !spy_stat_count)
+		return;
+	fprintf(spy_output, "\n*************** OpenSC PKCS#11 spy summary *********\n");
+	for (i = 0; i < spy_stat_count; i++) {
+		fprintf(spy_output, "%-34s %6lu call(s), %10.3f ms\n",
+				spy_stat_name[i], spy_stat_calls[i],
+				spy_stat_seconds[i] * 1000.0);
+		total += spy_stat_seconds[i];
+		calls += spy_stat_calls[i];
+	}
+	fprintf(spy_output, "%-34s %6lu call(s), %10.3f ms total\n",
+			"all functions", calls, total * 1000.0);
+	fflush(spy_output);
 }
 
 
@@ -875,9 +959,13 @@ do {\
 } while(0)
 
 static void
-spy_ex_dump_redacted(const char *name, CK_ULONG size)
+spy_ex_dump_redacted(const char *name, const void *data, CK_ULONG size)
 {
-	fprintf(spy_output, "[in] %s = <redacted>, length = %lu\n", name, size);
+	if (spy_show_secrets && data && size) {
+		fprintf(spy_output, "[in] %s = ", name);
+		print_generic(spy_output, 0, (CK_VOID_PTR)data, size, NULL, -1);
+	} else
+		fprintf(spy_output, "[in] %s = <redacted>, length = %lu\n", name, size);
 }
 
 static void
@@ -952,11 +1040,11 @@ spy_ex_dump_init_param(const char *name, const CK_RUTOKEN_INIT_PARAM *init)
 	SPY_EX_INIT_ULONG(UseRepairMode);
 	if (SPY_EX_INIT_HAS(ulNewAdminPinLen)) {
 		snprintf(field, sizeof(field), "%s->pNewAdminPin", name);
-		spy_ex_dump_redacted(field, init->ulNewAdminPinLen);
+		spy_ex_dump_redacted(field, init->pNewAdminPin, init->ulNewAdminPinLen);
 	}
 	if (SPY_EX_INIT_HAS(ulNewUserPinLen)) {
 		snprintf(field, sizeof(field), "%s->pNewUserPin", name);
-		spy_ex_dump_redacted(field, init->ulNewUserPinLen);
+		spy_ex_dump_redacted(field, init->pNewUserPin, init->ulNewUserPinLen);
 	}
 	if (SPY_EX_INIT_HAS(ChangeUserPINPolicy)) {
 		snprintf(field, sizeof(field), "%s->ChangeUserPINPolicy", name);
@@ -1026,7 +1114,7 @@ spy_ex_dump_token_manage_in(CK_ULONG mode, CK_VOID_PTR value)
 		CK_VENDOR_PIN_PARAMS *params = value;
 
 		spy_dump_ulong_in("pValue->userType", params->userType);
-		spy_ex_dump_redacted("pValue->pPinValue", params->ulPinLength);
+		spy_ex_dump_redacted("pValue->pPinValue", params->pPinValue, params->ulPinLength);
 		break;
 	}
 	}
@@ -1041,9 +1129,9 @@ spy_ex_dump_restore_in(const CK_VENDOR_RESTORE_FACTORY_DEFAULTS_PARAMS *params)
 			params->ulSizeofThisStructure);
 	if (params->ulSizeofThisStructure < sizeof(*params))
 		return;
-	spy_ex_dump_redacted("pValue->pAdminPin", params->ulAdminPinLen);
+	spy_ex_dump_redacted("pValue->pAdminPin", params->pAdminPin, params->ulAdminPinLen);
 	spy_ex_dump_init_param("pValue->pInitParam", params->pInitParam);
-	spy_ex_dump_redacted("pValue->pNewEmitentKey", params->ulNewEmitentKeyLen);
+	spy_ex_dump_redacted("pValue->pNewEmitentKey", params->pNewEmitentKey, params->ulNewEmitentKeyLen);
 	fprintf(spy_output, "[in] pValue->ulNewEmitentKeyRetryCount = %lu\n",
 			params->ulNewEmitentKeyRetryCount);
 	spy_dump_ulong_in("pValue->newEmitentKeyType", params->newEmitentKeyType);
@@ -1143,7 +1231,7 @@ SPY_EX_PROXY(C_EX_InitToken,
 		 CK_RUTOKEN_INIT_PARAM_PTR pInitInfo),
 		(slotID, pPin, ulPinLen, pInitInfo),
 		spy_dump_ulong_in("slotID", slotID);
-		spy_ex_dump_redacted("pPin", ulPinLen);
+		spy_ex_dump_redacted("pPin", pPin, ulPinLen);
 		print_ptr_in("pInitInfo", pInitInfo);
 		if (pInitInfo)
 			spy_ex_dump_init_param("pInitInfo", pInitInfo),
@@ -1220,7 +1308,7 @@ SPY_EX_PROXY(C_EX_SetLicense,
 		(hSession, ulLicenseNum, pLicense, ulLicenseLen),
 		spy_dump_ulong_in("hSession", hSession);
 		spy_dump_ulong_in("ulLicenseNum", ulLicenseNum);
-		spy_ex_dump_redacted("pLicense", ulLicenseLen), (void)rv)
+		spy_ex_dump_redacted("pLicense", pLicense, ulLicenseLen), (void)rv)
 SPY_EX_PROXY(C_EX_GetLicense,
 		(CK_SESSION_HANDLE hSession, CK_ULONG ulLicenseNum,
 		 CK_BYTE_PTR pLicense, CK_ULONG_PTR pulLicenseLen),
@@ -1296,14 +1384,14 @@ SPY_EX_PROXY(C_EX_SetLocalPIN,
 		(slotID, pUserPin, ulUserPinLen, pNewLocalPin, ulNewLocalPinLen,
 		 ulLocalID),
 		spy_dump_ulong_in("slotID", slotID);
-		spy_ex_dump_redacted("pUserPin", ulUserPinLen);
-		spy_ex_dump_redacted("pNewLocalPin", ulNewLocalPinLen);
+		spy_ex_dump_redacted("pUserPin", pUserPin, ulUserPinLen);
+		spy_ex_dump_redacted("pNewLocalPin", pNewLocalPin, ulNewLocalPinLen);
 		spy_dump_ulong_in("ulLocalID", ulLocalID), (void)rv)
 SPY_EX_PROXY(C_EX_LoadActivationKey,
 		(CK_SESSION_HANDLE hSession, CK_BYTE_PTR key, CK_ULONG keySize),
 		(hSession, key, keySize),
 		spy_dump_ulong_in("hSession", hSession);
-		spy_ex_dump_redacted("key", keySize), (void)rv)
+		spy_ex_dump_redacted("key", key, keySize), (void)rv)
 SPY_EX_PROXY(C_EX_SetActivationPassword,
 		(CK_SLOT_ID slotID, CK_UTF8CHAR_PTR password), (slotID, password),
 		spy_dump_ulong_in("slotID", slotID);
@@ -1339,7 +1427,7 @@ SPY_EX_PROXY(C_EX_ChangeVolumeAttributes,
 		(slotID, userType, pPin, ulPinLen, idVolume, newAccessMode, bPermanent),
 		spy_dump_ulong_in("slotID", slotID);
 		spy_dump_ulong_in("userType", userType);
-		spy_ex_dump_redacted("pPin", ulPinLen);
+		spy_ex_dump_redacted("pPin", pPin, ulPinLen);
 		spy_dump_ulong_in("idVolume", idVolume);
 		spy_dump_ulong_in("newAccessMode", newAccessMode);
 		spy_dump_ulong_in("bPermanent", bPermanent), (void)rv)
@@ -1350,7 +1438,7 @@ SPY_EX_PROXY(C_EX_FormatDrive,
 		(slotID, userType, pPin, ulPinLen, pInitParams, ulInitParamsCount),
 		spy_dump_ulong_in("slotID", slotID);
 		spy_dump_ulong_in("userType", userType);
-		spy_ex_dump_redacted("pPin", ulPinLen);
+		spy_ex_dump_redacted("pPin", pPin, ulPinLen);
 		print_ptr_in("pInitParams", pInitParams);
 		spy_dump_ulong_in("ulInitParamsCount", ulInitParamsCount), (void)rv)
 SPY_EX_PROXY(C_EX_TokenManage,
@@ -1444,7 +1532,7 @@ SPY_EX_PROXY(C_EX_UnwrapKey,
 		 pWrappedKey, ulWrappedKeyLen, pKeyTemplate, ulKeyAttributeCount, phKey),
 		spy_dump_ulong_in("hSession", hSession);
 		spy_dump_ulong_in("hBaseKey", hBaseKey);
-		spy_ex_dump_redacted("pWrappedKey", ulWrappedKeyLen);
+		spy_ex_dump_redacted("pWrappedKey", pWrappedKey, ulWrappedKeyLen);
 		spy_dump_ulong_in("ulKeyAttributeCount", ulKeyAttributeCount),
 		if (rv == CKR_OK && phKey) spy_dump_ulong_out("*phKey", *phKey))
 SPY_EX_PROXY(C_EX_PKCS7VerifyInit,
@@ -1496,7 +1584,7 @@ SPY_EX_PROXY(C_EX_Authenticate,
 		(hSession, hAuthObject, pData, ulDataSize),
 		spy_dump_ulong_in("hSession", hSession);
 		spy_dump_ulong_in("hAuthObject", hAuthObject);
-		spy_ex_dump_redacted("pData", ulDataSize), (void)rv)
+		spy_ex_dump_redacted("pData", pData, ulDataSize), (void)rv)
 SPY_EX_PROXY(C_EX_Deauthenticate,
 		(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hAuthObject),
 		(hSession, hAuthObject),
@@ -1618,7 +1706,9 @@ C_Finalize(CK_VOID_PTR pReserved)
 
 	enter("C_Finalize");
 	rv = po->C_Finalize(pReserved);
-	return retne(rv);
+	rv = retne(rv);
+	spy_dump_summary();
+	return rv;
 }
 
 CK_RV

@@ -268,7 +268,21 @@
 						<option>--login-type</option>
 					</term>
 					<listitem><para>Specify login type ('so', 'user', 'context-specific';
-					default:'user').</para></listitem>
+					default:'user'). An <option>--login-type</option> so login opens
+					a read/write session automatically, as the SO login needs
+					one.</para></listitem>
+				</varlistentry>
+
+				<varlistentry>
+					<term>
+						<option>--test-login</option>
+					</term>
+					<listitem><para>Log in and exit without doing anything else.
+					The exit code is the result of the login, so a script can
+					check a PIN, or deliberately spend PIN attempts, without
+					listing objects or any other side effect. Combine with
+					<option>--login-type</option> and <option>--pin</option> or
+					<option>--so-pin</option>.</para></listitem>
 				</varlistentry>
 
 				<varlistentry>
@@ -590,11 +604,17 @@
 					<option>--rutoken-min-pin-length</option> and
 					<option>--rutoken-retries</option> take
 					<replaceable>so</replaceable>:<replaceable>user</replaceable>
-					(defaults 6:6 and 10:10); <option>--rutoken-sm-mode</option> sets
+					(defaults 6:6 and 10:10, both checked against the device PIN
+					length window reported by <option>-L</option>);
+					<option>--rutoken-sm-mode</option> sets
 					the secure messaging mode (default 0);
 					<option>--rutoken-repair-mode</option> formats without the SO
-					PIN. It cannot be combined with other commands or with
-					<option>--login</option>.</para></listitem>
+					PIN. Repair only runs once the SO PIN is locked, so this
+					option first spends the remaining SO attempts with throw-away
+					PINs and then formats; the new SO and User PINs are optional
+					in repair mode and, when omitted, are generated and shown once
+					on standard error. It cannot be combined with other commands
+					or with <option>--login</option>.</para></listitem>
 				</varlistentry>
 
 				<varlistentry>
@@ -1075,6 +1095,36 @@
 						is used for logging between application and PKCS#11 library.
 				</para></listitem>
 			</varlistentry>
+
+				<varlistentry>
+					<term>
+						PIN <literal>env:</literal><replaceable>NAME</replaceable>
+					</term>
+					<listitem><para>
+						The Rutoken <option>--rutoken-*</option> options and
+						<option>--pin</option>/<option>--so-pin</option> read a PIN
+						from the environment when it is given as
+						<literal>env:</literal><replaceable>NAME</replaceable>,
+						keeping it out of the command line and the process table.
+						<citerefentry><refentrytitle>sudo</refentrytitle><manvolnum>8</manvolnum></citerefentry>
+						clears the environment by default, so the variable has to be
+						carried through, for example
+						<literal>sudo env NAME=... pkcs11-tool ...</literal>; otherwise
+						the tool reports that the variable is not set.
+					</para></listitem>
+				</varlistentry>
+
+				<varlistentry>
+					<term>
+						<envar>PKCS11SPY_UNSAFE_SECRETS</envar>
+					</term>
+					<listitem><para>
+						When set to any value, <literal>pkcs11-spy</literal> writes
+						PINs, keys and other secrets to its log in clear instead of
+						redacting them. Off by default; use it only for local
+						debugging and never on a shared or kept log.
+					</para></listitem>
+				</varlistentry>
 		</variablelist>
 	</refsect1>
 

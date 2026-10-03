@@ -414,5 +414,69 @@ for secret in "$RUTOKEN_TEST_NEW_SO_PIN" "$RUTOKEN_TEST_NEW_USER_PIN" \
 	fi
 done
 
+# Fixes from the live-token field report.
+# 1.1 GOST public key read: the fork returns CKA_VALUE as-is.
+gost_pub="$test_dir/gost-pub.bin"
+run_tool --read-object --type pubkey --id 0102 --output-file "$gost_pub" > "$text"
+test "$(wc -c < "$gost_pub")" -eq 64
+od -An -tx1 "$gost_pub" | tr -d '\n' | grep -q '47 4f 53 54'
+
+# 1.4 a missing object in a public session points at --login.
+if run_tool --read-object --type data --id abcdef > "$text" 2>&1; then
+	echo "reading a missing object must fail"
+	exit 1
+fi
+expect "$text" 'a private object is only visible after --login'
+
+# 1.3 an SO login opens a R/W session instead of failing on the R/O one.
+run_tool --login --login-type so --so-pin 87654321 --list-objects > "$text" 2>&1
+
+# 1.5 the minimum PIN length is checked against the device window (6..32).
+# shellcheck disable=SC2086
+fails --rutoken-init-token --so-pin env:RUTOKEN_TEST_SO_PIN $new_pins \
+	--rutoken-min-pin-length 1:1
+expect "$text" 'the device minimum PIN length is 6'
+
+# 1.2 repair locks the live SO PIN itself, then reinitialises.
+# shellcheck disable=SC2086
+run_change --rutoken-init-token --rutoken-repair-mode $new_pins > "$text" 2>&1
+expect "$text" 'repair mode is locking the SO PIN first'
+expect "$text" 'repair mode        : yes'
+# new PINs are optional in repair: generated and shown once.
+repair_gen="$test_dir/repair-gen.txt"
+run_change --rutoken-init-token --rutoken-repair-mode > "$repair_gen" 2>&1
+expect "$repair_gen" 'repair generated a new PIN'
+expect "$repair_gen" 'new SO PIN  :'
+expect "$repair_gen" 'new user PIN:'
+
+# pkcs11-spy: fork version in the header and a call summary at the end.
+expect "$log" 'Version: code-agent-43824/OpenSC fork'
+expect "$log" 'OpenSC PKCS#11 spy summary'
+expect "$log" 'all functions'
+
+# PKCS11SPY_UNSAFE_SECRETS reveals the otherwise-redacted values. The log
+# stays in the throwaway test directory and is never committed.
+unsafe_log="$test_dir/unsafe.log"
+PKCS11SPY="$stub" PKCS11SPY_OUTPUT="$unsafe_log" PKCS11SPY_UNSAFE_SECRETS=1 \
+	"$tool" --module "$spy" --slot 7 --rutoken-set-local-pin 4 \
+	--rutoken-auth-pin env:RUTOKEN_TEST_USER_PIN \
+	--new-pin env:RUTOKEN_TEST_LOCAL_PIN > "$text" 2>&1
+expect "$unsafe_log" 'PKCS11SPY_UNSAFE_SECRETS is set'
+expect "$unsafe_log" "$RUTOKEN_TEST_LOCAL_PIN"
+# with the flag off the same value is redacted (checked on $stage5_log above)
+if grep -q "$RUTOKEN_TEST_LOCAL_PIN" "$stage5_log"; then
+	echo "the default spy log leaked a secret"
+	exit 1
+fi
+
+# --test-login: log in and stop. A correct PIN succeeds, a wrong one fails,
+# so a script can check a PIN or spend attempts without any other action.
+run_tool --test-login --pin 12345678 > "$text"
+expect "$text" 'Login successful'
+if run_tool --test-login --pin 00000000 > "$text" 2>&1; then
+	echo "--test-login with a wrong PIN must fail"
+	exit 1
+fi
+
 echo "PASS: all Rutoken wrappers and the --rutoken-* commands through pkcs11-spy, stage 5 included"
 echo "PASS: Rutoken hardware probe runs against the stub module, write and modify tests included"

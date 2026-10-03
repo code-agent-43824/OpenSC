@@ -52,6 +52,7 @@
 #include <openssl/asn1t.h>
 #include <openssl/rsa.h>
 #include <openssl/pem.h>
+#include <openssl/rand.h>
 #if OPENSSL_VERSION_NUMBER >= 0x30000000L
 # include <openssl/core_names.h>
 # include <openssl/param_build.h>
@@ -190,6 +191,7 @@ static const struct sc_aid GOST_HASH2012_512_PARAMSET_OID = { { 0x06, 0x08, 0x2A
 
 enum {
 	OPT_MODULE = 0x100,
+	OPT_TEST_LOGIN,
 	OPT_SLOT,
 	OPT_SLOT_DESCRIPTION,
 	OPT_SLOT_INDEX,
@@ -323,6 +325,7 @@ static const struct option options[] = {
 	{ "session-rw",		0, NULL,		OPT_SESSION_RW },
 	{ "login",		0, NULL,		'l' },
 	{ "login-type",		1, NULL,		OPT_LOGIN_TYPE },
+	{ "test-login",		0, NULL,		OPT_TEST_LOGIN },
 	{ "pin",		1, NULL,		'p' },
 	{ "puk",		1, NULL,		OPT_PUK },
 	{ "new-pin",		1, NULL,		OPT_NEW_PIN },
@@ -462,6 +465,7 @@ static const char *option_help[] = {
 		"Forces to open the PKCS#11 session with CKF_RW_SESSION",
 		"Log into the token first",
 		"Specify login type ('so', 'user', 'context-specific'; default:'user')",
+		"Log in and exit, nothing else (scriptable PIN check; the exit code is the result)",
 		"Supply User PIN on the command line (if used in scripts: careful!)",
 		"Supply User PUK on the command line",
 		"Supply new User PIN on the command line",
@@ -1055,6 +1059,7 @@ int main(int argc, char * argv[])
 	int do_init_pin = 0;
 	int do_change_pin = 0;
 	int do_unlock_pin = 0;
+	int do_test_login = 0;
 	int action_count = 0;
 	int do_generate_random = 0;
 	char *s = NULL;
@@ -1201,6 +1206,12 @@ int main(int argc, char * argv[])
 		case 'l':
 			need_session |= NEED_SESSION_RO;
 			opt_login = 1;
+			break;
+		case OPT_TEST_LOGIN:
+			need_session |= NEED_SESSION_RO;
+			opt_login = 1;
+			do_test_login = 1;
+			action_count++;
 			break;
 		case 'm':
 			opt_mechanism_used = 1;
@@ -1982,6 +1993,13 @@ int main(int argc, char * argv[])
 	if (do_init_token)
 		init_token(opt_slot);
 
+	/* An SO login changes token-global state and needs a R/W session on the
+	 * Rutoken and most other tokens; -O and other read operations ask only
+	 * for a R/O session, so an SO login would otherwise fail with
+	 * CKR_SESSION_READ_ONLY_EXISTS.  Upgrade the session here. */
+	if (opt_login && opt_login_type == CKU_SO)
+		need_session |= NEED_SESSION_RW;
+
 	if (need_session) {
 		int flags = CKF_SERIAL_SESSION;
 
@@ -2002,6 +2020,14 @@ int main(int argc, char * argv[])
 		r = login(session, opt_login_type);
 		if (r != 0)
 			return r;
+	}
+
+	if (do_test_login) {
+		/* a scriptable "log in and stop": login() above already succeeded
+		 * (or exited non-zero), so report and leave without touching the
+		 * token further. */
+		printf("Login successful\n");
+		goto end;
 	}
 
 	if (do_change_pin)
@@ -4591,6 +4617,109 @@ rutoken_format_report(const struct rutoken_request *request,
 		printf("  repair mode        : yes\n");
 }
 
+/* Repair mode does not take new PINs, so generate numeric ones when the
+ * caller omits them.  The value is shown once below and never committed. */
+static char *
+rutoken_make_pin(void)
+{
+#ifdef ENABLE_OPENSSL
+	static const char digits[] = "0123456789";
+	unsigned char raw[8];
+	char *pin;
+	size_t i;
+
+	pin = malloc(sizeof(raw) + 1);
+	if (!pin)
+		util_fatal("Out of memory");
+	if (RAND_bytes(raw, (int)sizeof(raw)) != 1)
+		util_fatal("cannot generate a random PIN");
+	for (i = 0; i < sizeof(raw); i++)
+		pin[i] = digits[raw[i] % 10];
+	pin[sizeof(raw)] = '\0';
+	rutoken_wipe(raw, sizeof(raw));
+	return pin;
+#else
+	util_fatal("a generated PIN needs OpenSSL; pass --rutoken-new-so-pin "
+			"and --new-pin");
+	return NULL;
+#endif
+}
+
+/* The library only runs repair on a token whose SO PIN is already locked;
+ * otherwise it answers with a length/again error that hides that
+ * precondition.  So when repair is asked for and the SO PIN is still live,
+ * spend its remaining attempts with two throw-away PINs -- at most one of
+ * which can match any real PIN -- and stop as soon as the counter reads 0.
+ * The owner has decided that commands which erase the token do so without a
+ * separate confirmation. */
+static void
+rutoken_force_so_lock(CK_SLOT_ID slot)
+{
+	CK_TOKEN_INFO_EXTENDED info;
+	CK_SESSION_HANDLE session = CK_INVALID_HANDLE;
+	char candidate[2][33];
+	CK_ULONG len, cap;
+	CK_RV rv;
+	int which = 0, guard;
+
+	memset(&info, 0, sizeof(info));
+	info.ulSizeofThisStructure = sizeof(info);
+	rv = RUTOKEN_CALL(C_EX_GetTokenInfoExtended, (slot, &info));
+	if (rv != CKR_OK) {
+		rutoken_error("C_EX_GetTokenInfoExtended", rv);
+		util_fatal("repair mode cannot read the token state");
+	}
+	if (info.ulAdminRetryCountLeft == 0)
+		return;			/* already locked: go straight to repair */
+
+	/* a length inside the device window so each try actually counts */
+	len = 8;
+	if (info.ulMinAdminPinLen && len < info.ulMinAdminPinLen)
+		len = info.ulMinAdminPinLen;
+	if (info.ulMaxAdminPinLen && len > info.ulMaxAdminPinLen)
+		len = info.ulMaxAdminPinLen;
+	if (len > sizeof(candidate[0]) - 1)
+		len = sizeof(candidate[0]) - 1;
+	memset(candidate[0], '7', len);
+	candidate[0][len] = '\0';
+	memset(candidate[1], '3', len);
+	candidate[1][len] = '\0';
+
+	cap = info.ulMaxAdminRetryCount ? info.ulMaxAdminRetryCount + 4 : 20;
+	if (cap > 64)
+		cap = 64;
+
+	fprintf(stderr, "Rutoken: repair mode is locking the SO PIN first "
+			"(%lu attempt(s) left)\n",
+			(unsigned long)info.ulAdminRetryCountLeft);
+
+	rv = p11->C_OpenSession(slot, CKF_SERIAL_SESSION | CKF_RW_SESSION,
+			NULL, NULL, &session);
+	if (rv != CKR_OK)
+		p11_fatal("C_OpenSession", rv);
+
+	for (guard = 0; (CK_ULONG)guard < cap; guard++) {
+		rv = p11->C_Login(session, CKU_SO, (CK_UTF8CHAR_PTR)candidate[which],
+				len);
+		if (rv == CKR_OK) {
+			/* improbable: this throw-away PIN is the real one and reset the
+			 * counter; drop it and only ever use the other candidate. */
+			p11->C_Logout(session);
+			which ^= 1;
+			continue;
+		}
+		if (rv == CKR_PIN_LOCKED)
+			break;
+		memset(&info, 0, sizeof(info));
+		info.ulSizeofThisStructure = sizeof(info);
+		if (RUTOKEN_CALL(C_EX_GetTokenInfoExtended, (slot, &info)) == CKR_OK &&
+				info.ulAdminRetryCountLeft == 0)
+			break;
+	}
+	rutoken_wipe(candidate, sizeof(candidate));
+	p11->C_CloseAllSessions(slot);
+}
+
 /* C_EX_InitToken and MODE_RESTORE_FACTORY_DEFAULTS. On the device both
  * erase objects and local PINs and keep licenses and the journal record. */
 static int
@@ -4606,7 +4735,25 @@ rutoken_format(CK_SLOT_ID slot, const struct rutoken_request *request)
 	char *so_pin = NULL, *new_so_pin, *new_user_pin;
 	CK_BYTE_PTR emitent_key = NULL;
 	CK_ULONG emitent_key_length = 0;
+	CK_TOKEN_INFO tinfo;
+	int generated_so = 0, generated_user = 0;
 	CK_RV rv;
+
+	/* The device enforces an absolute PIN-length window (6..N on Rutoken ECP);
+	 * a policy minimum outside it only comes back as CKR_ARGUMENTS_BAD, which
+	 * says nothing about the real limit, so check it here against the values
+	 * that "pkcs11-tool -L" also prints. */
+	get_token_info(slot, &tinfo);
+	if (tinfo.ulMinPinLen != 0 && tinfo.ulMinPinLen != CK_UNAVAILABLE_INFORMATION &&
+			(request->min_so_pin < tinfo.ulMinPinLen ||
+			 request->min_user_pin < tinfo.ulMinPinLen))
+		util_fatal("--rutoken-min-pin-length: the device minimum PIN length is %lu",
+				(unsigned long)tinfo.ulMinPinLen);
+	if (tinfo.ulMaxPinLen != 0 && tinfo.ulMaxPinLen != CK_UNAVAILABLE_INFORMATION &&
+			(request->min_so_pin > tinfo.ulMaxPinLen ||
+			 request->min_user_pin > tinfo.ulMaxPinLen))
+		util_fatal("--rutoken-min-pin-length: the device maximum PIN length is %lu",
+				(unsigned long)tinfo.ulMaxPinLen);
 
 	if (restore) {
 		emitent_key = rutoken_read_file(request->emitent_key_file,
@@ -4620,8 +4767,25 @@ rutoken_format(CK_SLOT_ID slot, const struct rutoken_request *request)
 	}
 	if (!request->repair_mode)
 		so_pin = rutoken_secret(opt_so_pin_argument, "Current SO PIN", 0);
-	new_so_pin = rutoken_secret(opt_rutoken_new_so_pin, "New SO PIN", 1);
-	new_user_pin = rutoken_secret(opt_new_pin_argument, "New user PIN", 1);
+	/* repair takes no current SO PIN and makes the new ones optional */
+	if (request->repair_mode && !opt_rutoken_new_so_pin) {
+		new_so_pin = rutoken_make_pin();
+		generated_so = 1;
+	} else
+		new_so_pin = rutoken_secret(opt_rutoken_new_so_pin, "New SO PIN", 1);
+	if (request->repair_mode && !opt_new_pin_argument) {
+		new_user_pin = rutoken_make_pin();
+		generated_user = 1;
+	} else
+		new_user_pin = rutoken_secret(opt_new_pin_argument, "New user PIN", 1);
+
+	if (generated_so || generated_user)
+		fprintf(stderr, "Rutoken: repair generated a new PIN; record it now, "
+				"it is shown only here\n");
+	if (generated_so)
+		fprintf(stderr, "  new SO PIN  : %s\n", new_so_pin);
+	if (generated_user)
+		fprintf(stderr, "  new user PIN: %s\n", new_user_pin);
 
 	memset(&init, 0, sizeof(init));
 	init.ulSizeofThisStructure = sizeof(init);
@@ -4655,6 +4819,8 @@ rutoken_format(CK_SLOT_ID slot, const struct rutoken_request *request)
 		rutoken_wipe(emitent_key, emitent_key_length);
 		free(emitent_key);
 	} else {
+		if (request->repair_mode)
+			rutoken_force_so_lock(slot);
 		rv = RUTOKEN_CALL(C_EX_InitToken, (slot, (CK_UTF8CHAR_PTR)so_pin,
 				so_pin ? (CK_ULONG)strlen(so_pin) : 0, &init));
 	}
@@ -4669,6 +4835,9 @@ rutoken_format(CK_SLOT_ID slot, const struct rutoken_request *request)
 		rutoken_error(function, rv);
 		if (rv == CKR_SESSION_EXISTS)
 			rutoken_hint("another program has a session with the token");
+		if (rv == CKR_PIN_LEN_RANGE && request->repair_mode)
+			rutoken_hint("repair needs the SO PIN already locked; the device "
+					"reports the length error until then");
 		if (opt_rutoken_json)
 			json_end("}");
 		return 1;
@@ -10148,6 +10317,23 @@ unsigned char *BIO_copy_data(BIO *out, long *data_lenp) {
 /*
  * Read object CKA_VALUE attribute's value.
  */
+/* A find that matches nothing cannot tell "no such object" from "the object
+ * is private and this session is not logged in".  When the session is still
+ * public, point the user at --login instead of a bare "object not found". */
+static void object_not_found(CK_SESSION_HANDLE session)
+{
+	CK_SESSION_INFO sinfo;
+
+	if (p11->C_GetSessionInfo &&
+			p11->C_GetSessionInfo(session, &sinfo) == CKR_OK &&
+			sinfo.state != CKS_RO_USER_FUNCTIONS &&
+			sinfo.state != CKS_RW_USER_FUNCTIONS &&
+			sinfo.state != CKS_RW_SO_FUNCTIONS)
+		util_fatal("object not found; a private object is only visible after "
+				"--login, so add --login (and --pin/--so-pin) if it should exist");
+	util_fatal("object not found");
+}
+
 static int read_object(CK_SESSION_HANDLE session)
 {
 	CK_RV rv;
@@ -10223,7 +10409,7 @@ static int read_object(CK_SESSION_HANDLE session)
 	if (rv != CKR_OK)
 		p11_fatal("find_object_with_attributes()", rv);
 	else if (obj==CK_INVALID_HANDLE)
-		util_fatal("object not found");
+		object_not_found(session);
 
 	if (clazz == CKO_PRIVATE_KEY) {
 		fprintf(stderr, "sorry, reading private keys not (yet) supported\n");
@@ -10653,11 +10839,24 @@ static int read_object(CK_SESSION_HANDLE session)
 				}
 				EVP_PKEY_free(pkey);
 #endif /* OPENSSL_VERSION_NUMBER >= 0x30000000L */
+			} else if (type == CKK_GOSTR3410 || type == CKK_GOSTR3410_512) {
+				/* GOST R 34.10-2012 public keys have no portable OpenSSL
+				 * SubjectPublicKeyInfo path (that needs the GOST provider),
+				 * but the Rutoken fork keeps the raw public key in CKA_VALUE,
+				 * which is what callers wrap themselves.  Hand that back as-is
+				 * instead of failing.  See docs/RUTOKEN-FUNCTIONS.md. */
+				BIO_free(pout);
+				pout = NULL;
+				value = getVALUE(session, obj, &len);
+				if (value == NULL)
+					util_fatal("cannot read CKA_VALUE of the GOST public key");
 			} else
 				util_fatal("Reading public keys of type 0x%lX not (yet) supported", type);
-			value = BIO_copy_data(pout, &derlen);
-			BIO_free(pout);
-			len = derlen;
+			if (pout) {
+				value = BIO_copy_data(pout, &derlen);
+				BIO_free(pout);
+				len = derlen;
+			}
 #else
 			util_fatal("No OpenSSL support, cannot read public key");
 #endif /* ENABLE_OPENSSL */
@@ -10742,7 +10941,7 @@ static int delete_object(CK_SESSION_HANDLE session)
 	if (rv != CKR_OK)
 		p11_fatal("find_object_with_attributes()", rv);
 	else if (obj==CK_INVALID_HANDLE)
-		util_fatal("object not found");
+		object_not_found(session);
 	rv = p11->C_DestroyObject(session, obj);
 	if (rv != CKR_OK)
 		p11_fatal("C_DestroyObject()", rv);

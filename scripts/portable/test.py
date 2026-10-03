@@ -332,6 +332,57 @@ def verify_rutoken_cli(
     for secret in (*secrets.values(), "LLLLLLLL", "KKKKKKKK"):
         if secret in log:
             raise RuntimeError("the pkcs11-spy log contains a Rutoken secret")
+    if "Version: code-agent-43824/OpenSC fork" not in log:
+        raise RuntimeError("the pkcs11-spy log lacks the fork version header")
+    if "OpenSC PKCS#11 spy summary" not in log:
+        raise RuntimeError("the pkcs11-spy log lacks the call summary")
+
+    # Field-report fixes checked on the shipped tool.
+    gost_pub = work_dir / "rutoken-gost-pub.bin"
+    tool_output(["--read-object", "--type", "pubkey", "--id", "0102",
+                 "--output-file", str(gost_pub)])
+    gost_bytes = gost_pub.read_bytes()
+    if gost_bytes[:4] != b"GOST" or len(gost_bytes) != 64:
+        raise RuntimeError("pkcs11-tool did not return the GOST public key value")
+
+    hint = tool_output(["--read-object", "--type", "data", "--id", "abcdef"],
+                       expected_code=1)
+    if "a private object is only visible after --login" not in hint:
+        raise RuntimeError("pkcs11-tool object-not-found gives no --login hint")
+
+    tool_output(so_login + ["--list-objects"])
+
+    if "Login successful" not in tool_output(["--test-login", "--pin", "12345678"]):
+        raise RuntimeError("pkcs11-tool --test-login did not confirm the login")
+    tool_output(["--test-login", "--pin", "00000000"], expected_code=1)
+
+    min_pin = tool_output(["--rutoken-init-token", "--so-pin",
+                           "env:RUTOKEN_TEST_SO_PIN", *new_pins,
+                           "--rutoken-min-pin-length", "1:1"], expected_code=1)
+    if "the device minimum PIN length is 6" not in min_pin:
+        raise RuntimeError("pkcs11-tool did not check the minimum PIN length")
+
+    repair = tool_output(["--rutoken-init-token", "--rutoken-repair-mode",
+                          *new_pins])
+    if "repair mode is locking the SO PIN first" not in repair:
+        raise RuntimeError("pkcs11-tool repair did not lock the SO PIN first")
+
+    # PKCS11SPY_UNSAFE_SECRETS reveals the value; its log stays in work_dir.
+    unsafe_log = work_dir / "rutoken-unsafe.log"
+    unsafe_env = cli_env.copy()
+    unsafe_env["PKCS11SPY_OUTPUT"] = str(unsafe_log)
+    unsafe_env["PKCS11SPY_UNSAFE_SECRETS"] = "1"
+    subprocess.run(
+        [str(tool), "--module", str(spy), "--slot", "7",
+         "--rutoken-set-local-pin", "4",
+         "--rutoken-auth-pin", "env:RUTOKEN_TEST_USER_PIN",
+         "--new-pin", "env:RUTOKEN_TEST_LOCAL_PIN"],
+        env=unsafe_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    unsafe = unsafe_log.read_text(encoding="utf-8", errors="replace")
+    if secrets["RUTOKEN_TEST_LOCAL_PIN"] not in unsafe:
+        raise RuntimeError("PKCS11SPY_UNSAFE_SECRETS did not reveal the PIN")
+
     print("PASS: pkcs11-tool Rutoken commands through pkcs11-spy, stage 5 "
           "included")
 

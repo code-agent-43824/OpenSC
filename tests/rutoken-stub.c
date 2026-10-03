@@ -313,6 +313,27 @@ C_CloseAllSessions(CK_SLOT_ID slotID)
 }
 
 CK_RV
+C_GetSessionInfo(CK_SESSION_HANDLE hSession, CK_SESSION_INFO_PTR pInfo)
+{
+	int rw = hSession == SESSION_RW;
+
+	if (!session_valid(hSession))
+		return CKR_SESSION_HANDLE_INVALID;
+	if (!pInfo)
+		return CKR_ARGUMENTS_BAD;
+	pInfo->slotID = 7;
+	if (logged_in && login_user == CKU_SO)
+		pInfo->state = CKS_RW_SO_FUNCTIONS;
+	else if (logged_in)
+		pInfo->state = rw ? CKS_RW_USER_FUNCTIONS : CKS_RO_USER_FUNCTIONS;
+	else
+		pInfo->state = rw ? CKS_RW_PUBLIC_SESSION : CKS_RO_PUBLIC_SESSION;
+	pInfo->flags = CKF_SERIAL_SESSION | (rw ? CKF_RW_SESSION : 0);
+	pInfo->ulDeviceError = 0;
+	return CKR_OK;
+}
+
+CK_RV
 C_Login(CK_SESSION_HANDLE hSession, CK_USER_TYPE userType, CK_UTF8CHAR_PTR pPin,
 		CK_ULONG ulPinLen)
 {
@@ -587,6 +608,25 @@ static_attribute(const struct test_object *object, CK_ATTRIBUTE_TYPE type,
 		*value = object->label;
 		*length = (CK_ULONG)strlen(object->label);
 		return 1;
+	case CKA_KEY_TYPE:
+		if (object->object_class == CKO_PUBLIC_KEY ||
+				object->object_class == CKO_PRIVATE_KEY) {
+			/* the fork's main key type; read_object returns CKA_VALUE */
+			static const CK_KEY_TYPE gost = CKK_GOSTR3410;
+			*value = &gost;
+			*length = sizeof(gost);
+			return 1;
+		}
+		return 0;
+	case CKA_VALUE:
+		if (object->object_class == CKO_PUBLIC_KEY) {
+			/* a recognisable 64-byte GOST public key, "GOST" then zeros */
+			static const CK_BYTE gost_pub[64] = { 0x47, 0x4F, 0x53, 0x54 };
+			*value = gost_pub;
+			*length = sizeof(gost_pub);
+			return 1;
+		}
+		return 0;
 	default:
 		return 0;
 	}
@@ -1451,8 +1491,13 @@ C_EX_InitToken(CK_SLOT_ID slotID, CK_UTF8CHAR_PTR pPin, CK_ULONG ulPinLen,
 		return CKR_SESSION_EXISTS;
 	if (!pInitInfo)
 		return CKR_ARGUMENTS_BAD;
-	if (!pInitInfo->UseRepairMode &&
-			(rv = check_pin(&token.so, pPin, ulPinLen)) != CKR_OK)
+	if (pInitInfo->UseRepairMode) {
+		/* As on the device, repair only runs once the SO PIN is locked;
+		 * while it is still live the library hides that precondition behind
+		 * a length error. */
+		if (token.so.retries != 0)
+			return CKR_PIN_LEN_RANGE;
+	} else if ((rv = check_pin(&token.so, pPin, ulPinLen)) != CKR_OK)
 		return rv;
 	return format_token(pInitInfo);
 }
@@ -1747,6 +1792,7 @@ static CK_FUNCTION_LIST standard_functions = {
 	.C_OpenSession = C_OpenSession,
 	.C_CloseSession = C_CloseSession,
 	.C_CloseAllSessions = C_CloseAllSessions,
+	.C_GetSessionInfo = C_GetSessionInfo,
 	.C_Login = C_Login,
 	.C_Logout = C_Logout,
 	.C_SetPIN = C_SetPIN,
