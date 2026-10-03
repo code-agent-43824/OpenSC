@@ -10,9 +10,9 @@
 product и вложенном test-kit package поставляется безопасный закомментированный
 шаблон. Приоритет файла и fallback проверены на всех шести платформах.
 
-Полный GitHub Actions прогон [`32370121050`](https://github.com/code-agent-43824/OpenSC/actions/runs/32370121050) успешен: шесть build, шесть clean-runner verify и release job завершились с `PASS`. Все 12 Actions artifacts доступны напрямую, без вложенных ZIP.
+Полный GitHub Actions прогон [`37043678586`](https://github.com/code-agent-43824/OpenSC/actions/runs/37043678586) успешен: шесть build, шесть clean-runner verify и release job завершились с `PASS`. Все 12 Actions artifacts доступны напрямую, без вложенных ZIP.
 
-Релиз [`0.27.1-portable.4`](https://github.com/code-agent-43824/OpenSC/releases/tag/0.27.1-portable.4) содержит шесть product ZIP, шесть test-kit ZIP и общий `SHA256SUMS`. Все assets скачаны заново: 12 хэшей совпали, вложенных ZIP нет, шаблон конфигурации присутствует во всех архивах, Linux x64 test kit повторно прошел вне CI.
+Релиз [`0.27.1-portable.5`](https://github.com/code-agent-43824/OpenSC/releases/tag/0.27.1-portable.5) (этап 5 Рутокен) содержит шесть product ZIP, шесть test-kit ZIP и общий `SHA256SUMS`. Все assets скачаны заново: 12 хэшей совпали, вложенных ZIP нет, шаблон конфигурации присутствует во всех архивах, Linux x64 test kit повторно прошел вне CI вместе с проверками этапа 5.
 
 Workflow выпуска не имеет тега по умолчанию и не перезаписывает опубликованное:
 первый job за секунды отклоняет тег не формата `X.Y.Z-portable.N`, уже

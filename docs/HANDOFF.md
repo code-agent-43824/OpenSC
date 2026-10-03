@@ -2,8 +2,9 @@
 
 Portable CI для `pkcs11-tool` и `pkcs11-spy` завершен и находится в `master`.
 
-- Успешный workflow: <https://github.com/code-agent-43824/OpenSC/actions/runs/32370121050>
-- Опубликованный релиз: <https://github.com/code-agent-43824/OpenSC/releases/tag/0.27.1-portable.4>
+- Успешный workflow: <https://github.com/code-agent-43824/OpenSC/actions/runs/37043678586>
+- Опубликованный релиз: <https://github.com/code-agent-43824/OpenSC/releases/tag/0.27.1-portable.5>
+  (этап 5 включен).
 - В Actions и релизе: шесть product packages и шесть автономных test kits.
 - Каждый verify runner запускает точный test kit, который затем публикуется.
 - Все release-assets повторно скачаны; `SHA256SUMS` и состав проверены, Linux x64 kit повторно запущен.
@@ -32,8 +33,9 @@ Portable CI для `pkcs11-tool` и `pkcs11-spy` завершен и наход�
   `--rutoken-set-local-pin`, `--rutoken-unblock-user-pin`,
   `--rutoken-token-manage`, `--rutoken-init-token`,
   `--rutoken-restore-factory-defaults`; PIN только из `env:` или ввода без
-  эха, отдельного подтверждения нет (решение владельца). На устройстве команды еще не запускались;
-  устаревшие функции и разделы Flash не реализованы.
+  эха, отдельного подтверждения нет (решение владельца). Команды есть в
+  релизе `0.27.1-portable.5`, на устройстве еще не запускались; устаревшие
+  функции и разделы Flash не реализованы.
 - Workflow выпуска требует новый тег и не перезаписывает существующие теги и
   релизы.
 - Локальный `pkcs11-spy.conf` имеет приоритет над environment/Registry;
