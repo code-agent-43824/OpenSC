@@ -1,4 +1,5 @@
 #include "pkcs11/pkcs11-rutoken.h"
+#include "pkcs11/pkcs11-rutoken-bio.h"
 
 #include <stddef.h>
 #include <stdio.h>
@@ -22,12 +23,20 @@ ABI_ASSERT(function_list_size,
 ABI_ASSERT(function_list_info_offset,
 		offsetof(CK_FUNCTION_LIST_EXTENDED, C_EX_GetTokenInfoExtended) ==
 		2 + 2 * sizeof(void *));
+ABI_ASSERT(bio_function_list_size,
+		sizeof(CK_FUNCTION_LIST_BIO) == 2 + 16 * sizeof(void *));
+ABI_ASSERT(bio_function_list_last_offset,
+		offsetof(CK_FUNCTION_LIST_BIO, C_BIO_Deauthenticate) ==
+		2 + 15 * sizeof(void *));
 #else
 ABI_ASSERT(ck_ulong_width, sizeof(CK_ULONG) == 8);
 ABI_ASSERT(token_info_size, sizeof(CK_TOKEN_INFO_EXTENDED) == 256);
 ABI_ASSERT(function_list_size, sizeof(CK_FUNCTION_LIST_EXTENDED) == 280);
 ABI_ASSERT(function_list_info_offset,
 		offsetof(CK_FUNCTION_LIST_EXTENDED, C_EX_GetTokenInfoExtended) == 24);
+ABI_ASSERT(bio_function_list_size, sizeof(CK_FUNCTION_LIST_BIO) == 136);
+ABI_ASSERT(bio_function_list_last_offset,
+		offsetof(CK_FUNCTION_LIST_BIO, C_BIO_Deauthenticate) == 128);
 #endif
 
 /* Windows packs these structures and Unix targets are LP64, so neither has
@@ -106,7 +115,9 @@ main(int argc, char **argv)
 	void *module;
 	void *symbol;
 	CK_C_EX_GetFunctionListExtended get_functions = NULL;
+	CK_C_BIO_GetFunctionListBio get_bio = NULL;
 	CK_FUNCTION_LIST_EXTENDED_PTR functions = NULL;
+	CK_FUNCTION_LIST_BIO_PTR bio = NULL;
 	CK_TOKEN_INFO_EXTENDED info;
 	CK_ULONG name_len = 0;
 	CK_CHAR name[32];
@@ -241,6 +252,53 @@ main(int argc, char **argv)
 	EXPECT_VENDOR(functions->C_EX_Deauthenticate(23, 1), 32);
 	EXPECT_VENDOR(functions->C_EX_UnblockAuthenticator(23, 1), 33);
 
-	puts("PASS: all Rutoken extended spy wrappers preserve table order and return values");
+	symbol = load_symbol(module, "C_BIO_GetFunctionListBio");
+	if (!symbol) {
+		fprintf(stderr, "C_BIO_GetFunctionListBio is not exported\n");
+		return 1;
+	}
+	memcpy(&get_bio, &symbol, sizeof(get_bio));
+	if (get_bio(NULL) != CKR_ARGUMENTS_BAD ||
+			get_bio(&bio) != CKR_OK || !bio ||
+			bio->version.major != 2 || bio->version.minor != 40)
+		return 1;
+#define BIO_REQUIRE(name) if (!bio->name) return 1
+	BIO_REQUIRE(C_BIO_GetFunctionListBio);
+	BIO_REQUIRE(C_BIO_Initialize);
+	BIO_REQUIRE(C_BIO_Finalize);
+	BIO_REQUIRE(C_BIO_ListScannersAdapters);
+	BIO_REQUIRE(C_BIO_ListScanners);
+	BIO_REQUIRE(C_BIO_SetDefaultScanner);
+	BIO_REQUIRE(C_BIO_GetFingerprintInfo);
+	BIO_REQUIRE(C_BIO_SetFingerprintInit);
+	BIO_REQUIRE(C_BIO_SetFingerprintStatus);
+	BIO_REQUIRE(C_BIO_SetFingerprintScan);
+	BIO_REQUIRE(C_BIO_SetFingerprintScanCancel);
+	BIO_REQUIRE(C_BIO_SetFingerprintFinal);
+	BIO_REQUIRE(C_BIO_UnblockFingerprint);
+	BIO_REQUIRE(C_BIO_Authenticate);
+	BIO_REQUIRE(C_BIO_AuthenticateCancel);
+	BIO_REQUIRE(C_BIO_Deauthenticate);
+#undef BIO_REQUIRE
+	EXPECT_VENDOR(bio->C_BIO_Initialize(99), 41);
+	EXPECT_VENDOR(bio->C_BIO_Finalize((CK_VOID_PTR)1), 42);
+	EXPECT_VENDOR(bio->C_BIO_ListScannersAdapters(NULL, NULL), 43);
+	EXPECT_VENDOR(bio->C_BIO_ListScanners(NULL, NULL), 44);
+	EXPECT_VENDOR(bio->C_BIO_SetDefaultScanner(NULL), 45);
+	EXPECT_VENDOR(bio->C_BIO_GetFingerprintInfo(ORDER_PROBE, NULL, NULL, NULL), 46);
+	EXPECT_VENDOR(bio->C_BIO_SetFingerprintInit(ORDER_PROBE, NULL, 0, NULL), 47);
+	EXPECT_VENDOR(bio->C_BIO_SetFingerprintStatus(ORDER_PROBE, NULL, NULL), 48);
+	EXPECT_VENDOR(bio->C_BIO_SetFingerprintScan(ORDER_PROBE, 30, NULL), 49);
+	EXPECT_VENDOR(bio->C_BIO_SetFingerprintScanCancel(ORDER_PROBE), 50);
+	EXPECT_VENDOR(bio->C_BIO_SetFingerprintFinal(ORDER_PROBE, NULL), 51);
+	EXPECT_VENDOR(bio->C_BIO_UnblockFingerprint(ORDER_PROBE), 52);
+	EXPECT_VENDOR(bio->C_BIO_Authenticate(ORDER_PROBE,
+			(CK_UTF8CHAR_PTR)"BIO_SECRET_PIN", 14, 30, 0), 53);
+	EXPECT_VENDOR(bio->C_BIO_AuthenticateCancel(ORDER_PROBE), 54);
+	EXPECT_VENDOR(bio->C_BIO_Deauthenticate(ORDER_PROBE, 0), 55);
+	if (bio->C_BIO_Finalize(NULL) != CKR_OK)
+		return 1;
+
+	puts("PASS: Rutoken extended and BIO spy wrappers preserve table order and return values");
 	return 0;
 }

@@ -76,6 +76,7 @@
 #include "pkcs11/pkcs11-opensc.h"
 #include "pkcs11/pkcs11.h"
 #include "pkcs11/pkcs11-rutoken.h"
+#include "pkcs11/pkcs11-rutoken-bio.h"
 #include "pkcs11_uri.h"
 #include "util.h"
 
@@ -294,6 +295,12 @@ enum {
 	OPT_RUTOKEN_EMITENT_KEY,
 	OPT_RUTOKEN_EMITENT_KEY_TYPE,
 	OPT_RUTOKEN_EMITENT_KEY_RETRIES,
+	OPT_RUTOKEN_BIO_SCANNERS,
+	OPT_RUTOKEN_BIO_AUTH,
+	OPT_RUTOKEN_BIO_DEAUTH,
+	OPT_RUTOKEN_BIO_UNBLOCK,
+	OPT_RUTOKEN_BIO_PIN,
+	OPT_RUTOKEN_BIO_TIMEOUT,
 	OPT_URI,
 	OPT_URI_WITH_SLOT_ID
 };
@@ -433,6 +440,12 @@ static const struct option options[] = {
 	{ "rutoken-emitent-key", 1, NULL,		OPT_RUTOKEN_EMITENT_KEY},
 	{ "rutoken-emitent-key-type", 1, NULL,		OPT_RUTOKEN_EMITENT_KEY_TYPE},
 	{ "rutoken-emitent-key-retries", 1, NULL,	OPT_RUTOKEN_EMITENT_KEY_RETRIES},
+	{ "rutoken-bio-scanners", 0, NULL,	OPT_RUTOKEN_BIO_SCANNERS},
+	{ "rutoken-bio-authenticate", 0, NULL,	OPT_RUTOKEN_BIO_AUTH},
+	{ "rutoken-bio-deauthenticate", 0, NULL,	OPT_RUTOKEN_BIO_DEAUTH},
+	{ "rutoken-bio-unblock", 0, NULL,	OPT_RUTOKEN_BIO_UNBLOCK},
+	{ "rutoken-bio-pin", 1, NULL,	OPT_RUTOKEN_BIO_PIN},
+	{ "rutoken-bio-timeout", 1, NULL,	OPT_RUTOKEN_BIO_TIMEOUT},
 	{ "uri",		1, NULL,		OPT_URI},
 	{ "uri-with-slot-id",	0, NULL,		OPT_URI_WITH_SLOT_ID},
 	{ NULL, 0, NULL, 0 },
@@ -573,6 +586,12 @@ static const char *option_help[] = {
 		"File with the new 32-byte emitent key of --rutoken-restore-factory-defaults",
 		"Emitent key type: kuznyechik (default) or magma",
 		"Emitent key attempts (default 10)",
+		"List Rutoken BioLib fingerprint scanners",
+		"Authenticate by fingerprint using the Rutoken BioLib scanner",
+		"End Rutoken BioLib fingerprint authentication",
+		"Unblock fingerprint use (needs --login)",
+		"Optional PIN passed to BioLib by --rutoken-bio-authenticate, as env:<name>",
+		"Fingerprint scan timeout in seconds (default 30)",
 		"Specify the PKCS#11 URI for module, slot, token or object",
 		"Include SlotId in PKCS#11 URI",
 		"",
@@ -592,6 +611,7 @@ static const char *	opt_so_pin_argument = NULL;
 static const char *	opt_new_pin_argument = NULL;
 static const char *	opt_rutoken_auth_pin = NULL;
 static const char *	opt_rutoken_new_so_pin = NULL;
+static const char *	opt_rutoken_bio_pin = NULL;
 static const char *	opt_signature_file = NULL;
 static const char *opt_module = NULL;
 static int		opt_slot_set = 0;
@@ -657,6 +677,7 @@ static int opt_uri_with_slot_id = 0; /* include slot-id in PKCS#11 URI */
 static void *module = NULL;
 static CK_FUNCTION_LIST_3_0_PTR p11 = NULL;
 static CK_FUNCTION_LIST_EXTENDED_PTR p11_ex = NULL;
+static CK_FUNCTION_LIST_BIO_PTR p11_bio = NULL;
 static CK_SLOT_ID_PTR p11_slots = NULL;
 static CK_ULONG p11_num_slots = 0;
 static int suppress_warn = 0;
@@ -800,7 +821,14 @@ struct rutoken_request {
 	const char *emitent_key_file;
 	CK_KEY_TYPE emitent_key_type;
 	CK_ULONG emitent_key_retries;
+	int bio_action;
+	CK_ULONG bio_timeout;
+	int bio_timeout_set;
 };
+#define RUTOKEN_BIO_SCANNERS	1
+#define RUTOKEN_BIO_AUTH		2
+#define RUTOKEN_BIO_DEAUTH	3
+#define RUTOKEN_BIO_UNBLOCK	4
 #define RUTOKEN_LOCAL_PIN_FIRST	3
 #define RUTOKEN_LOCAL_PIN_LAST	31
 #define RUTOKEN_SET_NAME		1
@@ -825,10 +853,12 @@ static void rutoken_number_pair(const char *option, const char *text,
 		CK_ULONG minimum, CK_ULONG maximum, CK_ULONG *first, CK_ULONG *second);
 static void rutoken_token_manage_mode(struct rutoken_request *request,
 		const char *text);
+static void rutoken_check_pin_source(const char *option, const char *argument);
 static void rutoken_check_change(const struct rutoken_request *request,
 		int modifiers, int action_count, int rutoken_action_count, int login);
 static void rutoken_check_touch(CK_SLOT_ID slot);
 static void load_rutoken_extension(void);
+static void load_rutoken_bio_extension(void);
 static int run_rutoken_actions(CK_SLOT_ID slot, CK_SESSION_HANDLE session,
 		const struct rutoken_request *request);
 static const char *rutoken_rv_name(CK_RV rv);
@@ -1094,6 +1124,7 @@ int main(int argc, char * argv[])
 	rutoken.so_retries = rutoken.user_retries = 10;
 	rutoken.emitent_key_type = CKK_KUZNECHIK;
 	rutoken.emitent_key_retries = 10;
+	rutoken.bio_timeout = 30;
 
 	while (1) {
 		c = getopt_long(argc, argv, "ILMOTa:bd:e:hi:klm:o:p:scvf:ty:w:z:r",
@@ -1754,6 +1785,28 @@ int main(int argc, char * argv[])
 					"--rutoken-emitent-key-retries", optarg, 1, 15);
 			rutoken_modifiers |= RUTOKEN_EMITENT_MODIFIER;
 			break;
+		case OPT_RUTOKEN_BIO_SCANNERS:
+		case OPT_RUTOKEN_BIO_AUTH:
+		case OPT_RUTOKEN_BIO_DEAUTH:
+		case OPT_RUTOKEN_BIO_UNBLOCK:
+			if (rutoken.bio_action)
+				util_fatal("Use only one --rutoken-bio-* action per command");
+			rutoken.bio_action = c == OPT_RUTOKEN_BIO_SCANNERS ?
+					RUTOKEN_BIO_SCANNERS : c == OPT_RUTOKEN_BIO_AUTH ?
+					RUTOKEN_BIO_AUTH : c == OPT_RUTOKEN_BIO_DEAUTH ?
+					RUTOKEN_BIO_DEAUTH : RUTOKEN_BIO_UNBLOCK;
+			need_session |= NEED_SESSION_RO;
+			rutoken_action_count++;
+			action_count++;
+			break;
+		case OPT_RUTOKEN_BIO_PIN:
+			opt_rutoken_bio_pin = optarg;
+			break;
+		case OPT_RUTOKEN_BIO_TIMEOUT:
+			rutoken.bio_timeout = rutoken_number(
+					"--rutoken-bio-timeout", optarg, 1, 3600);
+			rutoken.bio_timeout_set = 1;
+			break;
 		case OPT_URI_WITH_SLOT_ID:
 			opt_uri_with_slot_id = 1;
 			break;
@@ -1807,6 +1860,22 @@ int main(int argc, char * argv[])
 		util_fatal("--rutoken-confirm-by-touch requires --keypairgen");
 	rutoken_check_change(&rutoken, rutoken_modifiers, action_count,
 			rutoken_action_count, opt_login);
+	if (rutoken.bio_action) {
+		if (rutoken_action_count != 1 || action_count != 1)
+			util_fatal("A --rutoken-bio-* action cannot be combined "
+					"with other commands");
+		if ((opt_rutoken_bio_pin || rutoken.bio_timeout_set) &&
+				rutoken.bio_action != RUTOKEN_BIO_AUTH)
+			util_fatal("--rutoken-bio-pin and --rutoken-bio-timeout "
+					"require --rutoken-bio-authenticate");
+		if (rutoken.bio_action == RUTOKEN_BIO_UNBLOCK && !opt_login)
+			util_fatal("--rutoken-bio-unblock needs --login");
+		if (rutoken.bio_action == RUTOKEN_BIO_AUTH && !opt_login)
+			util_fatal("--rutoken-bio-authenticate needs --login");
+		rutoken_check_pin_source("--rutoken-bio-pin", opt_rutoken_bio_pin);
+	} else if (opt_rutoken_bio_pin || rutoken.bio_timeout_set)
+		util_fatal("--rutoken-bio-pin and --rutoken-bio-timeout "
+				"require --rutoken-bio-authenticate");
 
 	if (opt_uri) {
 		/* Check that no interfering options were set */
@@ -1884,8 +1953,10 @@ int main(int argc, char * argv[])
 			util_fatal("Failed to load pkcs11 module");
 		p11 = (CK_FUNCTION_LIST_3_0_PTR) p11_v2;
 	}
-	if (rutoken_action_count || opt_rutoken_touch)
+	if ((rutoken_action_count && !rutoken.bio_action) || opt_rutoken_touch)
 		load_rutoken_extension();
+	if (rutoken.bio_action)
+		load_rutoken_bio_extension();
 
 	/* This can be done even before initialization */
 	if (do_list_interfaces)
@@ -2330,6 +2401,8 @@ end:
 
 #define RUTOKEN_CALL(name, arguments) \
 	(p11_ex->name ? p11_ex->name arguments : CKR_FUNCTION_NOT_SUPPORTED)
+#define RUTOKEN_BIO_CALL(name, arguments) \
+	(p11_bio->name ? p11_bio->name arguments : CKR_FUNCTION_NOT_SUPPORTED)
 
 /* Fields after ulATRLen are absent in older structure versions. */
 #define RUTOKEN_HAS(info, field) \
@@ -2790,6 +2863,26 @@ load_rutoken_extension(void)
 		p11_fatal("C_EX_GetFunctionListExtended", rv);
 	if (!p11_ex)
 		util_fatal("C_EX_GetFunctionListExtended returned a null function list");
+}
+
+static void
+load_rutoken_bio_extension(void)
+{
+	CK_C_BIO_GetFunctionListBio get_bio = NULL;
+	void *symbol;
+	CK_RV rv;
+
+	if (!module)
+		util_fatal("Rutoken BIO extension is unavailable in the built-in module");
+	symbol = C_GetModuleSymbol(module, "C_BIO_GetFunctionListBio");
+	if (!symbol)
+		util_fatal("Module does not export C_BIO_GetFunctionListBio");
+	memcpy(&get_bio, &symbol, sizeof(get_bio));
+	rv = get_bio(&p11_bio);
+	if (rv != CKR_OK)
+		p11_fatal("C_BIO_GetFunctionListBio", rv);
+	if (!p11_bio)
+		util_fatal("C_BIO_GetFunctionListBio returned a null function list");
 }
 
 static int
@@ -4871,6 +4964,114 @@ rutoken_run_change(CK_SLOT_ID slot, CK_SESSION_HANDLE session,
 }
 
 static int
+rutoken_bio_action(CK_SESSION_HANDLE session, const struct rutoken_request *request)
+{
+	CK_BIO_SCANNER_INFO_PTR scanners = NULL;
+	CK_ULONG count = 0, capacity = 0, i;
+	char *pin = NULL;
+	const char *function = NULL;
+	CK_RV rv, final_rv;
+	int failed = 0;
+
+	if (opt_rutoken_json)
+		json_begin("bio", "{");
+	rv = RUTOKEN_BIO_CALL(C_BIO_Initialize, (0));
+	if (rv != CKR_OK) {
+		failed = rutoken_error("C_BIO_Initialize", rv);
+		goto out;
+	}
+	switch (request->bio_action) {
+	case RUTOKEN_BIO_SCANNERS:
+		function = "C_BIO_ListScanners";
+		rv = RUTOKEN_BIO_CALL(C_BIO_ListScanners, (NULL, &count));
+		if (rv != CKR_OK)
+			break;
+		if (count > 1024 || count > SIZE_MAX / sizeof(*scanners)) {
+			failed = rutoken_bad_length(function, count);
+			goto finalize;
+		}
+		if (count) {
+			capacity = count;
+			scanners = calloc(count, sizeof(*scanners));
+			if (!scanners)
+				util_fatal("Out of memory");
+			rv = RUTOKEN_BIO_CALL(C_BIO_ListScanners,
+					(scanners, &count));
+			if (rv != CKR_OK)
+				break;
+			if (count > capacity) {
+				failed = rutoken_bad_length(function, count);
+				goto finalize;
+			}
+		}
+		if (opt_rutoken_json)
+			json_begin("scanners", "[");
+		else
+			printf("Rutoken BIO scanners: %lu\n", (unsigned long)count);
+		for (i = 0; i < count; i++) {
+			const CK_CHAR *end = memchr(scanners[i].adapterName, 0,
+					sizeof(scanners[i].adapterName));
+			size_t name_len = end ?
+					(size_t)(end - scanners[i].adapterName) :
+					sizeof(scanners[i].adapterName);
+
+			if (opt_rutoken_json) {
+				json_begin(NULL, "{");
+				json_ulong("id", scanners[i].id);
+				json_string("adapter", scanners[i].adapterName, name_len);
+				json_end("}");
+			} else
+				printf("  %lu: %.*s\n", (unsigned long)scanners[i].id,
+						(int)name_len, scanners[i].adapterName);
+		}
+		if (opt_rutoken_json)
+			json_end("]");
+		break;
+	case RUTOKEN_BIO_AUTH:
+		function = "C_BIO_Authenticate";
+		if (opt_rutoken_bio_pin)
+			pin = rutoken_secret(opt_rutoken_bio_pin,
+					"Rutoken BIO PIN", 0);
+		rv = RUTOKEN_BIO_CALL(C_BIO_Authenticate,
+				(session, (CK_UTF8CHAR_PTR)pin,
+				 pin ? (CK_ULONG)strlen(pin) : 0,
+				 request->bio_timeout, 0));
+		rutoken_free_secret(pin);
+		if (rv == CKR_OK && !opt_rutoken_json)
+			puts("Rutoken BIO authentication successful");
+		break;
+	case RUTOKEN_BIO_DEAUTH:
+		function = "C_BIO_Deauthenticate";
+		rv = RUTOKEN_BIO_CALL(C_BIO_Deauthenticate, (session, 0));
+		if (rv == CKR_OK && !opt_rutoken_json)
+			puts("Rutoken BIO deauthenticated");
+		break;
+	case RUTOKEN_BIO_UNBLOCK:
+		function = "C_BIO_UnblockFingerprint";
+		rv = RUTOKEN_BIO_CALL(C_BIO_UnblockFingerprint, (session));
+		if (rv == CKR_OK && !opt_rutoken_json)
+			puts("Rutoken BIO fingerprint unblocked");
+		break;
+	default:
+		rv = CKR_ARGUMENTS_BAD;
+		function = "C_BIO";
+	}
+	if (rv != CKR_OK)
+		failed = rutoken_error(function, rv);
+	else if (opt_rutoken_json)
+		json_bool("ok", 1);
+finalize:
+	free(scanners);
+	final_rv = RUTOKEN_BIO_CALL(C_BIO_Finalize, (NULL));
+	if (final_rv != CKR_OK)
+		failed |= rutoken_error("C_BIO_Finalize", final_rv);
+out:
+	if (opt_rutoken_json)
+		json_end("}");
+	return failed;
+}
+
+static int
 run_rutoken_actions(CK_SLOT_ID slot, CK_SESSION_HANDLE session,
 		const struct rutoken_request *request)
 {
@@ -4903,6 +5104,8 @@ run_rutoken_actions(CK_SLOT_ID slot, CK_SESSION_HANDLE session,
 		failed |= rutoken_pkcs7_verify(session, request);
 	if (request->csr)
 		failed |= rutoken_csr(session, request);
+	if (request->bio_action)
+		failed |= rutoken_bio_action(session, request);
 	if (opt_rutoken_json) {
 		json_end("}");
 		printf("%s\n", rutoken_json.data);

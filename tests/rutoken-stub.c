@@ -1,11 +1,13 @@
 #define CRYPTOKI_EXPORTS
 #include "pkcs11/pkcs11-rutoken.h"
+#include "pkcs11/pkcs11-rutoken-bio.h"
 
 #include <stdlib.h>
 #include <string.h>
 
 static CK_FUNCTION_LIST standard_functions;
 static CK_FUNCTION_LIST_EXTENDED extended_functions;
+static CK_FUNCTION_LIST_BIO bio_functions;
 
 /* Slot 7 holds the token; read-only sessions get handle 23, read-write
  * sessions 24. A slot or session handle of ORDER_PROBE makes every extension
@@ -1737,6 +1739,88 @@ C_EX_GetFunctionListExtended(CK_FUNCTION_LIST_EXTENDED_PTR_PTR ppFunctionList)
 	return CKR_OK;
 }
 
+CK_RV CK_SPEC
+C_BIO_GetFunctionListBio(CK_FUNCTION_LIST_BIO_PTR_PTR ppFunctionList)
+{
+	if (!ppFunctionList)
+		return CKR_ARGUMENTS_BAD;
+	*ppFunctionList = &bio_functions;
+	return CKR_OK;
+}
+
+CK_RV CK_SPEC
+C_BIO_Initialize(CK_BYTE flags)
+{
+	return flags == ORDER_PROBE ? ORDER_CODE(41) : CKR_OK;
+}
+
+CK_RV CK_SPEC
+C_BIO_Finalize(CK_VOID_PTR pReserved)
+{
+	return pReserved ? ORDER_CODE(42) : CKR_OK;
+}
+STUB_FUNCTION(C_BIO_ListScannersAdapters, 43,
+		(CK_BIO_SCANNERS_ADAPTER_INFO_PTR pInfos, CK_ULONG_PTR pInfosCount))
+CK_RV CK_SPEC
+C_BIO_ListScanners(CK_BIO_SCANNER_INFO_PTR pInfos, CK_ULONG_PTR pInfosCount)
+{
+	if (!pInfosCount)
+		return ORDER_CODE(44);
+	if (!pInfos) {
+		*pInfosCount = 1;
+		return CKR_OK;
+	}
+	if (*pInfosCount < 1)
+		return CKR_BUFFER_TOO_SMALL;
+	pInfos[0].id = 7;
+	memset(pInfos[0].adapterName, 0, sizeof(pInfos[0].adapterName));
+	memcpy(pInfos[0].adapterName, "Test scanner", 12);
+	*pInfosCount = 1;
+	return CKR_OK;
+}
+STUB_FUNCTION(C_BIO_SetDefaultScanner, 45, (CK_BIO_SCANNER_INFO_PTR pInfo))
+STUB_FUNCTION(C_BIO_GetFingerprintInfo, 46,
+		(CK_SESSION_HANDLE session, CK_BIO_FINGERPRINT_INFO_PTR pInfo,
+		 CK_BIO_FINGERPRINT_SCAN_PARAMS_PTR pScanParams,
+		 CK_ULONG_PTR pScanParamsCount))
+STUB_FUNCTION(C_BIO_SetFingerprintInit, 47,
+		(CK_SESSION_HANDLE session, CK_BIO_FINGERPRINT_SCAN_PARAMS_PTR pParams,
+		 CK_ULONG paramsCount, CK_BIO_FINGERPRINT_TYPE_PTR pNextToScan))
+STUB_FUNCTION(C_BIO_SetFingerprintStatus, 48,
+		(CK_SESSION_HANDLE session, CK_BIO_FINGERPRINT_SCAN_STATUS_PTR pStatus,
+		 CK_ULONG_PTR pStatusCount))
+STUB_FUNCTION(C_BIO_SetFingerprintScan, 49,
+		(CK_SESSION_HANDLE session, CK_ULONG timeout,
+		 CK_BIO_FINGERPRINT_TYPE_PTR pNextToScan))
+STUB_FUNCTION(C_BIO_SetFingerprintScanCancel, 50, (CK_SESSION_HANDLE session))
+STUB_FUNCTION(C_BIO_SetFingerprintFinal, 51,
+		(CK_SESSION_HANDLE session, CK_ULONG_PTR pFingerprintId))
+CK_RV CK_SPEC
+C_BIO_UnblockFingerprint(CK_SESSION_HANDLE session)
+{
+	return session == ORDER_PROBE ? ORDER_CODE(52) : CKR_OK;
+}
+
+CK_RV CK_SPEC
+C_BIO_Authenticate(CK_SESSION_HANDLE session, CK_UTF8CHAR_PTR pin,
+		CK_ULONG pinLen, CK_ULONG timeout, CK_BYTE flags)
+{
+	(void)timeout;
+	(void)flags;
+	if (session == ORDER_PROBE)
+		return ORDER_CODE(53);
+	if (pin && (pinLen != 8 || memcmp(pin, "12345678", 8)))
+		return CKR_PIN_INCORRECT;
+	return CKR_OK;
+}
+STUB_FUNCTION(C_BIO_AuthenticateCancel, 54, (CK_SESSION_HANDLE session))
+CK_RV CK_SPEC
+C_BIO_Deauthenticate(CK_SESSION_HANDLE session, CK_BYTE flags)
+{
+	(void)flags;
+	return session == ORDER_PROBE ? ORDER_CODE(55) : CKR_OK;
+}
+
 STUB_FUNCTION(C_EX_LoadActivationKey, 13,
 		(CK_SESSION_HANDLE hSession, CK_BYTE_PTR key, CK_ULONG keySize))
 STUB_FUNCTION(C_EX_SetActivationPassword, 14,
@@ -1845,4 +1929,24 @@ static CK_FUNCTION_LIST_EXTENDED extended_functions = {
 	.C_EX_Authenticate = C_EX_Authenticate,
 	.C_EX_Deauthenticate = C_EX_Deauthenticate,
 	.C_EX_UnblockAuthenticator = C_EX_UnblockAuthenticator
+};
+
+static CK_FUNCTION_LIST_BIO bio_functions = {
+	.version = { 2, 40 },
+	.C_BIO_GetFunctionListBio = C_BIO_GetFunctionListBio,
+	.C_BIO_Initialize = C_BIO_Initialize,
+	.C_BIO_Finalize = C_BIO_Finalize,
+	.C_BIO_ListScannersAdapters = C_BIO_ListScannersAdapters,
+	.C_BIO_ListScanners = C_BIO_ListScanners,
+	.C_BIO_SetDefaultScanner = C_BIO_SetDefaultScanner,
+	.C_BIO_GetFingerprintInfo = C_BIO_GetFingerprintInfo,
+	.C_BIO_SetFingerprintInit = C_BIO_SetFingerprintInit,
+	.C_BIO_SetFingerprintStatus = C_BIO_SetFingerprintStatus,
+	.C_BIO_SetFingerprintScan = C_BIO_SetFingerprintScan,
+	.C_BIO_SetFingerprintScanCancel = C_BIO_SetFingerprintScanCancel,
+	.C_BIO_SetFingerprintFinal = C_BIO_SetFingerprintFinal,
+	.C_BIO_UnblockFingerprint = C_BIO_UnblockFingerprint,
+	.C_BIO_Authenticate = C_BIO_Authenticate,
+	.C_BIO_AuthenticateCancel = C_BIO_AuthenticateCancel,
+	.C_BIO_Deauthenticate = C_BIO_Deauthenticate
 };

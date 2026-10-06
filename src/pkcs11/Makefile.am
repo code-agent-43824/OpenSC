@@ -8,6 +8,7 @@ CLEANFILES = pkcs11-spy.exports
 pkcs11-spy.exports: $(srcdir)/pkcs11.exports
 	cp $(srcdir)/pkcs11.exports $@
 	echo C_EX_GetFunctionListExtended >> $@
+	echo C_BIO_GetFunctionListBio >> $@
 
 if ENABLE_SHARED
 lib_LTLIBRARIES = opensc-pkcs11.la pkcs11-spy.la
@@ -17,7 +18,7 @@ endif
 
 AM_CPPFLAGS = -I$(top_srcdir)/src
 
-OPENSC_PKCS11_INC = sc-pkcs11.h pd-pkcs11.h pkcs11.h pkcs11-opensc.h pkcs11-rutoken.h
+OPENSC_PKCS11_INC = sc-pkcs11.h pd-pkcs11.h pkcs11.h pkcs11-opensc.h pkcs11-rutoken.h pkcs11-rutoken-bio.h
 OPENSC_PKCS11_SRC = pkcs11-global.c pkcs11-session.c pkcs11-object.c misc.c slot.c \
 	mechanism.c openssl.c framework-pkcs15.c \
 	framework-pkcs15init.c debug.c pkcs11.exports \
@@ -54,7 +55,7 @@ libopensc_pkcs11_la_CFLAGS = $(OPENSC_PKCS11_CFLAGS)
 libopensc_pkcs11_la_LIBADD = $(OPENSC_PKCS11_LIBS)
 libopensc_pkcs11_la_LDFLAGS = $(AM_LDFLAGS)
 
-pkcs11_spy_la_SOURCES = pkcs11-spy.c pkcs11-display.c pkcs11-display.h pkcs11.exports
+pkcs11_spy_la_SOURCES = pkcs11-spy.c pkcs11-display.c pkcs11-display.h pkcs11-rutoken-bio.h pkcs11.exports
 pkcs11_spy_la_CFLAGS = $(OPTIONAL_OPENSSL_CFLAGS) $(OPENSC_PKCS11_PTHREAD_CFLAGS)
 pkcs11_spy_la_LIBADD = \
 	$(top_builddir)/src/common/libpkcs11.la \

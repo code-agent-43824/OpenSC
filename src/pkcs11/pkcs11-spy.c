@@ -51,6 +51,7 @@
 #define CRYPTOKI_EXPORTS
 #include "pkcs11-display.h"
 #include "pkcs11-rutoken.h"
+#include "pkcs11-rutoken-bio.h"
 #include "common/libpkcs11.h"
 
 #define __PASTE(x,y)      x##y
@@ -69,6 +70,9 @@ static CK_FUNCTION_LIST_3_2_PTR po = NULL;
 static CK_FUNCTION_LIST_EXTENDED_PTR po_ex = NULL;
 static CK_RV po_ex_status = CKR_FUNCTION_NOT_SUPPORTED;
 static CK_FUNCTION_LIST_EXTENDED pkcs11_spy_ex;
+static CK_FUNCTION_LIST_BIO_PTR po_bio = NULL;
+static CK_RV po_bio_status = CKR_FUNCTION_NOT_SUPPORTED;
+static CK_FUNCTION_LIST_BIO pkcs11_spy_bio;
 /* Real module interface list */
 static CK_INTERFACE_PTR orig_interfaces = NULL;
 static unsigned long num_orig_interfaces = 0;
@@ -557,6 +561,18 @@ init_spy(void)
 				po_ex_status = CKR_GENERAL_ERROR;
 		}
 	}
+	{
+		CK_C_BIO_GetFunctionListBio get_bio = NULL;
+		void *symbol = C_GetModuleSymbol(modhandle,
+				"C_BIO_GetFunctionListBio");
+
+		if (symbol) {
+			memcpy(&get_bio, &symbol, sizeof(get_bio));
+			po_bio_status = get_bio(&po_bio);
+			if (po_bio_status == CKR_OK && po_bio == NULL)
+				po_bio_status = CKR_GENERAL_ERROR;
+		}
+	}
 	fprintf(spy_output, "Loaded: \"%s\"\n", module);
 
 	return CKR_OK;
@@ -565,6 +581,8 @@ err:
 	po = NULL;
 	po_ex = NULL;
 	po_ex_status = CKR_FUNCTION_NOT_SUPPORTED;
+	po_bio = NULL;
+	po_bio_status = CKR_FUNCTION_NOT_SUPPORTED;
 	C_UnloadModule(modhandle);
 	modhandle = NULL;
 	free(pkcs11_spy);
@@ -1653,6 +1671,134 @@ C_EX_GetFunctionListExtended(CK_FUNCTION_LIST_EXTENDED_PTR_PTR ppFunctionList)
 		return retne(po_ex_status);
 	pkcs11_spy_ex.version = po_ex->version;
 	*ppFunctionList = &pkcs11_spy_ex;
+	return retne(CKR_OK);
+}
+
+/* BioLib buffers are not logged; the PIN follows the explicit unsafe mode. */
+#define SPY_BIO_PROXY(name, parameters, arguments, log_inputs, log_outputs) \
+CK_RV name parameters \
+{ \
+	CK_RV rv; \
+	enter(#name); \
+	do { log_inputs; } while (0); \
+	if (!po_bio || !po_bio->name) \
+		return retne(CKR_FUNCTION_NOT_SUPPORTED); \
+	rv = po_bio->name arguments; \
+	do { log_outputs; } while (0); \
+	return retne(rv); \
+}
+
+SPY_BIO_PROXY(C_BIO_Initialize, (CK_BYTE flags), (flags),
+		spy_dump_ulong_in("flags", flags), (void)rv)
+SPY_BIO_PROXY(C_BIO_Finalize, (CK_VOID_PTR pReserved), (pReserved),
+		print_ptr_in("pReserved", pReserved), (void)rv)
+SPY_BIO_PROXY(C_BIO_ListScannersAdapters,
+		(CK_BIO_SCANNERS_ADAPTER_INFO_PTR pInfos, CK_ULONG_PTR pInfosCount),
+		(pInfos, pInfosCount),
+		print_ptr_in("pInfos", pInfos);
+		print_ptr_in("pInfosCount", pInfosCount),
+		spy_ex_dump_ulong_out("pInfosCount", pInfosCount, rv))
+SPY_BIO_PROXY(C_BIO_ListScanners,
+		(CK_BIO_SCANNER_INFO_PTR pInfos, CK_ULONG_PTR pInfosCount),
+		(pInfos, pInfosCount),
+		print_ptr_in("pInfos", pInfos);
+		print_ptr_in("pInfosCount", pInfosCount),
+		spy_ex_dump_ulong_out("pInfosCount", pInfosCount, rv))
+SPY_BIO_PROXY(C_BIO_SetDefaultScanner,
+		(CK_BIO_SCANNER_INFO_PTR pInfo), (pInfo),
+		print_ptr_in("pInfo", pInfo), (void)rv)
+SPY_BIO_PROXY(C_BIO_GetFingerprintInfo,
+		(CK_SESSION_HANDLE session, CK_BIO_FINGERPRINT_INFO_PTR pInfo,
+		 CK_BIO_FINGERPRINT_SCAN_PARAMS_PTR pScanParams,
+		 CK_ULONG_PTR pScanParamsCount),
+		(session, pInfo, pScanParams, pScanParamsCount),
+		spy_dump_ulong_in("session", session);
+		print_ptr_in("pInfo", pInfo);
+		print_ptr_in("pScanParams", pScanParams),
+		spy_ex_dump_ulong_out("pScanParamsCount", pScanParamsCount, rv))
+SPY_BIO_PROXY(C_BIO_SetFingerprintInit,
+		(CK_SESSION_HANDLE session, CK_BIO_FINGERPRINT_SCAN_PARAMS_PTR pParams,
+		 CK_ULONG paramsCount, CK_BIO_FINGERPRINT_TYPE_PTR pNextToScan),
+		(session, pParams, paramsCount, pNextToScan),
+		spy_dump_ulong_in("session", session);
+		spy_dump_ulong_in("paramsCount", paramsCount), (void)rv)
+SPY_BIO_PROXY(C_BIO_SetFingerprintStatus,
+		(CK_SESSION_HANDLE session, CK_BIO_FINGERPRINT_SCAN_STATUS_PTR pStatus,
+		 CK_ULONG_PTR pStatusCount),
+		(session, pStatus, pStatusCount),
+		spy_dump_ulong_in("session", session);
+		print_ptr_in("pStatus", pStatus),
+		spy_ex_dump_ulong_out("pStatusCount", pStatusCount, rv))
+SPY_BIO_PROXY(C_BIO_SetFingerprintScan,
+		(CK_SESSION_HANDLE session, CK_ULONG timeout,
+		 CK_BIO_FINGERPRINT_TYPE_PTR pNextToScan),
+		(session, timeout, pNextToScan),
+		spy_dump_ulong_in("session", session);
+		spy_dump_ulong_in("timeout", timeout), (void)rv)
+SPY_BIO_PROXY(C_BIO_SetFingerprintScanCancel,
+		(CK_SESSION_HANDLE session), (session),
+		spy_dump_ulong_in("session", session), (void)rv)
+SPY_BIO_PROXY(C_BIO_SetFingerprintFinal,
+		(CK_SESSION_HANDLE session, CK_ULONG_PTR pFingerprintId),
+		(session, pFingerprintId),
+		spy_dump_ulong_in("session", session), (void)rv)
+SPY_BIO_PROXY(C_BIO_UnblockFingerprint,
+		(CK_SESSION_HANDLE session), (session),
+		spy_dump_ulong_in("session", session), (void)rv)
+SPY_BIO_PROXY(C_BIO_Authenticate,
+		(CK_SESSION_HANDLE session, CK_UTF8CHAR_PTR pin, CK_ULONG pinLen,
+		 CK_ULONG timeout, CK_BYTE flags),
+		(session, pin, pinLen, timeout, flags),
+		spy_dump_ulong_in("session", session);
+		spy_ex_dump_redacted("pin", pin, pinLen);
+		spy_dump_ulong_in("timeout", timeout);
+		spy_dump_ulong_in("flags", flags), (void)rv)
+SPY_BIO_PROXY(C_BIO_AuthenticateCancel,
+		(CK_SESSION_HANDLE session), (session),
+		spy_dump_ulong_in("session", session), (void)rv)
+SPY_BIO_PROXY(C_BIO_Deauthenticate,
+		(CK_SESSION_HANDLE session, CK_BYTE flags), (session, flags),
+		spy_dump_ulong_in("session", session);
+		spy_dump_ulong_in("flags", flags), (void)rv)
+#undef SPY_BIO_PROXY
+
+static CK_FUNCTION_LIST_BIO pkcs11_spy_bio = {
+	{ 0, 0 },
+	C_BIO_GetFunctionListBio,
+	C_BIO_Initialize,
+	C_BIO_Finalize,
+	C_BIO_ListScannersAdapters,
+	C_BIO_ListScanners,
+	C_BIO_SetDefaultScanner,
+	C_BIO_GetFingerprintInfo,
+	C_BIO_SetFingerprintInit,
+	C_BIO_SetFingerprintStatus,
+	C_BIO_SetFingerprintScan,
+	C_BIO_SetFingerprintScanCancel,
+	C_BIO_SetFingerprintFinal,
+	C_BIO_UnblockFingerprint,
+	C_BIO_Authenticate,
+	C_BIO_AuthenticateCancel,
+	C_BIO_Deauthenticate
+};
+
+CK_RV
+C_BIO_GetFunctionListBio(CK_FUNCTION_LIST_BIO_PTR_PTR ppFunctionList)
+{
+	CK_RV rv;
+
+	if (po == NULL) {
+		rv = init_spy();
+		if (rv != CKR_OK)
+			return rv;
+	}
+	enter("C_BIO_GetFunctionListBio");
+	if (!ppFunctionList)
+		return retne(CKR_ARGUMENTS_BAD);
+	if (po_bio_status != CKR_OK)
+		return retne(po_bio_status);
+	pkcs11_spy_bio.version = po_bio->version;
+	*ppFunctionList = &pkcs11_spy_bio;
 	return retne(CKR_OK);
 }
 

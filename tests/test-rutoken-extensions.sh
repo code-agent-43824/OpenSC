@@ -36,6 +36,12 @@ $CC -I"$SOURCE_PATH/src" "$SOURCE_PATH/tests/rutoken-driver.c" \
 	-o "$driver" $driver_libs
 
 "$driver" "$spy" "$stub" "$log"
+grep -q 'C_BIO_GetFunctionListBio' "$log"
+grep -q 'C_BIO_Authenticate' "$log"
+if grep -q 'BIO_SECRET_PIN' "$log"; then
+	echo 'the spy log contains the BIO PIN'
+	exit 1
+fi
 
 # The hardware probe must run to the end against a module that provides only
 # part of the standard table.
@@ -136,6 +142,29 @@ expect() {
 		exit 1
 	fi
 }
+
+bio=$(run_tool --rutoken-bio-scanners)
+echo "$bio" | grep -q 'Rutoken BIO scanners: 1'
+echo "$bio" | grep -q '7: Test scanner'
+BIO_TEST_PIN=12345678 run_tool --rutoken-bio-authenticate \
+	--rutoken-bio-pin env:BIO_TEST_PIN --login --pin 12345678 > "$test_dir/bio-auth.txt"
+expect "$test_dir/bio-auth.txt" 'Rutoken BIO authentication successful'
+run_tool --rutoken-bio-deauthenticate > "$test_dir/bio-deauth.txt"
+expect "$test_dir/bio-deauth.txt" 'Rutoken BIO deauthenticated'
+run_tool --rutoken-bio-unblock --login --pin 12345678 > "$test_dir/bio-unblock.txt"
+expect "$test_dir/bio-unblock.txt" 'Rutoken BIO fingerprint unblocked'
+run_tool --rutoken-bio-scanners --rutoken-json > "$test_dir/bio.json"
+expect "$test_dir/bio.json" '"adapter":"Test scanner"'
+if run_tool --rutoken-bio-authenticate --rutoken-bio-pin 12345678 \
+		--login --pin 12345678 > "$test_dir/bio-invalid.txt" 2>&1; then
+	echo 'BIO PIN on the command line was accepted'
+	exit 1
+fi
+expect "$test_dir/bio-invalid.txt" 'give this PIN as env:<name>'
+if grep -q 'BIO_TEST_PIN' "$log"; then
+	echo 'the spy log contains the BIO PIN source'
+	exit 1
+fi
 
 info=$(run_tool --rutoken-info)
 name=$(run_tool --rutoken-name)
