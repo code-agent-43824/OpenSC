@@ -1227,6 +1227,19 @@ C_EX_PKCS7Verify(CK_SESSION_HANDLE hSession, CK_BYTE_PTR_PTR ppData,
 		rv = CKR_SIGNATURE_INVALID;
 	else
 		rv = cms_signers(ppSignerCertificates, pulSignerCertificatesCount);
+	if (rv == CKR_SIGNATURE_INVALID &&
+			getenv("RUTOKEN_STUB_PARTIAL_VERIFY_OUTPUTS")) {
+		*ppData = malloc(1);
+		if (!*ppData)
+			rv = CKR_HOST_MEMORY;
+		else {
+			allocated_buffers++;
+			rv = cms_signers(ppSignerCertificates,
+					pulSignerCertificatesCount);
+			if (rv == CKR_OK)
+				rv = CKR_SIGNATURE_INVALID;
+		}
+	}
 	if (rv == CKR_OK) {
 		*ppData = cms_verify.data;
 		*pulDataSize = cms_verify.length;
@@ -1247,6 +1260,8 @@ C_EX_PKCS7VerifyUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData,
 		return CKR_SESSION_HANDLE_INVALID;
 	if (!cms_verify.active || !cms_verify.detached)
 		return CKR_OPERATION_NOT_INITIALIZED;
+	if (getenv("RUTOKEN_STUB_FAIL_VERIFY_UPDATE"))
+		return CKR_DATA_INVALID;
 	if (!pData && ulDataSize) {
 		cms_verify_reset();
 		return CKR_ARGUMENTS_BAD;
@@ -1269,6 +1284,12 @@ C_EX_PKCS7VerifyFinal(CK_SESSION_HANDLE hSession,
 		return CKR_SESSION_HANDLE_INVALID;
 	if (!cms_verify.active || !cms_verify.detached)
 		return CKR_OPERATION_NOT_INITIALIZED;
+	if (getenv("RUTOKEN_STUB_FAIL_VERIFY_UPDATE")) {
+		rv = cms_signers(ppSignerCertificates,
+				pulSignerCertificatesCount);
+		cms_verify_reset();
+		return rv == CKR_OK ? CKR_DATA_INVALID : rv;
+	}
 	if (!ppSignerCertificates || !pulSignerCertificatesCount)
 		rv = CKR_ARGUMENTS_BAD;
 	else if (cms_verify.received != cms_verify.length ||

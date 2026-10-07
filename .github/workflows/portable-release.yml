@@ -189,6 +189,7 @@ jobs:
           cp -a softhsm-package/. artifact-testkit/softhsm-package/
           cp -a rutoken-test/. artifact-testkit/rutoken-test/
           cp scripts/portable/test.py artifact-testkit/test.py
+          cp tests/rutoken-cms-tamper-fuzz.py artifact-testkit/rutoken-cms-tamper-fuzz.py
           cp packaging/portable/TEST-KIT-README.txt artifact-testkit/README.txt
           printf '%s\n' 'linux-${{ matrix.arch }}' > artifact-testkit/platform.txt
           python3 artifact-testkit/test.py
@@ -236,6 +237,7 @@ jobs:
           Copy-Item softhsm-package\* artifact-testkit\softhsm-package -Recurse
           Copy-Item rutoken-test\* artifact-testkit\rutoken-test -Recurse
           Copy-Item scripts\portable\test.py artifact-testkit\test.py
+          Copy-Item tests\rutoken-cms-tamper-fuzz.py artifact-testkit\rutoken-cms-tamper-fuzz.py
           Copy-Item packaging\portable\TEST-KIT-README.txt artifact-testkit\README.txt
           Set-Content -LiteralPath artifact-testkit\platform.txt -Value 'windows-${{ matrix.arch }}' -NoNewline
           python artifact-testkit\test.py
@@ -274,6 +276,7 @@ jobs:
           cp -a softhsm-package/. artifact-testkit/softhsm-package/
           cp -a rutoken-test/. artifact-testkit/rutoken-test/
           cp scripts/portable/test.py artifact-testkit/test.py
+          cp tests/rutoken-cms-tamper-fuzz.py artifact-testkit/rutoken-cms-tamper-fuzz.py
           cp packaging/portable/TEST-KIT-README.txt artifact-testkit/README.txt
           printf '%s\n' macos-universal > artifact-testkit/platform.txt
           python3 artifact-testkit/test.py

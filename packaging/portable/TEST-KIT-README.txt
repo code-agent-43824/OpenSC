@@ -8,6 +8,7 @@ It contains:
   softhsm-package/  the matching ordinary SoftHSM portable module;
   rutoken-test/     ABI stub and driver for all Rutoken C_EX_* operations;
   test.py           the direct and pkcs11-spy integration scenario;
+  rutoken-cms-tamper-fuzz.py  synthetic PKCS #7 stub-envelope stress test;
   platform.txt      the target selected by the test launcher.
 
 Run it from any directory with the platform Python 3 interpreter:

@@ -4159,7 +4159,7 @@ rutoken_verify_outputs(const struct rutoken_request *request, CK_RV rv,
 
 	/* outputs exist also when only the chain could not be verified */
 	if (rv != CKR_OK && rv != CKR_CERT_CHAIN_NOT_VERIFIED)
-		return 0;
+		goto release;
 	if (data && opt_output)
 		rutoken_write_file(opt_output, data, data_length);
 	if (opt_rutoken_json) {
@@ -4196,10 +4196,12 @@ rutoken_verify_outputs(const struct rutoken_request *request, CK_RV rv,
 				printf(" written to %s", path);
 			printf("\n");
 		}
-		failed |= rutoken_free(signers[i].pData);
 	}
 	if (opt_rutoken_json)
 		json_end("]");
+release:
+	for (i = 0; signers && i < count; i++)
+		failed |= rutoken_free(signers[i].pData);
 	failed |= rutoken_free((CK_BYTE_PTR)signers);
 	failed |= rutoken_free(data);
 	return failed;
@@ -4280,8 +4282,8 @@ rutoken_pkcs7_verify(CK_SESSION_HANDLE session,
 		if (rv != CKR_OK) {
 			failed = rutoken_error("C_EX_PKCS7VerifyUpdate", rv);
 			RUTOKEN_CALL(C_EX_PKCS7VerifyFinal, (session, &signers, &count));
-			signers = NULL;
-			count = 0;
+			failed |= rutoken_verify_outputs(request, rv, NULL, 0,
+					signers, count);
 			goto out;
 		}
 		rv = RUTOKEN_CALL(C_EX_PKCS7VerifyFinal, (session, &signers,

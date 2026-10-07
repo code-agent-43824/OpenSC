@@ -477,6 +477,21 @@ def main() -> None:
         if rutoken_test_dir is not None:
             verify_rutoken_extensions(rutoken_test_dir, spy, platform, work_dir)
             verify_rutoken_cli(tool, spy, rutoken_test_dir, platform, work_dir, env)
+            if platform.startswith("windows-"):
+                rutoken_stub = rutoken_test_dir / "rutoken-stub.dll"
+            elif platform == "macos-universal":
+                rutoken_stub = rutoken_test_dir / "rutoken-stub.dylib"
+            else:
+                rutoken_stub = rutoken_test_dir / "rutoken-stub.so"
+            stress = subprocess.run(
+                [sys.executable, str(testkit_dir / "rutoken-cms-tamper-fuzz.py"),
+                 str(tool), str(rutoken_stub), "--spy", str(spy), "--runs", "50"],
+                env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, errors="replace",
+            )
+            print(stress.stdout, end="")
+            if stress.returncode:
+                raise RuntimeError("Rutoken CMS tamper stress test failed")
             verify_spy_config(tool, spy, softhsm, work_dir, env)
 
         scenario(tool, softhsm, work_dir, "direct", env)

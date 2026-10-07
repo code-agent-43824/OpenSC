@@ -40,6 +40,8 @@ dist_noinst_SCRIPTS = common.sh \
 			      test-pkcs11-tool-import.sh \
 			      test-pkcs11-tool-uri-with-slot-id.sh \
 			      test-rutoken-extensions.sh \
+			      test-rutoken-cms-tamper-fuzz.sh \
+			      rutoken-cms-tamper-fuzz.py \
 			      rutoken-stub.c \
 			      rutoken-driver.c \
 			      rutoken-hw-probe.c
@@ -53,6 +55,7 @@ TESTS = \
 		test-pkcs11-tool-sym-crypt-test.sh
 if ENABLE_SHARED
 TESTS += test-rutoken-extensions.sh
+TESTS += test-rutoken-cms-tamper-fuzz.sh
 endif
 if ENABLE_OPENSSL
 TESTS += \
