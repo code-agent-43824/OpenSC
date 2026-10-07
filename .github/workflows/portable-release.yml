@@ -369,6 +369,7 @@ jobs:
                 ;;
               opensc-testkit-*.zip)
                 zipinfo -1 "$archive" | grep -Fx 'test.py' >/dev/null
+                zipinfo -1 "$archive" | grep -Fx 'rutoken-cms-tamper-fuzz.py' >/dev/null
                 zipinfo -1 "$archive" | grep -Fx 'platform.txt' >/dev/null
                 zipinfo -1 "$archive" | grep -E '^opensc-package/(bin|lib)/pkcs11-(tool|spy)' >/dev/null
                 zipinfo -1 "$archive" | grep -Fx 'opensc-package/lib/pkcs11-spy.conf' >/dev/null
@@ -383,7 +384,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
-          notes='Portable pkcs11-tool and pkcs11-spy packages plus independently downloadable test kits for Linux x64/ARM64, Windows x86/x64/ARM64, and macOS universal. pkcs11-spy now reads the commented pkcs11-spy.conf template beside its module before environment variables, with safe fallback for absent or invalid files; every clean runner checks both precedence paths. The kit also includes the matching ordinary SoftHSM module and a harmless Rutoken ABI stub. Verification invokes every one of the 33 Rutoken C_EX_* operations through pkcs11-spy, checks the complete 34-field table, logging and redaction, then runs the ordinary direct and spy data-object scenarios.'
+          notes='Portable pkcs11-tool and pkcs11-spy packages plus independently downloadable test kits for Linux x64/ARM64, Windows x86/x64/ARM64, and macOS universal. This release frees Rutoken PKCS#7 verify output buffers also on error paths. Each clean runner checks 104 synthetic envelope variants 50 times each, including valid, modified, and truncated data, plus partial-output and failed-update cleanup through pkcs11-spy. These synthetic tests do not prove behavior of the proprietary Rutoken CMS parser or a physical token. The kit also checks the extended Rutoken ABI and direct/spy SoftHSM scenarios.'
           scripts/portable/check-release-tag.sh
           gh release create "$RELEASE_TAG" release-assets/* \
             --target "$GITHUB_SHA" \
