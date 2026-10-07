@@ -6,6 +6,7 @@ on:
       - '**.c'
       - '**.h'
       - '**.sh'
+      - doc/tools/pkcs11-tool.1.xml
       - .github/workflows/external-pkcs11.yaml
       - '**.am'
       - configure.ac
@@ -14,6 +15,7 @@ on:
       - '**.c'
       - '**.h'
       - '**.sh'
+      - doc/tools/pkcs11-tool.1.xml
       - .github/workflows/external-pkcs11.yaml
       - '**.am'
       - configure.ac
