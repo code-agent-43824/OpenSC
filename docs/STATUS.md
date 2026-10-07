@@ -118,3 +118,12 @@ spy проверена с библиотекой Рутокен 2.21.3.0 без 
 <https://github.com/code-agent-43824/OpenSC/actions/runs/37582949474>.
 Первый запуск `37534552457` завершился ошибкой только в `test-manpage.sh`:
 новые параметры BIO отсутствовали в `doc/tools/pkcs11-tool.1.xml`.
+
+Portable-релиз `0.27.1-portable.7` опубликован:
+<https://github.com/code-agent-43824/OpenSC/releases/tag/0.27.1-portable.7>.
+Workflow <https://github.com/code-agent-43824/OpenSC/actions/runs/37585267520>
+успешен: шесть сборок, шесть проверок test kit на чистых runner и публикация
+12 ZIP с `SHA256SUMS`. Первый прогон `37584353696` остановился из-за
+устаревшей строки успешного результата в `scripts/portable/test.py`;
+исправление — `8a0d21ffa`. Опубликованный Windows x64 ZIP повторно скачан;
+его SHA-256 и состав проверены. Остальные ZIP отдельно не скачивались.

@@ -2,9 +2,9 @@
 
 Portable CI для `pkcs11-tool` и `pkcs11-spy` завершен и находится в `master`.
 
-- Успешный workflow: <https://github.com/code-agent-43824/OpenSC/actions/runs/37122145880>
-- Опубликованный релиз: <https://github.com/code-agent-43824/OpenSC/releases/tag/0.27.1-portable.6>
-  (этап 5 включен).
+- Успешный workflow: <https://github.com/code-agent-43824/OpenSC/actions/runs/37585267520>
+- Опубликованный релиз: <https://github.com/code-agent-43824/OpenSC/releases/tag/0.27.1-portable.7>
+  (этап 5 и начальные BIO-функции включены; аппаратная приёмка BIO впереди).
 - В Actions и релизе: шесть product packages и шесть автономных test kits.
 - Каждый verify runner запускает точный test kit, который затем публикуется.
 - Все release-assets повторно скачаны; `SHA256SUMS` и состав проверены, Linux x64 kit повторно запущен.
@@ -24,8 +24,7 @@ Portable CI для `pkcs11-tool` и `pkcs11-spy` завершен и наход�
   `--write-tests`: журнал, текст сертификата, PKCS#7, CSR, генерация ключа,
   подпись и хранение объектов разобраны на уровне APDU.
 - Этап 4 реализован: `--rutoken-pkcs7-sign`, `--rutoken-pkcs7-verify`,
-  `--rutoken-csr` и `--rutoken-confirm-by-touch`; биометрия и разделы Flash
-  отложены.
+  `--rutoken-csr` и `--rutoken-confirm-by-touch`; разделы Flash отложены.
 - Probe 3 прогнана на Рутокен ЭЦП 3.0 3127 USB во всех режимах, включая
   `--modify-tests`; изменяющие функции разобраны в `docs/RUTOKEN-APDU.md` и
   `docs/RUTOKEN-FUNCTIONS.md`, заглушка отвечает как устройство.
@@ -47,6 +46,9 @@ Portable CI для `pkcs11-tool` и `pkcs11-spy` завершен и наход�
   `0.27.1-portable.6`.
 - Workflow выпуска требует новый тег и не перезаписывает существующие теги и
   релизы.
+- BIO-расширение spy и начальные команды BIO в `pkcs11-tool` входят в `.7`.
+  Их проверили на заглушке и в portable CI; реальное BIO-устройство пока
+  не проверяли. Регистрация отпечатка и био-ключ остаются открытыми.
 - Локальный `pkcs11-spy.conf` имеет приоритет над environment/Registry;
   некорректный файл безопасно возвращает прежнее поведение. Шаблон и обе ветки
   проверены во всех шести product/test-kit artifacts.
