@@ -142,7 +142,7 @@ def verify_rutoken_extensions(
         raise RuntimeError(
             f"Rutoken extension acceptance failed with exit code {result.returncode}"
         )
-    if "PASS: all Rutoken extended spy wrappers" not in result.stdout:
+    if "PASS: Rutoken extended and BIO spy wrappers preserve table order and return values" not in result.stdout:
         raise RuntimeError("Rutoken extension driver did not report success")
 
     log = log_path.read_text(encoding="utf-8", errors="replace")
