@@ -634,6 +634,43 @@
 				</varlistentry>
 
 				<varlistentry>
+					<term><option>--rutoken-bio-scanners</option></term>
+					<listitem><para>List available Rutoken BioLib fingerprint scanners.</para></listitem>
+				</varlistentry>
+
+				<varlistentry>
+					<term><option>--rutoken-bio-authenticate</option></term>
+					<listitem><para>Authenticate with a fingerprint scanner. Requires
+					<option>--login</option>. An optional PIN may be supplied with
+					<option>--rutoken-bio-pin</option>.</para></listitem>
+				</varlistentry>
+
+				<varlistentry>
+					<term><option>--rutoken-bio-deauthenticate</option></term>
+					<listitem><para>End BioLib fingerprint authentication.</para></listitem>
+				</varlistentry>
+
+				<varlistentry>
+					<term><option>--rutoken-bio-unblock</option></term>
+					<listitem><para>Unblock fingerprint use. Requires
+					<option>--login</option>.</para></listitem>
+				</varlistentry>
+
+				<varlistentry>
+					<term><option>--rutoken-bio-pin</option> <replaceable>env:name</replaceable></term>
+					<listitem><para>Optional PIN for
+					<option>--rutoken-bio-authenticate</option>, read from the named
+					environment variable.</para></listitem>
+				</varlistentry>
+
+				<varlistentry>
+					<term><option>--rutoken-bio-timeout</option> <replaceable>seconds</replaceable></term>
+					<listitem><para>Fingerprint scan timeout for
+					<option>--rutoken-bio-authenticate</option>, in seconds
+					(default 30).</para></listitem>
+				</varlistentry>
+
+				<varlistentry>
 					<term>
 						<option>--puk</option> <replaceable>puk</replaceable>
 					</term>
