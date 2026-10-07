@@ -127,3 +127,20 @@ Workflow <https://github.com/code-agent-43824/OpenSC/actions/runs/37585267520>
 устаревшей строки успешного результата в `scripts/portable/test.py`;
 исправление — `8a0d21ffa`. Опубликованный Windows x64 ZIP повторно скачан;
 его SHA-256 и состав проверены. Остальные ZIP отдельно не скачивались.
+
+## CMS verify и релиз `.8` (2026-10-07)
+
+Коммит `c39147195` освобождает частично выданные выходные буферы после ошибок
+`C_EX_PKCS7Verify`, `VerifyUpdate` и `VerifyFinal`; алгоритмы проверки подписи
+не изменены. Синтетический CMS-тест включён в `make check` и portable test kit.
+Исходная аппаратная ошибка SIGSEGV с библиотекой Рутокен не воспроизведена;
+связь с исправленной утечкой не доказана.
+
+Проверка исходного коммита: <https://github.com/code-agent-43824/OpenSC/actions/runs/37640303520>.
+Релиз [`0.27.1-portable.8`](https://github.com/code-agent-43824/OpenSC/releases/tag/0.27.1-portable.8)
+собран workflow <https://github.com/code-agent-43824/OpenSC/actions/runs/37650747350>
+из `fbd880205`: шесть сборок, шесть проверок на чистых runner и публикация
+успешны. В релизе 6 product ZIP, 6 test-kit ZIP и `SHA256SUMS`; 12 записей
+контрольных сумм совпали с SHA-256 опубликованных assets. Release-job проверил
+состав каждого ZIP. Отдельная загрузка всех ZIP и аппаратная проверка не
+выполнены.

@@ -2,12 +2,15 @@
 
 Portable CI для `pkcs11-tool` и `pkcs11-spy` завершен и находится в `master`.
 
-- Успешный workflow: <https://github.com/code-agent-43824/OpenSC/actions/runs/37585267520>
-- Опубликованный релиз: <https://github.com/code-agent-43824/OpenSC/releases/tag/0.27.1-portable.7>
-  (этап 5 и начальные BIO-функции включены; аппаратная приёмка BIO впереди).
+- Успешный workflow: <https://github.com/code-agent-43824/OpenSC/actions/runs/37650747350>
+- Опубликованный релиз: <https://github.com/code-agent-43824/OpenSC/releases/tag/0.27.1-portable.8>
+  (исправлено освобождение выходных буферов CMS verify на ошибке; аппаратная
+  приёмка CMS и BIO ещё впереди).
 - В Actions и релизе: шесть product packages и шесть автономных test kits.
 - Каждый verify runner запускает точный test kit, который затем публикуется.
-- Все release-assets повторно скачаны; `SHA256SUMS` и состав проверены, Linux x64 kit повторно запущен.
+- Для `.8` все 12 ZIP прошли проверку состава в release-job; записи
+  `SHA256SUMS` совпали с SHA-256 опубликованных assets. Архивы отдельно не
+  скачивались, test kit вне CI повторно не запускался.
 - Каждый test kit содержит нативную заглушку Рутокен и driver, который проверяет все 34 поля таблицы и вызывает через spy все 33 операции.
 - Активны только portable workflow и прямые тесты `pkcs11-tool` с внешними модулями; остальные 14 workflow отключены.
 - Расширения Рутокен 2.19.0.0 описаны в `docs/RUTOKEN-EXTENSIONS.md`, реализация разбита на шесть этапов в `docs/PLAN.md`.
