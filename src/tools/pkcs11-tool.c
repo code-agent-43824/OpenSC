@@ -4497,7 +4497,8 @@ rutoken_set_name(CK_SESSION_HANDLE session,
 	if (rv != CKR_OK) {
 		rutoken_error("C_EX_SetTokenName", rv);
 		if (rv == CKR_USER_NOT_LOGGED_IN)
-			rutoken_hint("the name is changed under the user login");
+			rutoken_hint("the token name changes under the user login; use "
+					"--login --login-type user, not so");
 		if (opt_rutoken_json)
 			json_end("}");
 		return 1;
@@ -8968,7 +8969,7 @@ static CK_RV write_object(CK_SESSION_HANDLE session)
 			size_t len;
 
 			if (sc_format_oid(&oid, opt_application_id))
-				util_fatal("Invalid OID \"%s\"", opt_application_id);
+				util_fatal("Invalid OID \"%s\" for --application-id; give a dotted OID, or use --application-label for a text name", opt_application_id);
 
 			if (sc_asn1_encode_object_id(&oid_buf, &len, &oid))
 				util_fatal("Cannot encode OID \"%s\"", opt_application_id);
@@ -10583,7 +10584,7 @@ static int read_object(CK_SESSION_HANDLE session)
 		size_t oid_buf_len;
 
 		if (sc_format_oid(&oid, opt_application_id))
-			util_fatal("Invalid OID \"%s\"", opt_application_id);
+			util_fatal("Invalid OID \"%s\" for --application-id; give a dotted OID, or use --application-label for a text name", opt_application_id);
 
 		if (sc_asn1_encode_object_id(&oid_buf, &oid_buf_len, &oid))
 			util_fatal("Cannot encode OID \"%s\"", opt_application_id);
@@ -11133,7 +11134,7 @@ static int delete_object(CK_SESSION_HANDLE session)
 		size_t oid_buf_len;
 
 		if (sc_format_oid(&oid, opt_application_id))
-			util_fatal("Invalid OID '%s'", opt_application_id);
+			util_fatal("Invalid OID '%s' for --application-id; give a dotted OID, or use --application-label for a text name", opt_application_id);
 
 		if (sc_asn1_encode_object_id(&oid_buf, &oid_buf_len, &oid))
 			util_fatal("Cannot encode OID \"%s\"", opt_application_id);

@@ -363,6 +363,10 @@ expect "$text" 'Rutoken name set: "Stage 5 name" (12 bytes)'
 expect "$text" 'Rutoken name: Stage 5 name'
 fails --rutoken-set-name 'No login'
 expect "$text" '--rutoken-set-name needs --login'
+# under the SO login the device refuses the name; the hint points at the user
+# shellcheck disable=SC2086
+fails $so_login --rutoken-set-name 'SO cannot'
+expect "$text" 'use --login --login-type user, not so'
 
 license_in="$test_dir/license-in.bin"
 printf '%072d' 0 | tr 0 L > "$license_in"
@@ -456,6 +460,13 @@ if run_tool --read-object --type data --id abcdef > "$text" 2>&1; then
 	exit 1
 fi
 expect "$text" 'a private object is only visible after --login'
+
+# a non-OID --application-id is rejected with a hint about --application-label.
+if run_tool --read-object --type data --application-id notanoid > "$text" 2>&1; then
+	echo "a non-OID --application-id must fail"
+	exit 1
+fi
+expect "$text" 'use --application-label for a text name'
 
 # 1.3 an SO login opens a R/W session instead of failing on the R/O one.
 run_tool --login --login-type so --so-pin 87654321 --list-objects > "$text" 2>&1
