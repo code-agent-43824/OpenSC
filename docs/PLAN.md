@@ -141,6 +141,14 @@ BIO-проксирование в spy и базовые команды BioLib в
 - [x] Получить прогон probe на реальном Рутокене с APDU-трассой pcscd и
   закрыть вопросы из `RUTOKEN-FUNCTIONS.md`; команды токена описаны в
   `RUTOKEN-APDU.md` для будущей собственной реализации.
-- [ ] Проверить доступный профиль на portable SoftHSM fork, затем выполнить
-  отдельную аппаратную приемку flash, лицензий, журнала и аутентификаторов на
-  совместимом Рутокене; hardware skip должен быть видимым.
+- [x] Аппаратная приёмка `0.27.1-portable.8` на Рутокен ЭЦП (fw 34.2, lib
+  2.21.1.0) 2026-10-09: чтения `C_EX_*` (info, name, pin-status, license,
+  journal, cert-text, JSON), крипто-roundtrip (ГОСТ/RSA/EC/Ed25519, подпись,
+  шифрование, хэш), CSR и полная цепочка CMS (attached/detached/hw-hash/
+  chain-id, негативы — tampered → `CKR_SIGNATURE_INVALID` без segfault),
+  команды этапа 5 (set-name под USER, set-local-pin, token-manage,
+  set-license под SO, change-pin) — все успешно. Детали в
+  `RUTOKEN-FUNCTIONS.md` («Полевой отчёт»).
+- [ ] Аппаратная приёмка flash и биометрии на токене, где они есть: у
+  проверенного Рутокен ЭЦП нет ни Flash (`--rutoken-volumes` → `0x54`), ни
+  сканера (`--rutoken-bio-scanners` → `0x1b7`); `hardware skip` виден.

@@ -506,3 +506,6 @@ PKCS#7 и изменяющих функций разобраны в `RUTOKEN-APD
 `--rutoken-volume-access` и `--rutoken-format-drive` дают
 `CKR_FUNCTION_NOT_SUPPORTED` (разделы Flash отложены, см. `PLAN.md`);
 `--rutoken-pkcs7-sign` поддерживает только ГОСТ-ключи, RSA — `CKR_KEY_TYPE_INCONSISTENT`.
+
+
+Аппаратная приёмка `0.27.1-portable.8` (2026-10-09, Рутокен ЭЦП, fw 34.2, lib 2.21.1.0): чтения `C_EX_*`, крипто-roundtrip (ГОСТ/RSA/EC/Ed25519), CSR, полная цепочка CMS с негативами (подделка → `CKR_SIGNATURE_INVALID`, без segfault) и команды этапа 5 прошли успешно. Наблюдения (не дефекты): `--rutoken-set-name` меняет имя только под Пользователем (под SO — `CKR_USER_NOT_LOGGED_IN`); `--application-id` принимает только OID (для произвольной метки — `--application-label`). Flash и сканера на токене нет (`--rutoken-volumes` → `0x54`, `--rutoken-bio-scanners` → `0x1b7`). Полный разбор прогона — в `STATUS.md`.

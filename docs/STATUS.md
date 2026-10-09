@@ -144,3 +144,33 @@ Workflow <https://github.com/code-agent-43824/OpenSC/actions/runs/37585267520>
 контрольных сумм совпали с SHA-256 опубликованных assets. Release-job проверил
 состав каждого ZIP. Отдельная загрузка всех ZIP и аппаратная проверка не
 выполнены.
+
+## Аппаратная приёмка `.8` на Рутокен ЭЦП (2026-10-09)
+
+Владелец развернул `opensc-testkit`/`opensc-portable` `linux-x64` из релиза
+`0.27.1-portable.8` (SHA-256 сверены по `SHA256SUMS`) и прогнал форковый
+`pkcs11-tool` против реального Рутокен ЭЦП (fw 34.2, lib 2.21.1.0).
+
+Все команды чтения `C_EX_*` вернули `RC=0`: `--rutoken-info` (профиль
+`RUTOKEN_ECP`, память 87456/131072, retries 10/10, checksum valid),
+`--rutoken-name`, `--rutoken-pin-status`, `--rutoken-license 1`,
+`--rutoken-journal` (пополнился записью `SIGNATURE` после ГОСТ-подписи),
+`--rutoken-cert-text` и JSON. Крипто-roundtrip зелёный: генерация и
+подпись/проверка ГОСТ-2012-256, RSA-2048 (PKCS#1 и PSS), EC P-256, Ed25519;
+RSA шифрование PKCS#1 и OAEP(SHA-256) — байт-в-байт; хэш SHA-256 и
+ГОСТ-3411-2012-256; `--generate-random`; data-объекты write/read/delete.
+`--rutoken-csr` для ГОСТ (217 Б, с атрибутами 237 Б). Полная цепочка CMS:
+свой ГОСТ-CA → leaf из токен-CSR → подпись attached/detached/hw-hash/chain-id
+→ проверка всех `CKR_OK`, данные байт-в-байт; негативы — подделка
+`CKR_SIGNATURE_INVALID` (без segfault), чужой CA `CKR_CERT_CHAIN_NOT_VERIFIED`,
+`check-signature-only` без CA — valid. Команды этапа 5 (`set-name` под USER,
+`set-local-pin`, `token-manage`, `set-license` под SO, `change-pin`) — все
+успешно.
+
+Наблюдения (не дефекты): `--rutoken-set-name` под SO-логином даёт
+`CKR_USER_NOT_LOGGED_IN` (0x101) — имя меняется только под Пользователем;
+`--application-id` принимает только OID (для произвольной метки —
+`--application-label`); `use-trusted-certs-from-token` даёт
+`CKR_CERT_CHAIN_NOT_VERIFIED` без KTI-объектов на токене. На токене без Flash
+и сканера `--rutoken-volumes` → `0x54`, `--rutoken-bio-scanners` → `0x1b7`.
+Аппаратная приёмка flash и BIO требует токена, где они есть.
