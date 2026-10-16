@@ -174,3 +174,20 @@ RSA шифрование PKCS#1 и OAEP(SHA-256) — байт-в-байт; хэ�
 `CKR_CERT_CHAIN_NOT_VERIFIED` без KTI-объектов на токене. На токене без Flash
 и сканера `--rutoken-volumes` → `0x54`, `--rutoken-bio-scanners` → `0x1b7`.
 Аппаратная приёмка flash и BIO требует токена, где они есть.
+
+## Релиз `.9` (2026-10-16)
+
+Релиз [`0.27.1-portable.9`](https://github.com/code-agent-43824/OpenSC/releases/tag/0.27.1-portable.9)
+собран workflow <https://github.com/code-agent-43824/OpenSC/actions/runs/38864273170>
+из `11f0609`: проверка тега, шесть сборок, шесть проверок на чистых runner и
+публикация успешны. В нём подсказки по прогону `.8`: для
+`--rutoken-set-name` под SO-логином и для `--application-id`, не являющегося
+OID. Все 12 ZIP скачаны заново: хэши из `SHA256SUMS` совпали, вложенных ZIP
+нет, шаблон `pkcs11-spy.conf` во всех архивах, обе подсказки во всех шести
+`pkcs11-tool`; Linux x64 test kit повторно прошёл вне CI.
+
+Перед выпуском dispatch отвечал `Actions has been disabled for this
+repository`: GitHub сам отключил workflows в форке («Workflows on this fork
+have been disabled»), хотя настройка репозитория разрешала все действия.
+Владелец включил их кнопкой на вкладке Actions. В upstream ничего не
+отправляется.

@@ -2,12 +2,17 @@
 
 Portable CI для `pkcs11-tool` и `pkcs11-spy` завершен и находится в `master`.
 
-- Успешный workflow: <https://github.com/code-agent-43824/OpenSC/actions/runs/37650747350>
-- Опубликованный релиз: <https://github.com/code-agent-43824/OpenSC/releases/tag/0.27.1-portable.8>
-  (исправлено освобождение выходных буферов CMS verify на ошибке). Принят на
-  Рутокен ЭЦП 2026-10-09: чтения, крипто-roundtrip, CSR, полная цепочка CMS
-  (включая негативы) и команды этапа 5 — все успешно. Аппаратная приёмка
-  flash и BIO ещё впереди — на проверенном токене их нет.
+- Успешный workflow: <https://github.com/code-agent-43824/OpenSC/actions/runs/38864273170>
+- Опубликованный релиз: <https://github.com/code-agent-43824/OpenSC/releases/tag/0.27.1-portable.9>
+  (`.8` и подсказки для `--rutoken-set-name` под SO и не-OID
+  `--application-id`). Все 12 ZIP скачаны заново, хэши совпали, Linux x64
+  test kit повторно прошёл вне CI.
+- `.8` принят на Рутокен ЭЦП 2026-10-09: чтения, крипто-roundtrip, CSR,
+  полная цепочка CMS (включая негативы) и команды этапа 5 — все успешно.
+  Аппаратная приёмка flash и BIO ещё впереди — на проверенном токене их нет.
+- GitHub может сам отключить Actions в форке («Workflows on this fork have
+  been disabled»); тогда dispatch отвечает `Actions has been disabled for this
+  repository`, и владелец включает их кнопкой на вкладке Actions.
 - В Actions и релизе: шесть product packages и шесть автономных test kits.
 - Каждый verify runner запускает точный test kit, который затем публикуется.
 - Для `.8` все 12 ZIP прошли проверку состава в release-job; записи
