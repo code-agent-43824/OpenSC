@@ -758,7 +758,26 @@
 					<term>
 						<option>--derive</option>
 					</term>
-					<listitem><para>Derive a secret key using another key and some data.</para></listitem>
+					<listitem><para>Derive a secret key using another key and some data.
+					With a GOST R 34.10-2012 private key (<option>--id</option> or
+					<option>--label</option>) this is the VKO key agreement of RFC 7836:
+					<literal>GOSTR3410-12-DERIVE</literal> (the default for these keys,
+					VKO_GOSTR3410_2012_256 for 256- and 512-bit keys, a 32-byte result)
+					or <literal>VKO-GOSTR3410-12-512</literal> (VKO_GOSTR3410_2012_512,
+					512-bit keys, a 64-byte result), chosen with <option>-m</option>. The
+					peer public key is read from <option>--input-file</option>: the
+					raw 64- or 128-byte little-endian X|Y of <literal>CKA_VALUE</literal>
+					(as <option>--read-object --type pubkey</option> writes it), the same
+					in a DER OCTET STRING, or a SubjectPublicKeyInfo in DER or PEM. The
+					UKM is given with <option>--gost-ukm</option>, the KDF with
+					<option>--gost-kdf</option>, and the type of the derived session key
+					with <option>--key-type</option>: <literal>GOST28147</literal>
+					(default), <literal>MAGMA</literal>, <literal>KUZNECHIK</literal> or
+					<literal>GENERIC</literal>, and for VKO-GOSTR3410-12-512
+					<literal>GENERIC</literal> (default), <literal>MAGMA-TWIN</literal>
+					or <literal>KUZNECHIK-TWIN</literal>. The key is extractable and its
+					value is written to <option>--output-file</option> or standard
+					output, so both sides can compare it.</para></listitem>
 				</varlistentry>
 
 				<varlistentry>
@@ -1077,6 +1096,30 @@
 						<option>--info-file</option> <replaceable>filename</replaceable>
 					</term>
 					<listitem><para>Specify the file containing the info for HKDF (optional)</para></listitem>
+				</varlistentry>
+
+				<varlistentry>
+					<term>
+						<option>--gost-ukm</option> <replaceable>hex</replaceable>
+					</term>
+					<listitem><para>The UKM of GOST R 34.10-2012 key agreement with
+					<option>--derive</option>, at least 8 bytes in hex; both sides use
+					the same value. RFC 7836 recommends 64 bits or more, and 128 bits
+					or more for VKO-GOSTR3410-12-512 with static keys; the CryptoPro
+					diversification of RFC 4357 uses exactly 64 bits.</para></listitem>
+				</varlistentry>
+
+				<varlistentry>
+					<term>
+						<option>--gost-kdf</option> <replaceable>kdf</replaceable>
+					</term>
+					<listitem><para>The KDF that GOSTR3410-12-DERIVE applies to the VKO
+					result: <literal>null</literal> (default, the VKO value itself),
+					<literal>4357</literal> (<literal>CKM_KDF_4357</literal>),
+					<literal>cpdiversify</literal> (<literal>CKD_CPDIVERSIFY_KDF</literal>,
+					RFC 4357 6.5) or <literal>gostr3411-2012-256</literal>
+					(<literal>CKM_KDF_GOSTR3411_2012_256</literal>, RFC 7836 4.5).
+					VKO-GOSTR3410-12-512 takes none.</para></listitem>
 				</varlistentry>
 
 				<varlistentry>

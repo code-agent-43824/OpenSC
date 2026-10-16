@@ -823,6 +823,38 @@ spy_dump_mechanism_in(const char *name, CK_MECHANISM_PTR pMechanism, bool is_c_m
 		fprintf(spy_output, "[in] %s->pParameter->ulMacLen = %lu\n", name, param->ulMACLen);
 		break;
 	}
+	case CKM_GOSTR3410_12_DERIVE: {
+		/* TC26 5.11: a byte string of little-endian 32-bit fields -- kdf,
+		 * public key length, public key, UKM length, UKM.  Both the key and
+		 * the UKM are public. */
+		const CK_BYTE *b = pMechanism->pParameter;
+		CK_ULONG len = pMechanism->ulParameterLen, kdf, publen = 0, ukmlen = 0;
+		const char *kdf_name;
+#define SPY_LE32(p) ((CK_ULONG)(p)[0] | (CK_ULONG)(p)[1] << 8 | \
+		(CK_ULONG)(p)[2] << 16 | (CK_ULONG)(p)[3] << 24)
+
+		if (b && len >= 12)
+			publen = SPY_LE32(b + 4);
+		if (!b || len < 12 || publen > len - 12 ||
+				(ukmlen = SPY_LE32(b + 8 + publen)) != len - 12 - publen) {
+			snprintf(param_name, sizeof(param_name), "%s->pParameter[ulParameterLen]", name);
+			spy_dump_string_in(param_name, pMechanism->pParameter, pMechanism->ulParameterLen);
+			fprintf(spy_output, "(the length does not match the TC26 kdf | key | UKM layout)\n");
+			break;
+		}
+		kdf = SPY_LE32(b);
+		kdf_name = lookup_enum(CKD_T, kdf);
+		fprintf(spy_output, "[in] %s->pParameter: kdf = 0x%lx (%s)\n", name, kdf,
+				kdf_name ? kdf_name : "unknown");
+		fprintf(spy_output, "[in] %s->pParameter: public key[%lu] = ", name, publen);
+		print_generic(spy_output, 0, (CK_VOID_PTR)(b + 8), publen, NULL, -1);
+		fprintf(spy_output, "[in] %s->pParameter: UKM[%lu] = ", name, ukmlen);
+		print_generic(spy_output, 0, (CK_VOID_PTR)(b + 12 + publen), ukmlen, NULL, -1);
+#undef SPY_LE32
+		break;
+	}
+	case CKM_VKO_GOSTR3410_2012_512:
+		/* TC26 5.12: CK_ECDH1_DERIVE_PARAMS with the UKM in pSharedData */
 	case CKM_ECDH1_DERIVE:
 	case CKM_ECDH1_COFACTOR_DERIVE: {
 		if (pMechanism->ulParameterLen != sizeof(CK_ECDH1_DERIVE_PARAMS)) {

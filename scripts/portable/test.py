@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import base64
 import json
 import os
 import re
@@ -382,6 +383,65 @@ def verify_rutoken_cli(
     unsafe = unsafe_log.read_text(encoding="utf-8", errors="replace")
     if secrets["RUTOKEN_TEST_LOCAL_PIN"] not in unsafe:
         raise RuntimeError("PKCS11SPY_UNSAFE_SECRETS did not reveal the PIN")
+
+    # GOST R 34.10-2012 key agreement: the stub answers the TC26 3.13 and
+    # RFC 7836 B.8 control examples with their results, so these show that
+    # the shipped tool encodes the request as the specifications do.
+    bob_256 = bytes.fromhex(
+        "4fc5f57ab09aa6f0f7433edefbb4bcbe4368d64fcf5ec69452982cfaef61fdc6"
+        "ae37764bc9f910905995e92389537ff3b632938a4a6b8e5d1bee20dee371e258")
+    kek_256 = bytes.fromhex(
+        "13c0bcd51e449b2c205df05dfdcacee854b6c4e9c557f13acff603935992f9c2")
+    rfc_b = bytes.fromhex(
+        "192fe183b9713a077253c72c8735de2ea42a3dbc66ea317838b65fa32523cd5e"
+        "fca974eda7c863f4954d1147f1f2b25c395fce1c129175e876d132e94ed5a651"
+        "04883b414c9b592ec4dc84826f07d0b6d9006dda176ce48c391e3f97d102e03b"
+        "b598bf132a228a45f7201aba08fc524a2d77e43a362ab022ad4028f75bde3b79")
+    kek_512 = bytes.fromhex(
+        "79f002a96940ce7bde3259a52e015297adaad84597a0d205b50e3e1719f97bfa"
+        "7ee1d2661fa9979a5aa235b558a7e6d9f88f982dd63fc35a8ec0dd5e242d3bdf")
+    peer_raw = work_dir / "rutoken-vko-peer.raw"
+    peer_raw.write_bytes(bob_256)
+    spki = (b"\x30\x51\x30\x0a\x06\x08\x2a\x85\x03\x07\x01\x01\x01\x01"
+            b"\x03\x43\x00\x04\x40" + bob_256)
+    peer_pem = work_dir / "rutoken-vko-peer.pem"
+    peer_pem.write_text("-----BEGIN PUBLIC KEY-----\n"
+                        + base64.encodebytes(spki).decode("ascii")
+                        + "-----END PUBLIC KEY-----\n", encoding="ascii")
+    derived = work_dir / "rutoken-vko.bin"
+    derive = login + ["--derive", "--id", "0102", "--output-file", str(derived)]
+    for peer in (peer_raw, peer_pem):
+        tool_output(derive + ["-m", "GOSTR3410-12-DERIVE", "--gost-ukm",
+                              "0102030405060708", "--input-file", str(peer)])
+        if derived.read_bytes() != kek_256:
+            raise RuntimeError(f"GOST VKO from {peer.name} differs from TC26 3.13")
+    for kdf in ("4357", "cpdiversify", "gostr3411-2012-256"):
+        tool_output(derive + ["--gost-kdf", kdf, "--gost-ukm", "0102030405060708",
+                              "--input-file", str(peer_raw), "--key-type", "KUZNECHIK"])
+        if len(derived.read_bytes()) != 32:
+            raise RuntimeError(f"GOST VKO with --gost-kdf {kdf} is not 32 bytes")
+    if "needs --gost-ukm" not in tool_output(
+            derive + ["--input-file", str(peer_raw)], expected_code=1):
+        raise RuntimeError("pkcs11-tool GOST derive without UKM did not fail")
+    rfc_peer = work_dir / "rutoken-vko-rfc.raw"
+    rfc_peer.write_bytes(rfc_b)
+    env_512 = cli_env.copy()
+    env_512["RUTOKEN_STUB_GOST512"] = "1"
+    result = subprocess.run(
+        [str(tool), "--module", str(spy), "--slot", "7", *derive,
+         "-m", "VKO-GOSTR3410-12-512", "--gost-ukm", "1d80603c8544c727",
+         "--input-file", str(rfc_peer)],
+        env=env_512, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    )
+    if result.returncode != 0 or derived.read_bytes() != kek_512:
+        print(result.stdout.decode("utf-8", errors="replace"), end="")
+        raise RuntimeError("GOST VKO-512 differs from RFC 7836 B.8")
+    vko_log = log_path.read_text(encoding="utf-8", errors="replace")
+    for expected in ("[in] pMechanism->pParameter: kdf = 0x1 (CKD_NULL)",
+                     "(CKM_KDF_GOSTR3411_2012_256)",
+                     "CKM_VKO_GOSTR3410_2012_512"):
+        if expected not in vko_log:
+            raise RuntimeError(f"the pkcs11-spy log lacks: {expected}")
 
     print("PASS: pkcs11-tool Rutoken commands through pkcs11-spy, stage 5 "
           "included")

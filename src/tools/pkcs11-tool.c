@@ -252,6 +252,8 @@ enum {
 	OPT_TAG_BITS,
 	OPT_SALT_FILE,
 	OPT_INFO_FILE,
+	OPT_GOST_UKM,
+	OPT_GOST_KDF,
 	OPT_PUBLIC_KEY_INFO,
 	OPT_RUTOKEN_INFO,
 	OPT_RUTOKEN_NAME,
@@ -397,6 +399,8 @@ static const struct option options[] = {
 	{ "tag-bits-len", 	1, NULL, 		OPT_TAG_BITS},
 	{ "salt-file", 		1, NULL,		OPT_SALT_FILE},
 	{ "info-file",		1, NULL,		OPT_INFO_FILE},
+	{ "gost-ukm",		1, NULL,		OPT_GOST_UKM},
+	{ "gost-kdf",		1, NULL,		OPT_GOST_KDF},
 	{ "public-key-info",	0, NULL,		OPT_PUBLIC_KEY_INFO},
 	{ "rutoken-info",	0, NULL,		OPT_RUTOKEN_INFO},
 	{ "rutoken-name",	0, NULL,		OPT_RUTOKEN_NAME},
@@ -543,6 +547,8 @@ static const char *option_help[] = {
 		"Specify the required length (in bits) for the authentication tag for AEAD ciphers",
 		"Specify the file containing the salt for HKDF (optional)",
 		"Specify the file containing the info for HKDF (optional)",
+		"UKM in hex for GOST R 34.10-2012 key agreement (--derive), at least 8 bytes",
+		"KDF for GOSTR3410-12-DERIVE: null (default), 4357, cpdiversify or gostr3411-2012-256",
 		"When reading a public key, try to read PUBLIC_KEY_INFO (DER encoding of SPKI)",
 		"Show extended Rutoken token information",
 		"Show the extended Rutoken token name",
@@ -670,6 +676,8 @@ static const char *opt_aad = NULL;
 static unsigned long opt_tag_bits = 0;
 static const char *opt_salt_file = NULL;
 static const char *opt_info_file = NULL;
+static const char *opt_gost_ukm = NULL;
+static const char *opt_gost_kdf = NULL;
 static int opt_public_key_info = 0; /* return pubkey as SPKI DER */
 static struct pkcs11_uri *opt_uri = NULL;
 static int opt_uri_with_slot_id = 0; /* include slot-id in PKCS#11 URI */
@@ -1545,6 +1553,12 @@ int main(int argc, char * argv[])
 			break;
 		case OPT_INFO_FILE:
 			opt_info_file = optarg;
+			break;
+		case OPT_GOST_UKM:
+			opt_gost_ukm = optarg;
+			break;
+		case OPT_GOST_KDF:
+			opt_gost_kdf = optarg;
 			break;
 		case OPT_PUBLIC_KEY_INFO:
 			opt_public_key_info = 1;
@@ -9768,6 +9782,250 @@ derive_hkdf(CK_SESSION_HANDLE session, CK_OBJECT_HANDLE key)
 	return newkey;
 }
 
+/* One definite-length DER element: tag, value and the rest of the input. */
+static int
+gost_der_next(const unsigned char **p, const unsigned char *end,
+		unsigned char *tag, const unsigned char **value, size_t *length)
+{
+	const unsigned char *q = *p;
+	size_t len, i, n;
+
+	if (end - q < 2)
+		return -1;
+	*tag = *q++;
+	len = *q++;
+	if (len & 0x80) {
+		n = len & 0x7F;
+		if (n == 0 || n > 2 || (size_t)(end - q) < n)
+			return -1;
+		for (len = 0, i = 0; i < n; i++)
+			len = (len << 8) | *q++;
+	}
+	if ((size_t)(end - q) < len)
+		return -1;
+	*value = q;
+	*length = len;
+	*p = q + len;
+	return 0;
+}
+
+/* The peer's GOST R 34.10-2012 public key: the raw little-endian X|Y that
+ * CKA_VALUE holds (and "--read-object --type pubkey" writes), that value in
+ * a DER OCTET STRING, or a SubjectPublicKeyInfo (RFC 9215), in DER or PEM. */
+static void
+gost_peer_key(const char *path, CK_ULONG expected, unsigned char *out)
+{
+	unsigned char buf[4096];
+	const unsigned char *p, *end, *v, *alg;
+#ifdef ENABLE_OPENSSL
+	unsigned char *pem = NULL;
+#endif
+	size_t len = 0, vlen, alen;
+	unsigned char tag;
+	FILE *f;
+
+	if (!path)
+		util_fatal("GOST key agreement needs the peer public key in --input-file");
+	f = fopen(path, "rb");
+	if (!f)
+		util_fatal("Cannot open %s: %m", path);
+	len = fread(buf, 1, sizeof(buf), f);
+	fclose(f);
+	p = buf;
+	end = buf + len;
+#ifdef ENABLE_OPENSSL
+	if (len > 10 && !memcmp(buf, "-----BEGIN", 10)) {
+		BIO *bio = BIO_new_mem_buf(buf, (int)len);
+		char *name = NULL, *header = NULL;
+		long pem_len = 0;
+
+		if (!bio || !PEM_read_bio(bio, &name, &header, &pem, &pem_len))
+			util_fatal("%s: cannot read the PEM block", path);
+		BIO_free(bio);
+		OPENSSL_free(name);
+		OPENSSL_free(header);
+		p = pem;
+		end = pem + pem_len;
+		len = (size_t)pem_len;
+	}
+#endif
+	if (len == expected) {
+		memcpy(out, p, expected);
+		goto done;
+	}
+	if (gost_der_next(&p, end, &tag, &v, &vlen))
+		goto bad;
+	if (tag == 0x30) {
+		/* SubjectPublicKeyInfo: AlgorithmIdentifier, then a BIT STRING
+		 * with the OCTET STRING of the key */
+		const unsigned char *q = v, *qend = v + vlen;
+
+		if (gost_der_next(&q, qend, &tag, &alg, &alen) || tag != 0x30 ||
+				gost_der_next(&q, qend, &tag, &v, &vlen) || tag != 0x03 ||
+				vlen < 1 || v[0] != 0)
+			goto bad;
+		p = v + 1;
+		end = v + vlen;
+		if (gost_der_next(&p, end, &tag, &v, &vlen))
+			goto bad;
+	}
+	if (tag != 0x04 || vlen != expected)
+		goto bad;
+	memcpy(out, v, expected);
+done:
+#ifdef ENABLE_OPENSSL
+	OPENSSL_free(pem);
+#endif
+	return;
+bad:
+	util_fatal("%s: expected the %lu-byte GOST R 34.10-2012-%s public key "
+			"(raw CKA_VALUE, DER OCTET STRING or SubjectPublicKeyInfo)",
+			path, (unsigned long)expected, expected == 128 ? "512" : "256");
+}
+
+static CK_ULONG
+gost_kdf_type(const char *name)
+{
+	if (!name || !strcasecmp(name, "null"))
+		return CKD_NULL;
+	if (!strcasecmp(name, "4357"))
+		return CKM_KDF_4357;
+	if (!strcasecmp(name, "cpdiversify"))
+		return CKD_CPDIVERSIFY_KDF;
+	if (!strcasecmp(name, "gostr3411-2012-256"))
+		return CKM_KDF_GOSTR3411_2012_256;
+	util_fatal("--gost-kdf: use null, 4357, cpdiversify or gostr3411-2012-256, "
+			"not \"%s\"", name);
+	return CKD_NULL;
+}
+
+static void
+gost_put_le32(CK_BYTE *p, CK_ULONG value)
+{
+	p[0] = (CK_BYTE)value;
+	p[1] = (CK_BYTE)(value >> 8);
+	p[2] = (CK_BYTE)(value >> 16);
+	p[3] = (CK_BYTE)(value >> 24);
+}
+
+/* VKO GOST R 34.10-2012 (RFC 7836 4.3) through the TC26 mechanisms.
+ * CKM_GOSTR3410_12_DERIVE (VKO_GOSTR3410_2012_256, 256- and 512-bit keys,
+ * 256-bit result) takes a byte string of little-endian 32-bit fields: kdf,
+ * public key length, public key, UKM length, UKM (TC26 extension 5.11).
+ * CKM_VKO_GOSTR3410_2012_512 (512-bit keys, 512-bit result) takes
+ * CK_ECDH1_DERIVE_PARAMS with the UKM in pSharedData (5.12). */
+static CK_OBJECT_HANDLE
+derive_gost_key(CK_SESSION_HANDLE session, CK_OBJECT_HANDLE key,
+		CK_MECHANISM_TYPE mech_type)
+{
+	CK_KEY_TYPE base_type = getKEY_TYPE(session, key);
+	CK_ULONG pub_len = base_type == CKK_GOSTR3410_512 ? 128 : 64;
+	int vko512 = mech_type == CKM_VKO_GOSTR3410_2012_512;
+	unsigned char peer[128], ukm[64];
+	size_t ukm_len = sizeof(ukm);
+	CK_ULONG kdf = gost_kdf_type(opt_gost_kdf);
+	CK_OBJECT_CLASS key_class = CKO_SECRET_KEY;
+	CK_KEY_TYPE new_type;
+	CK_ULONG value_len = 0;
+	CK_BBOOL _true = TRUE, _false = FALSE;
+	CK_ATTRIBUTE template[8];
+	CK_ECDH1_DERIVE_PARAMS vko_params;
+	CK_BYTE *params = NULL;
+	CK_ULONG params_len = 0;
+	CK_MECHANISM mech;
+	CK_OBJECT_HANDLE newkey = CK_INVALID_HANDLE;
+	int n = 0;
+	CK_RV rv;
+
+	if (base_type != CKK_GOSTR3410 && base_type != CKK_GOSTR3410_512)
+		util_fatal("%s needs a GOST R 34.10-2012 private key",
+				p11_mechanism_to_name(mech_type));
+	if (vko512 && base_type != CKK_GOSTR3410_512)
+		util_fatal("VKO-GOSTR3410-12-512 needs a 512-bit GOST R 34.10-2012 key");
+	if (vko512 && kdf != CKD_NULL)
+		util_fatal("VKO-GOSTR3410-12-512 takes no KDF; drop --gost-kdf");
+	if (!opt_gost_ukm)
+		util_fatal("GOST key agreement needs --gost-ukm <hex>, at least 8 bytes");
+	if (sc_hex_to_bin(opt_gost_ukm, ukm, &ukm_len) || ukm_len < 8)
+		util_fatal("--gost-ukm: give 8 to %u bytes in hex", (unsigned)sizeof(ukm));
+	if (kdf == CKD_CPDIVERSIFY_KDF && ukm_len != 8)
+		fprintf(stderr, "Warning: the CryptoPro diversification of RFC 4357 6.5 "
+				"uses a 64-bit UKM; --gost-ukm has %lu bytes\n",
+				(unsigned long)ukm_len);
+	gost_peer_key(opt_input, pub_len, peer);
+
+	/* the key the result becomes; the value is extractable so it can be
+	 * written out and compared with the other side */
+	if (!opt_key_type)
+		new_type = vko512 ? CKK_GENERIC_SECRET : CKK_GOST28147;
+	else if (!vko512 && !strcasecmp(opt_key_type, "GOST28147"))
+		new_type = CKK_GOST28147;
+	else if (!vko512 && !strcasecmp(opt_key_type, "MAGMA"))
+		new_type = CKK_MAGMA;
+	else if (!vko512 && (!strcasecmp(opt_key_type, "KUZNECHIK") ||
+				!strcasecmp(opt_key_type, "KUZNYECHIK")))
+		new_type = CKK_KUZNECHIK;
+	else if (vko512 && !strcasecmp(opt_key_type, "MAGMA-TWIN"))
+		new_type = CKK_MAGMA_TWIN_KEY;
+	else if (vko512 && (!strcasecmp(opt_key_type, "KUZNECHIK-TWIN") ||
+				!strcasecmp(opt_key_type, "KUZNYECHIK-TWIN")))
+		new_type = CKK_KUZNECHIK_TWIN_KEY;
+	else if (!strcasecmp(opt_key_type, "GENERIC"))
+		new_type = CKK_GENERIC_SECRET;
+	else
+		util_fatal("--key-type for %s: use %s", p11_mechanism_to_name(mech_type),
+				vko512 ? "GENERIC, MAGMA-TWIN or KUZNECHIK-TWIN" :
+				"GOST28147, MAGMA, KUZNECHIK or GENERIC");
+	if (new_type == CKK_GENERIC_SECRET)
+		value_len = vko512 ? 64 : 32;
+
+	FILL_ATTR(template[n], CKA_CLASS, &key_class, sizeof(key_class)); n++;
+	FILL_ATTR(template[n], CKA_KEY_TYPE, &new_type, sizeof(new_type)); n++;
+	FILL_ATTR(template[n], CKA_TOKEN, &_false, sizeof(_false)); n++;
+	FILL_ATTR(template[n], CKA_PRIVATE, &_false, sizeof(_false)); n++;
+	FILL_ATTR(template[n], CKA_SENSITIVE, &_false, sizeof(_false)); n++;
+	FILL_ATTR(template[n], CKA_EXTRACTABLE, &_true, sizeof(_true)); n++;
+	if (value_len) {
+		FILL_ATTR(template[n], CKA_VALUE_LEN, &value_len, sizeof(value_len));
+		n++;
+	}
+
+	if (vko512) {
+		memset(&vko_params, 0, sizeof(vko_params));
+		vko_params.kdf = CKD_NULL;
+		vko_params.pSharedData = ukm;
+		vko_params.ulSharedDataLen = (CK_ULONG)ukm_len;
+		vko_params.pPublicData = peer;
+		vko_params.ulPublicDataLen = pub_len;
+		mech.pParameter = &vko_params;
+		mech.ulParameterLen = sizeof(vko_params);
+	} else {
+		params_len = 4 + 4 + pub_len + 4 + (CK_ULONG)ukm_len;
+		params = malloc(params_len);
+		if (!params)
+			util_fatal("Out of memory");
+		gost_put_le32(params, kdf);
+		gost_put_le32(params + 4, pub_len);
+		memcpy(params + 8, peer, pub_len);
+		gost_put_le32(params + 8 + pub_len, (CK_ULONG)ukm_len);
+		memcpy(params + 12 + pub_len, ukm, ukm_len);
+		mech.pParameter = params;
+		mech.ulParameterLen = params_len;
+	}
+	mech.mechanism = mech_type;
+
+	rv = p11->C_DeriveKey(session, &mech, key, template, n, &newkey);
+	free(params);
+	if (rv == CKR_MECHANISM_INVALID || rv == CKR_MECHANISM_PARAM_INVALID ||
+			rv == CKR_TEMPLATE_INCONSISTENT)
+		fprintf(stderr, "Hint: check that \"pkcs11-tool -M\" lists %s with "
+				"derive and that the token accepts the KDF and key type\n",
+				p11_mechanism_to_name(mech_type));
+	if (rv != CKR_OK)
+		p11_fatal("C_DeriveKey", rv);
+	return newkey;
+}
+
 static void
 derive_key(CK_SLOT_ID slot, CK_SESSION_HANDLE session, CK_OBJECT_HANDLE key)
 {
@@ -9778,7 +10036,12 @@ derive_key(CK_SLOT_ID slot, CK_SESSION_HANDLE session, CK_OBJECT_HANDLE key)
 	ssize_t sz;
 	CK_KEY_TYPE key_type = getKEY_TYPE(session, key);
 
-	if (!opt_mechanism_used)
+	/* a GOST key agrees keys by VKO; the first derive mechanism of the
+	 * token could be ECDH, which a GOST key cannot use */
+	if (!opt_mechanism_used &&
+			(key_type == CKK_GOSTR3410 || key_type == CKK_GOSTR3410_512))
+		opt_mechanism = CKM_GOSTR3410_12_DERIVE;
+	else if (!opt_mechanism_used)
 		if (!find_mechanism(slot, CKF_DERIVE|opt_allow_sw, NULL, 0, &opt_mechanism))
 			util_fatal("Derive mechanism not supported");
 
@@ -9789,6 +10052,10 @@ derive_key(CK_SLOT_ID slot, CK_SESSION_HANDLE session, CK_OBJECT_HANDLE key)
 		break;
 	case CKM_HKDF_DERIVE:
 		derived_key = derive_hkdf(session, key);
+		break;
+	case CKM_GOSTR3410_12_DERIVE:
+	case CKM_VKO_GOSTR3410_2012_512:
+		derived_key = derive_gost_key(session, key, opt_mechanism);
 		break;
 	default:
 		util_fatal("Key type %lu does not support derive", key_type);
@@ -13798,6 +14065,7 @@ static struct mech_info	p11_mechanisms[] = {
 	{ CKM_GOSTR3410_512_KEY_PAIR_GEN,	"GOSTR3410-512-KEY-PAIR-GEN", NULL, MF_UNKNOWN },
 	{ CKM_GOSTR3410_512,	"GOSTR3410_512", NULL, MF_UNKNOWN },
 	{ CKM_GOSTR3410_12_DERIVE,	"GOSTR3410-12-DERIVE", NULL, MF_UNKNOWN },
+	{ CKM_VKO_GOSTR3410_2012_512,	"VKO-GOSTR3410-12-512", NULL, MF_UNKNOWN },
 	{ CKM_GOSTR3410_WITH_GOSTR3411_12_256,	"GOSTR3410-WITH-GOSTR3411-12-256", NULL, MF_UNKNOWN },
 	{ CKM_GOSTR3410_WITH_GOSTR3411_12_512,	"GOSTR3410-WITH-GOSTR3411-12-512", NULL, MF_UNKNOWN },
 	{ CKM_GOSTR3411,		"GOSTR3411", NULL, MF_UNKNOWN },

@@ -43,6 +43,7 @@ dist_noinst_SCRIPTS = common.sh \
 			      test-rutoken-cms-tamper-fuzz.sh \
 			      rutoken-cms-tamper-fuzz.py \
 			      rutoken-stub.c \
+			      rutoken-gost-vectors.h \
 			      rutoken-driver.c \
 			      rutoken-hw-probe.c
 

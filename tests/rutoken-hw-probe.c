@@ -24,6 +24,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "pkcs11/pkcs11-rutoken.h"
+#include "rutoken-gost-vectors.h"
 
 #include <dlfcn.h>
 #include <errno.h>
@@ -38,7 +39,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define PROBE_VERSION 3
+#define PROBE_VERSION 4
 #define SENTINEL 0xA5
 #define MAX_OBJECTS 64
 #define EXTENDED_FUNCTIONS 34
@@ -76,7 +77,8 @@ static struct {
 	int modify_tests;
 	int default_pins;
 	const char *so_pin_env;
-} opt = { NULL, 0, 0, 0, 500, 0, NULL, NULL, 0, NULL, 0, NULL, 0, 0, NULL };
+	int derive_tests;
+} opt = { NULL, 0, 0, 0, 500, 0, NULL, NULL, 0, NULL, 0, NULL, 0, 0, NULL, 0 };
 
 static void *module;
 static CK_FUNCTION_LIST_PTR f;
@@ -439,6 +441,8 @@ parse_options(int argc, char **argv)
 			opt.assume_yes = 1;
 		} else if (!strcmp(argv[i], "--modify-tests")) {
 			opt.modify_tests = 1;
+		} else if (!strcmp(argv[i], "--derive-tests")) {
+			opt.derive_tests = 1;
 		} else if (!strcmp(argv[i], "--default-pins")) {
 			opt.default_pins = 1;
 		} else if (!strcmp(argv[i], "--so-pin-env") && i + 1 < argc) {
@@ -455,8 +459,9 @@ parse_options(int argc, char **argv)
 		return 1;
 	if (opt.modify_tests)
 		return opt.module != NULL && !opt.login && !opt.pkcs7_id &&
-				!opt.write_tests;
-	if ((opt.pkcs7_id || opt.write_tests || opt.pin_env) && !opt.login)
+				!opt.write_tests && !opt.derive_tests;
+	if ((opt.pkcs7_id || opt.write_tests || opt.derive_tests || opt.pin_env) &&
+			!opt.login)
 		return 0;
 	if (opt.default_pins || opt.so_pin_env)
 		return 0;
@@ -468,7 +473,8 @@ usage(const char *name)
 {
 	fprintf(stderr,
 		"usage: %s [--slot ID] [--login] [--pause-ms N] [--show-text]\n"
-		"          [--pkcs7 HEX_CKA_ID] [--write-tests] [--save-dir DIR] MODULE\n"
+		"          [--pkcs7 HEX_CKA_ID] [--write-tests] [--derive-tests]\n"
+		"          [--save-dir DIR] MODULE\n"
 		"       %s --modify-tests [--default-pins] [--slot ID] [--pause-ms N]\n"
 		"          MODULE\n\n"
 		"Reads Rutoken extension data through MODULE (librtpkcs11ecp.so or\n"
@@ -485,6 +491,11 @@ usage(const char *name)
 		"                   certificate, check the journal, certificate text,\n"
 		"                   PKCS #7 and CSR with them and delete them; asks for\n"
 		"                   confirmation\n"
+		"  --derive-tests   with --login: GOST R 34.10-2012 key agreement (VKO):\n"
+		"                   the TC26 and RFC 7836 control examples with their\n"
+		"                   private keys imported as session objects, then two\n"
+		"                   session key pairs of the token derived both ways for\n"
+		"                   every KDF and key type; only session objects\n"
 		"  --save-dir DIR   save the journal, signatures, certificate and CSR\n"
 		"                   into DIR, created if missing\n"
 		"  --pin-env NAME   with --login: take the PIN from this environment\n"
@@ -2290,6 +2301,337 @@ probe_write_tests(CK_SLOT_ID slot)
 }
 
 /*
+ * --derive-tests: GOST R 34.10-2012 key agreement (VKO, RFC 7836 4.3) through
+ * CKM_GOSTR3410_12_DERIVE and CKM_VKO_GOSTR3410_2012_512.  Only session
+ * objects are created, so nothing on the token changes.  First the control
+ * examples of the TC26 PKCS#11 extension (3.13, 3.14) and RFC 7836 (B.7,
+ * B.8) with their private keys imported as session objects; then two key
+ * pairs made by the token, whose two sides must agree on every KDF and key
+ * type.
+ */
+
+static const CK_BYTE streebog_256_oid[] = {
+	0x06, 0x08, 0x2a, 0x85, 0x03, 0x07, 0x01, 0x01, 0x02, 0x02 };
+static const CK_BYTE streebog_512_oid[] = {
+	0x06, 0x08, 0x2a, 0x85, 0x03, 0x07, 0x01, 0x01, 0x02, 0x03 };
+
+static const struct {
+	CK_ULONG kdf;
+	const char *name;
+} derive_kdfs[] = {
+	{ CKD_NULL, "CKD_NULL" },
+	{ CKM_KDF_4357, "CKM_KDF_4357" },
+	{ CKD_CPDIVERSIFY_KDF, "CKD_CPDIVERSIFY_KDF" },
+	{ CKM_KDF_GOSTR3411_2012_256, "CKM_KDF_GOSTR3411_2012_256" },
+};
+
+static const char *
+derive_mechanism_name(CK_MECHANISM_TYPE mechanism)
+{
+	return mechanism == CKM_VKO_GOSTR3410_2012_512 ?
+		"CKM_VKO_GOSTR3410_2012_512" : "CKM_GOSTR3410_12_DERIVE";
+}
+
+static const char *
+derive_key_type_name(CK_KEY_TYPE type)
+{
+	switch (type) {
+	case CKK_GOST28147: return "CKK_GOST28147";
+	case CKK_MAGMA: return "CKK_MAGMA";
+	case CKK_KUZNECHIK: return "CKK_KUZNECHIK";
+	case CKK_MAGMA_TWIN_KEY: return "CKK_MAGMA_TWIN_KEY";
+	case CKK_KUZNECHIK_TWIN_KEY: return "CKK_KUZNECHIK_TWIN_KEY";
+	default: return "CKK_GENERIC_SECRET";
+	}
+}
+
+static void
+derive_le32(CK_BYTE *p, CK_ULONG value)
+{
+	p[0] = (CK_BYTE)value;
+	p[1] = (CK_BYTE)(value >> 8);
+	p[2] = (CK_BYTE)(value >> 16);
+	p[3] = (CK_BYTE)(value >> 24);
+}
+
+/* One C_DeriveKey into an extractable session key; its value is read into
+ * out (at most 64 bytes) and the key is destroyed. */
+static CK_RV
+derive_value(CK_SESSION_HANDLE session, CK_MECHANISM_TYPE type,
+		CK_OBJECT_HANDLE base, CK_ULONG kdf, const CK_BYTE *peer,
+		CK_ULONG peer_len, const CK_BYTE *ukm, CK_ULONG ukm_len,
+		CK_KEY_TYPE key_type, CK_BYTE *out, CK_ULONG *out_len)
+{
+	CK_OBJECT_CLASS secret_class = CKO_SECRET_KEY;
+	CK_BBOOL yes = CK_TRUE, no = CK_FALSE;
+	CK_ULONG value_len = type == CKM_VKO_GOSTR3410_2012_512 ? 64 : 32;
+	CK_ATTRIBUTE template[7] = {
+		{ CKA_CLASS, &secret_class, sizeof(secret_class) },
+		{ CKA_KEY_TYPE, &key_type, sizeof(key_type) },
+		{ CKA_TOKEN, &no, sizeof(no) },
+		{ CKA_PRIVATE, &no, sizeof(no) },
+		{ CKA_SENSITIVE, &no, sizeof(no) },
+		{ CKA_EXTRACTABLE, &yes, sizeof(yes) },
+		{ CKA_VALUE_LEN, &value_len, sizeof(value_len) }
+	};
+	CK_ULONG count = key_type == CKK_GENERIC_SECRET ? 7 : 6;
+	CK_BYTE params[12 + 128 + 16];
+	CK_ECDH1_DERIVE_PARAMS vko;
+	CK_MECHANISM mechanism = { type, NULL_PTR, 0 };
+	CK_OBJECT_HANDLE secret = CK_INVALID_HANDLE;
+	CK_ATTRIBUTE value = { CKA_VALUE, out, 64 };
+	CK_RV rv;
+
+	*out_len = 0;
+	if (peer_len > 128 || ukm_len > 16)
+		return CKR_ARGUMENTS_BAD;
+	if (type == CKM_VKO_GOSTR3410_2012_512) {
+		memset(&vko, 0, sizeof(vko));
+		vko.kdf = CKD_NULL;
+		vko.pSharedData = (CK_BYTE_PTR)ukm;
+		vko.ulSharedDataLen = ukm_len;
+		vko.pPublicData = (CK_BYTE_PTR)peer;
+		vko.ulPublicDataLen = peer_len;
+		mechanism.pParameter = &vko;
+		mechanism.ulParameterLen = sizeof(vko);
+	} else {
+		/* TC26 5.11: little-endian 32-bit kdf, key length, key, UKM
+		 * length, UKM */
+		derive_le32(params, kdf);
+		derive_le32(params + 4, peer_len);
+		memcpy(params + 8, peer, peer_len);
+		derive_le32(params + 8 + peer_len, ukm_len);
+		memcpy(params + 12 + peer_len, ukm, ukm_len);
+		mechanism.pParameter = params;
+		mechanism.ulParameterLen = 12 + peer_len + ukm_len;
+	}
+	if (!HAVE(f, C_DeriveKey))
+		return CKR_FUNCTION_NOT_SUPPORTED;
+	rv = f->C_DeriveKey(session, &mechanism, base, template, count, &secret);
+	if (rv != CKR_OK)
+		return rv;
+	rv = f->C_GetAttributeValue(session, secret, &value, 1);
+	if (rv == CKR_OK)
+		*out_len = value.ulValueLen;
+	if (HAVE(f, C_DestroyObject))
+		f->C_DestroyObject(session, secret);
+	return rv;
+}
+
+static CK_OBJECT_HANDLE
+import_vko_private_key(CK_SESSION_HANDLE session,
+		const struct gost_vko_vector *vector)
+{
+	CK_OBJECT_CLASS private_class = CKO_PRIVATE_KEY;
+	CK_KEY_TYPE key_type = vector->key_type;
+	CK_BBOOL yes = CK_TRUE, no = CK_FALSE;
+	int big = key_type == CKK_GOSTR3410_512;
+	/* the template of the TC26 examples; some tokens also want the hash */
+	CK_ATTRIBUTE template[8] = {
+		{ CKA_CLASS, &private_class, sizeof(private_class) },
+		{ CKA_KEY_TYPE, &key_type, sizeof(key_type) },
+		{ CKA_TOKEN, &no, sizeof(no) },
+		{ CKA_PRIVATE, &yes, sizeof(yes) },
+		{ CKA_DERIVE, &yes, sizeof(yes) },
+		{ CKA_VALUE, (CK_VOID_PTR)vector->private_key, vector->private_len },
+		{ CKA_GOSTR3410_PARAMS, (CK_VOID_PTR)vector->paramset,
+			vector->paramset_len },
+		{ CKA_GOSTR3411_PARAMS, (CK_VOID_PTR)(big ? streebog_512_oid :
+				streebog_256_oid),
+			big ? sizeof(streebog_512_oid) : sizeof(streebog_256_oid) }
+	};
+	CK_OBJECT_HANDLE key = CK_INVALID_HANDLE;
+	CK_RV rv;
+
+	if (!HAVE(f, C_CreateObject))
+		return CK_INVALID_HANDLE;
+	rv = f->C_CreateObject(session, template, 7, &key);
+	show_rv("C_CreateObject(private key, TC26 template)", rv);
+	if (rv == CKR_TEMPLATE_INCOMPLETE || rv == CKR_TEMPLATE_INCONSISTENT ||
+			rv == CKR_ATTRIBUTE_VALUE_INVALID) {
+		rv = f->C_CreateObject(session, template, 8, &key);
+		show_rv("C_CreateObject(private key, with CKA_GOSTR3411_PARAMS)", rv);
+	}
+	return rv == CKR_OK ? key : CK_INVALID_HANDLE;
+}
+
+static int
+generate_vko_pair(CK_SESSION_HANDLE session, int big,
+		CK_OBJECT_HANDLE *public_key, CK_OBJECT_HANDLE *private_key,
+		CK_BYTE *value, CK_ULONG *value_len)
+{
+	CK_OBJECT_CLASS public_class = CKO_PUBLIC_KEY;
+	CK_OBJECT_CLASS private_class = CKO_PRIVATE_KEY;
+	CK_KEY_TYPE key_type = big ? CKK_GOSTR3410_512 : CKK_GOSTR3410;
+	CK_BBOOL yes = CK_TRUE, no = CK_FALSE;
+	const CK_BYTE *curve = big ? gost_vko_paramset_512a : gost_vko_paramset_cpa;
+	CK_ULONG curve_len = big ? sizeof(gost_vko_paramset_512a) :
+		sizeof(gost_vko_paramset_cpa);
+	const CK_BYTE *hash = big ? streebog_512_oid : streebog_256_oid;
+	CK_ULONG hash_len = big ? sizeof(streebog_512_oid) : sizeof(streebog_256_oid);
+	CK_ATTRIBUTE public_template[] = {
+		{ CKA_CLASS, &public_class, sizeof(public_class) },
+		{ CKA_KEY_TYPE, &key_type, sizeof(key_type) },
+		{ CKA_TOKEN, &no, sizeof(no) },
+		{ CKA_PRIVATE, &no, sizeof(no) },
+		{ CKA_GOSTR3410_PARAMS, (CK_VOID_PTR)curve, curve_len },
+		{ CKA_GOSTR3411_PARAMS, (CK_VOID_PTR)hash, hash_len }
+	};
+	CK_ATTRIBUTE private_template[] = {
+		{ CKA_CLASS, &private_class, sizeof(private_class) },
+		{ CKA_KEY_TYPE, &key_type, sizeof(key_type) },
+		{ CKA_TOKEN, &no, sizeof(no) },
+		{ CKA_PRIVATE, &yes, sizeof(yes) },
+		{ CKA_DERIVE, &yes, sizeof(yes) },
+		{ CKA_GOSTR3410_PARAMS, (CK_VOID_PTR)curve, curve_len },
+		{ CKA_GOSTR3411_PARAMS, (CK_VOID_PTR)hash, hash_len }
+	};
+	CK_MECHANISM mechanism = { big ? CKM_GOSTR3410_512_KEY_PAIR_GEN :
+		CKM_GOSTR3410_KEY_PAIR_GEN, NULL_PTR, 0 };
+	CK_ATTRIBUTE public_value = { CKA_VALUE, value, 128 };
+	CK_RV rv;
+
+	if (!HAVE(f, C_GenerateKeyPair))
+		return 0;
+	rv = f->C_GenerateKeyPair(session, &mechanism, public_template,
+			sizeof(public_template) / sizeof(public_template[0]),
+			private_template,
+			sizeof(private_template) / sizeof(private_template[0]),
+			public_key, private_key);
+	show_rv("C_GenerateKeyPair(session key pair)", rv);
+	if (rv != CKR_OK)
+		return 0;
+	rv = f->C_GetAttributeValue(session, *public_key, &public_value, 1);
+	show_rv("C_GetAttributeValue(CKA_VALUE of the public key)", rv);
+	*value_len = public_value.ulValueLen;
+	if (rv == CKR_OK && *value_len != (CK_ULONG)(big ? 128 : 64))
+		line("the public key is %lu bytes, not %d", *value_len, big ? 128 : 64);
+	return rv == CKR_OK && *value_len == (CK_ULONG)(big ? 128 : 64);
+}
+
+/* derive from both sides of the pair and compare */
+static void
+check_vko_agreement(CK_SESSION_HANDLE session, CK_MECHANISM_TYPE type,
+		CK_ULONG kdf, const char *kdf_name, CK_KEY_TYPE key_type,
+		CK_OBJECT_HANDLE private_a, const CK_BYTE *public_a,
+		CK_OBJECT_HANDLE private_b, const CK_BYTE *public_b,
+		CK_ULONG public_len, const CK_BYTE *ukm, CK_ULONG ukm_len)
+{
+	CK_BYTE side_a[64], side_b[64];
+	CK_ULONG len_a = 0, len_b = 0;
+	CK_RV rv_a, rv_b;
+
+	rv_a = derive_value(session, type, private_a, kdf, public_b, public_len,
+			ukm, ukm_len, key_type, side_a, &len_a);
+	rv_b = derive_value(session, type, private_b, kdf, public_a, public_len,
+			ukm, ukm_len, key_type, side_b, &len_b);
+	if (rv_a != CKR_OK || rv_b != CKR_OK) {
+		line("%s, %s, %s: %s / %s", derive_mechanism_name(type), kdf_name,
+				derive_key_type_name(key_type), rv_name(rv_a), rv_name(rv_b));
+		return;
+	}
+	line("%s, %s, %s: %lu bytes, %s", derive_mechanism_name(type), kdf_name,
+			derive_key_type_name(key_type), len_a,
+			len_a == len_b && !memcmp(side_a, side_b, len_a) ?
+			"both sides agree" : "the two sides DIFFER");
+	wipe(side_a, sizeof(side_a));
+	wipe(side_b, sizeof(side_b));
+}
+
+static void
+probe_derive_tests(CK_SLOT_ID slot)
+{
+	static const CK_BYTE pair_ukm[16] = {
+		0x4f, 0x70, 0x65, 0x6e, 0x53, 0x43, 0x2d, 0x55,
+		0x4b, 0x4d, 0x2d, 0x70, 0x72, 0x6f, 0x62, 0x65 };
+	static const CK_KEY_TYPE pair_types[] = { CKK_MAGMA, CKK_KUZNECHIK };
+	CK_SESSION_HANDLE session = CK_INVALID_HANDLE;
+	CK_OBJECT_HANDLE key, public_a, private_a, public_b, private_b;
+	CK_BYTE value[64], value_a[128], value_b[128];
+	CK_ULONG len = 0, len_a = 0, len_b = 0;
+	size_t i, k;
+	int big;
+	CK_RV rv;
+
+	step("--derive-tests: open a read-write session");
+	if (!HAVE(f, C_OpenSession) || !HAVE(f, C_CloseSession))
+		return;
+	rv = f->C_OpenSession(slot, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL_PTR,
+			NULL, &session);
+	show_rv("C_OpenSession(read-write)", rv);
+	if (rv != CKR_OK)
+		return;
+
+	for (i = 0; i < GOST_VKO_VECTORS; i++) {
+		const struct gost_vko_vector *vector = &gost_vko_vectors[i];
+
+		step("--derive-tests: control example %s, %s, CKD_NULL",
+				vector->source, derive_mechanism_name(vector->mechanism));
+		key = import_vko_private_key(session, vector);
+		if (key == CK_INVALID_HANDLE) {
+			line("SKIPPED: the token does not take this private key as a "
+					"session object");
+			continue;
+		}
+		rv = derive_value(session, vector->mechanism, key, CKD_NULL,
+				vector->peer_public, vector->public_len, vector->ukm,
+				vector->ukm_len, vector->result_len == 64 ?
+				CKK_GENERIC_SECRET : CKK_GOST28147, value, &len);
+		show_rv("C_DeriveKey", rv);
+		if (rv == CKR_OK) {
+			print_hex("derived value", value, len, 64);
+			line("%s", len == vector->result_len &&
+					!memcmp(value, vector->result, len) ?
+					"equal to the control example" :
+					"DIFFERENT from the control example");
+		}
+		if (HAVE(f, C_DestroyObject))
+			show_rv("C_DestroyObject(imported key)",
+					f->C_DestroyObject(session, key));
+	}
+
+	for (big = 0; big <= 1; big++) {
+		step("--derive-tests: two GOST R 34.10-2012 %d session key pairs "
+				"made by the token", big ? 512 : 256);
+		if (!generate_vko_pair(session, big, &public_a, &private_a, value_a,
+				&len_a)) {
+			line("SKIPPED: no %d-bit key pair", big ? 512 : 256);
+			continue;
+		}
+		if (!generate_vko_pair(session, big, &public_b, &private_b, value_b,
+				&len_b)) {
+			line("SKIPPED: no second %d-bit key pair", big ? 512 : 256);
+		} else {
+			for (k = 0; k < sizeof(derive_kdfs) / sizeof(derive_kdfs[0]); k++)
+				check_vko_agreement(session, CKM_GOSTR3410_12_DERIVE,
+						derive_kdfs[k].kdf, derive_kdfs[k].name,
+						CKK_GOST28147, private_a, value_a, private_b,
+						value_b, len_a, pair_ukm, 8);
+			for (k = 0; k < sizeof(pair_types) / sizeof(pair_types[0]); k++)
+				check_vko_agreement(session, CKM_GOSTR3410_12_DERIVE,
+						CKD_NULL, "CKD_NULL", pair_types[k], private_a,
+						value_a, private_b, value_b, len_a, pair_ukm, 8);
+			if (big)
+				check_vko_agreement(session, CKM_VKO_GOSTR3410_2012_512,
+						CKD_NULL, "CKD_NULL", CKK_GENERIC_SECRET,
+						private_a, value_a, private_b, value_b, len_a,
+						pair_ukm, 16);
+			if (HAVE(f, C_DestroyObject)) {
+				f->C_DestroyObject(session, public_b);
+				f->C_DestroyObject(session, private_b);
+			}
+		}
+		if (HAVE(f, C_DestroyObject)) {
+			f->C_DestroyObject(session, public_a);
+			f->C_DestroyObject(session, private_a);
+		}
+	}
+
+	step("--derive-tests: close the read-write session");
+	show_rv("C_CloseSession", f->C_CloseSession(session));
+}
+
+/*
  * --modify-tests: the functions that change the token (stage 5).  Every
  * step is followed by the smallest read that shows its effect.  The token
  * ends formatted with the factory PINs.
@@ -2993,9 +3335,10 @@ main(int argc, char **argv)
 	}
 	printf("OpenSC Rutoken hardware probe %d\n", PROBE_VERSION);
 	printf("module %s, pause %ld ms, login %s, pkcs7 %s, write tests %s, "
-			"modify tests %s\n", opt.module, opt.pause_ms,
+			"derive tests %s, modify tests %s\n", opt.module, opt.pause_ms,
 			opt.login ? "yes" : "no", opt.pkcs7_id ? opt.pkcs7_id : "no",
-			opt.write_tests ? "yes" : "no", opt.modify_tests ? "yes" : "no");
+			opt.write_tests ? "yes" : "no", opt.derive_tests ? "yes" : "no",
+			opt.modify_tests ? "yes" : "no");
 	if (opt.modify_tests)
 		printf("Only functions that change the token are checked, after the "
 				"confirmation\nasked below; the token is formatted at the "
@@ -3048,6 +3391,8 @@ main(int argc, char **argv)
 					probe_pkcs7(session, id, id_length, 0);
 				if (opt.write_tests)
 					probe_write_tests(slot);
+				if (opt.derive_tests)
+					probe_derive_tests(slot);
 				step("C_Logout");
 				if (HAVE(f, C_Logout))
 					show_rv("C_Logout", f->C_Logout(session));

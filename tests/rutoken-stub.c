@@ -1,6 +1,7 @@
 #define CRYPTOKI_EXPORTS
 #include "pkcs11/pkcs11-rutoken.h"
 #include "pkcs11/pkcs11-rutoken-bio.h"
+#include "rutoken-gost-vectors.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -49,6 +50,7 @@ struct dynamic_object {
 	CK_OBJECT_HANDLE handle;	/* 0 for an unused entry */
 	CK_ULONG count;
 	CK_ATTRIBUTE attributes[DYNAMIC_ATTRIBUTES];
+	int derived;			/* a session key from C_DeriveKey */
 };
 
 static struct dynamic_object dynamic_objects[DYNAMIC_OBJECTS];
@@ -613,19 +615,22 @@ static_attribute(const struct test_object *object, CK_ATTRIBUTE_TYPE type,
 	case CKA_KEY_TYPE:
 		if (object->object_class == CKO_PUBLIC_KEY ||
 				object->object_class == CKO_PRIVATE_KEY) {
-			/* the fork's main key type; read_object returns CKA_VALUE */
+			/* the fork's main key type; read_object returns CKA_VALUE.
+			 * RUTOKEN_STUB_GOST512 makes the test key pair 512-bit. */
 			static const CK_KEY_TYPE gost = CKK_GOSTR3410;
-			*value = &gost;
+			static const CK_KEY_TYPE gost512 = CKK_GOSTR3410_512;
+			*value = getenv("RUTOKEN_STUB_GOST512") ? &gost512 : &gost;
 			*length = sizeof(gost);
 			return 1;
 		}
 		return 0;
 	case CKA_VALUE:
 		if (object->object_class == CKO_PUBLIC_KEY) {
-			/* a recognisable 64-byte GOST public key, "GOST" then zeros */
-			static const CK_BYTE gost_pub[64] = { 0x47, 0x4F, 0x53, 0x54 };
+			/* a recognisable GOST public key, "GOST" then zeros: 64
+			 * bytes, or 128 for the 512-bit key */
+			static const CK_BYTE gost_pub[128] = { 0x47, 0x4F, 0x53, 0x54 };
 			*value = gost_pub;
-			*length = sizeof(gost_pub);
+			*length = getenv("RUTOKEN_STUB_GOST512") ? 128 : 64;
 			return 1;
 		}
 		return 0;
@@ -682,6 +687,153 @@ C_GetAttributeValue(CK_SESSION_HANDLE hSession, CK_OBJECT_HANDLE hObject,
 	return rv;
 }
 
+static CK_ULONG
+stub_le32(const CK_BYTE *p)
+{
+	return (CK_ULONG)p[0] | (CK_ULONG)p[1] << 8 | (CK_ULONG)p[2] << 16 |
+		(CK_ULONG)p[3] << 24;
+}
+
+static const CK_ATTRIBUTE *
+template_attribute(const CK_ATTRIBUTE *pTemplate, CK_ULONG ulCount,
+		CK_ATTRIBUTE_TYPE type)
+{
+	CK_ULONG i;
+
+	for (i = 0; pTemplate && i < ulCount; i++)
+		if (pTemplate[i].type == type)
+			return &pTemplate[i];
+	return NULL;
+}
+
+/* VKO GOST R 34.10-2012 through the TC26 mechanisms.  The stub does no curve
+ * arithmetic: it checks the parameters byte for byte as TC26 5.11 and 5.12
+ * lay them out and, for the inputs of the control examples (TC26 3.13 and
+ * 3.14, RFC 7836 B.7 and B.8), returns their results, so a test shows that
+ * the request is encoded exactly as the specification does.  Other inputs
+ * give a value of the UKM, kdf and key size.  The key 201 plays the
+ * private key of each example (RUTOKEN_STUB_GOST512 makes it 512-bit); a
+ * GOST private key created or generated in the session is accepted too. */
+CK_RV
+C_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
+		CK_OBJECT_HANDLE hBaseKey, CK_ATTRIBUTE_PTR pTemplate,
+		CK_ULONG ulAttributeCount, CK_OBJECT_HANDLE_PTR phKey)
+{
+	int gost512 = getenv("RUTOKEN_STUB_GOST512") != NULL;
+	CK_ULONG key_len = gost512 ? 128 : 64, kdf, pub_len, ukm_len, out_len, i;
+	const CK_BYTE *pub, *ukm;
+	const CK_ATTRIBUTE *attribute;
+	CK_KEY_TYPE type;
+	CK_BYTE value[64];
+	CK_ATTRIBUTE value_attribute = { CKA_VALUE, value, 0 };
+	struct dynamic_object *object;
+	size_t v;
+	CK_RV rv;
+
+	if (!session_valid(hSession))
+		return CKR_SESSION_HANDLE_INVALID;
+	if (!logged_in)
+		return CKR_USER_NOT_LOGGED_IN;
+	if (!pMechanism || !phKey || (!pTemplate && ulAttributeCount))
+		return CKR_ARGUMENTS_BAD;
+	if (hBaseKey != 201) {
+		/* a GOST private key created or generated in this session */
+		const struct dynamic_object *base = find_dynamic(hBaseKey);
+		const CK_ATTRIBUTE *base_type = base ?
+			dynamic_attribute(base, CKA_KEY_TYPE) : NULL;
+
+		if (!base || !dynamic_class(base, CKO_PRIVATE_KEY) || !base_type ||
+				base_type->ulValueLen != sizeof(CK_KEY_TYPE))
+			return CKR_KEY_HANDLE_INVALID;
+		if (*(const CK_KEY_TYPE *)base_type->pValue == CKK_GOSTR3410_512)
+			gost512 = 1;
+		else if (*(const CK_KEY_TYPE *)base_type->pValue == CKK_GOSTR3410)
+			gost512 = 0;
+		else
+			return CKR_KEY_TYPE_INCONSISTENT;
+		key_len = gost512 ? 128 : 64;
+	}
+	if (pMechanism->mechanism == CKM_GOSTR3410_12_DERIVE) {
+		const CK_BYTE *b = pMechanism->pParameter;
+		CK_ULONG len = pMechanism->ulParameterLen;
+
+		if (!b || len < 12)
+			return CKR_MECHANISM_PARAM_INVALID;
+		kdf = stub_le32(b);
+		pub_len = stub_le32(b + 4);
+		if (pub_len != key_len || len < 12 + pub_len)
+			return CKR_MECHANISM_PARAM_INVALID;
+		ukm_len = stub_le32(b + 8 + pub_len);
+		if (ukm_len < 8 || len != 12 + pub_len + ukm_len)
+			return CKR_MECHANISM_PARAM_INVALID;
+		if (kdf != CKD_NULL && kdf != CKD_CPDIVERSIFY_KDF &&
+				kdf != CKM_KDF_4357 && kdf != CKM_KDF_GOSTR3411_2012_256)
+			return CKR_MECHANISM_PARAM_INVALID;
+		pub = b + 8;
+		ukm = b + 12 + pub_len;
+		out_len = 32;
+	} else if (pMechanism->mechanism == CKM_VKO_GOSTR3410_2012_512) {
+		const CK_ECDH1_DERIVE_PARAMS *params = pMechanism->pParameter;
+
+		if (!gost512)
+			return CKR_KEY_TYPE_INCONSISTENT;
+		if (!params || pMechanism->ulParameterLen != sizeof(*params) ||
+				params->kdf != CKD_NULL || params->ulPublicDataLen != 128 ||
+				!params->pPublicData || params->ulSharedDataLen < 8 ||
+				!params->pSharedData)
+			return CKR_MECHANISM_PARAM_INVALID;
+		kdf = CKD_NULL;
+		pub = params->pPublicData;
+		pub_len = 128;
+		ukm = params->pSharedData;
+		ukm_len = params->ulSharedDataLen;
+		out_len = 64;
+	} else {
+		return CKR_MECHANISM_INVALID;
+	}
+
+	attribute = template_attribute(pTemplate, ulAttributeCount, CKA_CLASS);
+	if (!attribute || attribute->ulValueLen != sizeof(CK_OBJECT_CLASS) ||
+			*(const CK_OBJECT_CLASS *)attribute->pValue != CKO_SECRET_KEY)
+		return CKR_TEMPLATE_INCONSISTENT;
+	attribute = template_attribute(pTemplate, ulAttributeCount, CKA_KEY_TYPE);
+	if (!attribute || attribute->ulValueLen != sizeof(CK_KEY_TYPE))
+		return CKR_TEMPLATE_INCOMPLETE;
+	type = *(const CK_KEY_TYPE *)attribute->pValue;
+	if (out_len == 32 ? type != CKK_GOST28147 && type != CKK_MAGMA &&
+				type != CKK_KUZNECHIK && type != CKK_GENERIC_SECRET :
+			type != CKK_MAGMA_TWIN_KEY && type != CKK_KUZNECHIK_TWIN_KEY &&
+				type != CKK_GENERIC_SECRET)
+		return CKR_TEMPLATE_INCONSISTENT;
+	if (type == CKK_GENERIC_SECRET) {
+		attribute = template_attribute(pTemplate, ulAttributeCount,
+				CKA_VALUE_LEN);
+		if (!attribute || attribute->ulValueLen != sizeof(CK_ULONG) ||
+				*(const CK_ULONG *)attribute->pValue != out_len)
+			return CKR_TEMPLATE_INCONSISTENT;
+	}
+
+	/* without a control example: a value of the UKM, kdf and key size only,
+	 * so that both sides of a key pair agree as VKO does */
+	for (i = 0; i < out_len; i++)
+		value[i] = (CK_BYTE)(ukm[i % ukm_len] ^ kdf ^ pub_len ^ i);
+	for (v = 0; v < GOST_VKO_VECTORS; v++) {
+		const struct gost_vko_vector *d = &gost_vko_vectors[v];
+
+		if (d->mechanism == pMechanism->mechanism && kdf == CKD_NULL &&
+				d->public_len == pub_len && d->ukm_len == ukm_len &&
+				d->result_len == out_len &&
+				!memcmp(d->peer_public, pub, pub_len) &&
+				!memcmp(d->ukm, ukm, ukm_len))
+			memcpy(value, d->result, out_len);
+	}
+	value_attribute.ulValueLen = out_len;
+	rv = store_dynamic(pTemplate, ulAttributeCount, &value_attribute, phKey);
+	if (rv == CKR_OK && (object = find_dynamic(*phKey)) != NULL)
+		object->derived = 1;
+	return rv;
+}
+
 /* The signature depends only on the data length, so that C_Verify can
  * check it without keys. */
 static void
@@ -700,8 +852,8 @@ C_GenerateKeyPair(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
 		CK_ULONG ulPrivateKeyAttributeCount, CK_OBJECT_HANDLE_PTR phPublicKey,
 		CK_OBJECT_HANDLE_PTR phPrivateKey)
 {
-	CK_BYTE value[64];
-	CK_ATTRIBUTE public_value = { CKA_VALUE, value, sizeof(value) };
+	CK_BYTE value[128];
+	CK_ATTRIBUTE public_value = { CKA_VALUE, value, 64 };
 	struct dynamic_object *public_key;
 	CK_ULONG i;
 	CK_RV rv;
@@ -712,8 +864,11 @@ C_GenerateKeyPair(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
 		return CKR_SESSION_READ_ONLY;
 	if (!logged_in)
 		return CKR_USER_NOT_LOGGED_IN;
-	if (!pMechanism || pMechanism->mechanism != CKM_GOSTR3410_KEY_PAIR_GEN)
+	if (!pMechanism || (pMechanism->mechanism != CKM_GOSTR3410_KEY_PAIR_GEN &&
+			pMechanism->mechanism != CKM_GOSTR3410_512_KEY_PAIR_GEN))
 		return CKR_MECHANISM_INVALID;
+	if (pMechanism->mechanism == CKM_GOSTR3410_512_KEY_PAIR_GEN)
+		public_value.ulValueLen = 128;
 	if (!phPublicKey || !phPrivateKey)
 		return CKR_ARGUMENTS_BAD;
 	/* the device without a button refused the attribute before generating */
@@ -1739,7 +1894,10 @@ C_Finalize(CK_VOID_PTR pReserved)
 	(void)pReserved;
 	for (i = 0; i < DYNAMIC_OBJECTS; i++) {
 		if (dynamic_objects[i].handle) {
-			left = 1;
+			/* a derived key is a session object that ends with the
+			 * session; anything else left behind is a leak */
+			if (!dynamic_objects[i].derived)
+				left = 1;
 			release_dynamic(&dynamic_objects[i]);
 		}
 	}
@@ -1911,7 +2069,8 @@ static CK_FUNCTION_LIST standard_functions = {
 	.C_Sign = C_Sign,
 	.C_VerifyInit = C_VerifyInit,
 	.C_Verify = C_Verify,
-	.C_GenerateKeyPair = C_GenerateKeyPair
+	.C_GenerateKeyPair = C_GenerateKeyPair,
+	.C_DeriveKey = C_DeriveKey
 };
 
 static CK_FUNCTION_LIST_EXTENDED extended_functions = {

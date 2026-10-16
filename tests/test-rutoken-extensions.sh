@@ -121,6 +121,20 @@ if ! RUTOKEN_STUB_HAS_BUTTON=1 "$probe" --pause-ms 0 --modify-tests \
 	cat "$probe_modify"
 	exit 1
 fi
+# Version 4: GOST R 34.10-2012 key agreement. The stub answers the control
+# examples of TC26 and RFC 7836 with their results and agrees with itself on
+# key pairs; on the device the same run checks the token.
+probe_derive="$test_dir/probe-derive.log"
+if ! RUTOKEN_PROBE_PIN=12345678 "$probe" --pause-ms 0 --login \
+		--pin-env RUTOKEN_PROBE_PIN --derive-tests "$stub" > "$probe_derive" ||
+		test "$(grep -c '^  equal to the control example' "$probe_derive")" -ne 4 ||
+		test "$(grep -c 'both sides agree' "$probe_derive")" -ne 13 ||
+		grep -q 'DIFFER\|SKIPPED' "$probe_derive" ||
+		! grep -q '^  C_Finalize -> CKR_OK' "$probe_derive" ||
+		! grep -q '^PROBE COMPLETE' "$probe_derive"; then
+	cat "$probe_derive"
+	exit 1
+fi
 "$probe" --selftest-certificate "$test_dir/selftest.der" > /dev/null
 if command -v openssl > /dev/null 2>&1; then
 	for certificate in "$probe_out/certificate-temporary.der" \
@@ -518,5 +532,134 @@ if run_tool --test-login --pin 00000000 > "$text" 2>&1; then
 	exit 1
 fi
 
+# GOST R 34.10-2012 key agreement (VKO, RFC 7836 4.3) through --derive. The
+# stub returns the results of the TC26 3.13/3.14 and RFC 7836 B.7/B.8 control
+# examples for their inputs, so a match proves the request is encoded as the
+# specifications lay it out; the device itself is checked by the probe.
+vectors="$SOURCE_PATH/tests/rutoken-gost-vectors.h"
+# the bytes of a CK_BYTE array of the header, as octal escapes for printf
+vector_octal() {
+	awk -v name="$1" '
+		index($0, "static const CK_BYTE " name "[") { on = 1; next }
+		on && /};/ { exit }
+		on {
+			n = split($0, f, /[^0-9a-fx]+/)
+			for (i = 1; i <= n; i++)
+				if (f[i] ~ /^0x[0-9a-f][0-9a-f]$/) {
+					v = (index("0123456789abcdef", substr(f[i], 3, 1)) - 1) * 16 + \
+						index("0123456789abcdef", substr(f[i], 4, 1)) - 1
+					printf "\\%03o", v
+				}
+		}' "$vectors"
+}
+vector_hex() {
+	awk -v name="$1" '
+		index($0, "static const CK_BYTE " name "[") { on = 1; next }
+		on && /};/ { exit }
+		on { n = split($0, f, /[^0-9a-fx]+/)
+			for (i = 1; i <= n; i++)
+				if (f[i] ~ /^0x[0-9a-f][0-9a-f]$/) printf "%s", substr(f[i], 3) }
+	' "$vectors"
+}
+file_hex() {
+	od -An -tx1 -v "$1" | tr -d ' \n'
+}
+# shellcheck disable=SC2059
+printf "$(vector_octal gost_vko_tc26_bob_256)" > "$test_dir/bob256.raw"
+# shellcheck disable=SC2059
+printf "$(vector_octal gost_vko_tc26_bob_512)" > "$test_dir/bob512.raw"
+# shellcheck disable=SC2059
+printf "$(vector_octal gost_vko_rfc_yp_b)" > "$test_dir/rfc-b.raw"
+test "$(wc -c < "$test_dir/bob256.raw")" -eq 64
+test "$(wc -c < "$test_dir/rfc-b.raw")" -eq 128
+derive() {
+	run_tool --login --pin 12345678 --derive --id 0102 "$@"
+}
+# the same with the stub's key pair made 512-bit; the variable is set on the
+# command itself so that it does not outlive the call
+derive512() {
+	RUTOKEN_STUB_GOST512=1 PKCS11SPY="$stub" PKCS11SPY_OUTPUT="$log" \
+		"$tool" --module "$spy" --slot 7 --login --pin 12345678 --derive \
+		--id 0102 "$@"
+}
+derived="$test_dir/derived.bin"
+expect_value() {
+	if [ "$(file_hex "$derived")" != "$(vector_hex "$1")" ]; then
+		echo "derived $(file_hex "$derived"), expected $1 $(vector_hex "$1")"
+		exit 1
+	fi
+}
+
+derive -m GOSTR3410-12-DERIVE --gost-ukm 0102030405060708 \
+	--input-file "$test_dir/bob256.raw" --output-file "$derived" > "$text" 2>&1
+expect_value gost_vko_tc26_kek_256
+expect "$log" '[in] pMechanism->pParameter: kdf = 0x1 (CKD_NULL)'
+expect "$log" '[in] pMechanism->pParameter: public key[64]'
+expect "$log" '[in] pMechanism->pParameter: UKM[8]'
+# the same key as a DER OCTET STRING and as a SubjectPublicKeyInfo
+{ printf '\004\100'; cat "$test_dir/bob256.raw"; } > "$test_dir/bob256.octet"
+{ printf '\060\121\060\012\006\010\052\205\003\007\001\001\001\001'
+  printf '\003\103\000\004\100'; cat "$test_dir/bob256.raw"; } > "$test_dir/bob256.spki"
+for form in octet spki; do
+	derive --gost-ukm 0102030405060708 --input-file "$test_dir/bob256.$form" \
+		--output-file "$derived" > "$text" 2>&1
+	expect_value gost_vko_tc26_kek_256
+done
+derive512 --gost-ukm 0102030405060708 \
+	--input-file "$test_dir/bob512.raw" --output-file "$derived" > "$text" 2>&1
+expect_value gost_vko_tc26_kek_512
+for type in GOST28147 MAGMA KUZNECHIK GENERIC; do
+	derive512 --gost-ukm 1d80603c8544c727 --key-type "$type" \
+		--input-file "$test_dir/rfc-b.raw" --output-file "$derived" > "$text" 2>&1
+	expect_value gost_vko_rfc_kek_256
+done
+for type in GENERIC MAGMA-TWIN KUZNECHIK-TWIN; do
+	derive512 -m VKO-GOSTR3410-12-512 --key-type "$type" \
+		--gost-ukm 1d80603c8544c727 --input-file "$test_dir/rfc-b.raw" \
+		--output-file "$derived" > "$text" 2>&1
+	expect_value gost_vko_rfc_kek_512
+done
+expect "$log" '[in] pMechanism->type = CKM_VKO_GOSTR3410_2012_512'
+for kdf in 4357:CKM_KDF_4357 cpdiversify:CKD_CPDIVERSIFY_KDF \
+		gostr3411-2012-256:CKM_KDF_GOSTR3411_2012_256; do
+	derive --gost-kdf "${kdf%%:*}" --gost-ukm 0102030405060708 \
+		--input-file "$test_dir/bob256.raw" --output-file "$derived" > "$text" 2>&1
+	test "$(wc -c < "$derived")" -eq 32
+	expect "$log" "(${kdf#*:})"
+done
+derive --gost-kdf cpdiversify --gost-ukm 0102030405060708090a0b0c0d0e0f10 \
+	--input-file "$test_dir/bob256.raw" --output-file "$derived" > "$text" 2>&1
+expect "$text" 'uses a 64-bit UKM'
+derive_fails() {
+	if derive "$@" --output-file "$derived" > "$text" 2>&1; then
+		echo "pkcs11-tool --derive $* must fail"
+		exit 1
+	fi
+}
+derive512_fails() {
+	if derive512 "$@" --output-file "$derived" > "$text" 2>&1; then
+		echo "pkcs11-tool --derive $* (512-bit key) must fail"
+		exit 1
+	fi
+}
+derive_fails --input-file "$test_dir/bob256.raw"
+expect "$text" 'needs --gost-ukm'
+derive_fails --gost-ukm 01020304 --input-file "$test_dir/bob256.raw"
+expect "$text" '--gost-ukm: give 8 to'
+derive_fails --gost-ukm 0102030405060708 --input-file "$test_dir/rfc-b.raw"
+expect "$text" 'expected the 64-byte GOST R 34.10-2012-256 public key'
+derive_fails -m VKO-GOSTR3410-12-512 --gost-ukm 0102030405060708 \
+	--input-file "$test_dir/bob256.raw"
+expect "$text" 'needs a 512-bit GOST R 34.10-2012 key'
+derive512_fails -m VKO-GOSTR3410-12-512 --gost-kdf 4357 \
+	--gost-ukm 1d80603c8544c727 --input-file "$test_dir/rfc-b.raw"
+expect "$text" 'takes no KDF'
+derive_fails --key-type AES --gost-ukm 0102030405060708 \
+	--input-file "$test_dir/bob256.raw"
+expect "$text" 'GOST28147, MAGMA, KUZNECHIK or GENERIC'
+derive_fails --gost-kdf sha1 --gost-ukm 0102030405060708 \
+	--input-file "$test_dir/bob256.raw"
+expect "$text" '--gost-kdf: use null, 4357, cpdiversify or gostr3411-2012-256'
+
 echo "PASS: all Rutoken wrappers and the --rutoken-* commands through pkcs11-spy, stage 5 included"
-echo "PASS: Rutoken hardware probe runs against the stub module, write and modify tests included"
+echo "PASS: Rutoken hardware probe runs against the stub module, write, derive and modify tests included"
