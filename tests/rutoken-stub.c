@@ -845,6 +845,30 @@ test_signature(CK_ULONG data_length, CK_BYTE *signature)
 		signature[i] = (CK_BYTE)(0xC0 ^ i ^ (data_length & 0xFF));
 }
 
+/* RUTOKEN_STUB_TOKEN_KEYS_ONLY answers like the Rutoken ECP 3.0 of probe 4,
+ * which refused a GOST private key as a session object, imported or
+ * generated, with CKR_TEMPLATE_INCONSISTENT. */
+static int
+session_private_key(const CK_ATTRIBUTE *template, CK_ULONG count, int private)
+{
+	CK_ULONG i;
+	int token = 0;
+
+	if (!getenv("RUTOKEN_STUB_TOKEN_KEYS_ONLY"))
+		return 0;
+	for (i = 0; template && i < count; i++) {
+		if (template[i].type == CKA_CLASS &&
+				template[i].ulValueLen == sizeof(CK_OBJECT_CLASS) &&
+				*(const CK_OBJECT_CLASS *)template[i].pValue == CKO_PRIVATE_KEY)
+			private = 1;
+		if (template[i].type == CKA_TOKEN &&
+				template[i].ulValueLen == sizeof(CK_BBOOL) &&
+				*(const CK_BBOOL *)template[i].pValue)
+			token = 1;
+	}
+	return private && !token;
+}
+
 CK_RV
 C_GenerateKeyPair(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
 		CK_ATTRIBUTE_PTR pPublicKeyTemplate, CK_ULONG ulPublicKeyAttributeCount,
@@ -876,6 +900,8 @@ C_GenerateKeyPair(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
 		if (pPrivateKeyTemplate[i].type == CKA_VENDOR_CONFIRM_BY_TOUCH &&
 				!getenv("RUTOKEN_STUB_HAS_BUTTON"))
 			return CKR_TEMPLATE_INCONSISTENT;
+	if (session_private_key(pPrivateKeyTemplate, ulPrivateKeyAttributeCount, 1))
+		return CKR_TEMPLATE_INCONSISTENT;
 	for (i = 0; i < sizeof(value); i++)
 		value[i] = (CK_BYTE)(0x10 + i);
 	rv = store_dynamic(pPublicKeyTemplate, ulPublicKeyAttributeCount,
@@ -981,6 +1007,8 @@ C_CreateObject(CK_SESSION_HANDLE hSession, CK_ATTRIBUTE_PTR pTemplate,
 		return CKR_SESSION_HANDLE_INVALID;
 	if (hSession != SESSION_RW)
 		return CKR_SESSION_READ_ONLY;
+	if (session_private_key(pTemplate, ulCount, 0))
+		return CKR_TEMPLATE_INCONSISTENT;
 	return store_dynamic(pTemplate, ulCount, NULL, phObject);
 }
 

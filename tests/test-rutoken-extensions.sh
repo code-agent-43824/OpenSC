@@ -123,7 +123,7 @@ if ! RUTOKEN_STUB_HAS_BUTTON=1 "$probe" --pause-ms 0 --modify-tests \
 fi
 # Version 4: GOST R 34.10-2012 key agreement. The stub answers the control
 # examples of TC26 and RFC 7836 with their results and agrees with itself on
-# key pairs; on the device the same run checks the token.
+# key pairs; on the device the same run checks the token. Session keys first.
 probe_derive="$test_dir/probe-derive.log"
 if ! RUTOKEN_PROBE_PIN=12345678 "$probe" --pause-ms 0 --login \
 		--pin-env RUTOKEN_PROBE_PIN --derive-tests "$stub" > "$probe_derive" ||
@@ -132,6 +132,37 @@ if ! RUTOKEN_PROBE_PIN=12345678 "$probe" --pause-ms 0 --login \
 		grep -q 'DIFFER\|SKIPPED' "$probe_derive" ||
 		! grep -q '^  C_Finalize -> CKR_OK' "$probe_derive" ||
 		! grep -q '^PROBE COMPLETE' "$probe_derive"; then
+	cat "$probe_derive"
+	exit 1
+fi
+# Version 5: a token that refuses session private keys, as the device of
+# probe 4 did. With --write-tests the probe falls back to temporary token
+# objects and deletes them; the checks without CKA_DERIVE run once each.
+if ! RUTOKEN_STUB_TOKEN_KEYS_ONLY=1 RUTOKEN_PROBE_PIN=12345678 "$probe" \
+		--pause-ms 0 --login --pin-env RUTOKEN_PROBE_PIN --write-tests \
+		--assume-yes --derive-tests "$stub" > "$probe_derive" ||
+		test "$(grep -c '^  equal to the control example' "$probe_derive")" -ne 4 ||
+		test "$(grep -c 'both sides agree' "$probe_derive")" -ne 13 ||
+		test "$(grep -c 'temporary token object) -> CKR_OK' "$probe_derive")" -ne 4 ||
+		test "$(grep -c 'temporary token key pair) -> CKR_OK' "$probe_derive")" -ne 4 ||
+		test "$(grep -c 'a check only) -> CKR_TEMPLATE_INCONSISTENT' \
+			"$probe_derive")" -ne 2 ||
+		grep -q 'DIFFER\|SKIPPED' "$probe_derive" ||
+		! grep -A1 'delete temporary objects after the derive tests' \
+			"$probe_derive" | grep -q '^  0 objects with the label' ||
+		! grep -q '^  C_Finalize -> CKR_OK' "$probe_derive" ||
+		! grep -q '^PROBE COMPLETE' "$probe_derive"; then
+	cat "$probe_derive"
+	exit 1
+fi
+# Without --write-tests nothing on the token changes: the tests are skipped.
+if ! RUTOKEN_STUB_TOKEN_KEYS_ONLY=1 RUTOKEN_PROBE_PIN=12345678 "$probe" \
+		--pause-ms 0 --login --pin-env RUTOKEN_PROBE_PIN --derive-tests \
+		"$stub" > "$probe_derive" ||
+		test "$(grep -c 'not tried, it needs --write-tests' "$probe_derive")" -ne 6 ||
+		test "$(grep -c '^  SKIPPED' "$probe_derive")" -ne 6 ||
+		grep -q 'temporary token .*-> CKR_OK' "$probe_derive" ||
+		! grep -q '^  C_Finalize -> CKR_OK' "$probe_derive"; then
 	cat "$probe_derive"
 	exit 1
 fi

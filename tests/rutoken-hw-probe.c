@@ -39,7 +39,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define PROBE_VERSION 4
+#define PROBE_VERSION 5
 #define SENTINEL 0xA5
 #define MAX_OBJECTS 64
 #define EXTENDED_FUNCTIONS 34
@@ -91,6 +91,9 @@ static CK_ULONG seen_certificate_count;
 /* --write-tests reads the journal after every PKCS #7 signature and CSR */
 static CK_SLOT_ID journal_slot;
 static int journal_after_signatures;
+/* the write tests were confirmed: --derive-tests may then fall back to
+ * temporary token objects */
+static int write_confirmed;
 
 static const char *const extended_names[EXTENDED_FUNCTIONS] = {
 	"C_EX_GetFunctionListExtended", "C_EX_InitToken",
@@ -122,6 +125,10 @@ static const struct {
 	RV_NAME(CKR_FUNCTION_CANCELED), RV_NAME(CKR_FUNCTION_NOT_SUPPORTED),
 	RV_NAME(CKR_KEY_HANDLE_INVALID), RV_NAME(CKR_KEY_TYPE_INCONSISTENT),
 	RV_NAME(CKR_KEY_FUNCTION_NOT_PERMITTED), RV_NAME(CKR_MECHANISM_INVALID),
+	RV_NAME(CKR_MECHANISM_PARAM_INVALID), RV_NAME(CKR_KEY_SIZE_RANGE),
+	RV_NAME(CKR_KEY_NOT_NEEDED), RV_NAME(CKR_ATTRIBUTE_READ_ONLY),
+	RV_NAME(CKR_ACTION_PROHIBITED), RV_NAME(CKR_DOMAIN_PARAMS_INVALID),
+	RV_NAME(CKR_CURVE_NOT_SUPPORTED),
 	RV_NAME(CKR_OBJECT_HANDLE_INVALID), RV_NAME(CKR_OPERATION_ACTIVE),
 	RV_NAME(CKR_OPERATION_NOT_INITIALIZED), RV_NAME(CKR_PIN_INCORRECT),
 	RV_NAME(CKR_PIN_INVALID), RV_NAME(CKR_PIN_LEN_RANGE),
@@ -401,8 +408,12 @@ print_token_info_extended(const CK_TOKEN_INFO_EXTENDED *info)
 	print_hex("ATR", info->ATR,
 			info->ulATRLen <= sizeof(info->ATR) ? info->ulATRLen : 0,
 			sizeof(info->ATR));
-	line("battery %lu mV, %lu%%, flags 0x%lx", info->ulBatteryVoltage,
-			info->ulBatteryPercentage, info->ulBatteryFlags);
+	if (info->ulBatteryVoltage == 0 &&
+			info->ulBatteryPercentage == (CK_ULONG)-1)
+		line("battery not reported");
+	else
+		line("battery %lu mV, %lu%%, flags 0x%lx", info->ulBatteryVoltage,
+				info->ulBatteryPercentage, info->ulBatteryFlags);
 	line("body color %lu, firmware checksum 0x%lx", info->ulBodyColor,
 			info->ulFirmwareChecksum);
 }
@@ -493,9 +504,10 @@ usage(const char *name)
 		"                   confirmation\n"
 		"  --derive-tests   with --login: GOST R 34.10-2012 key agreement (VKO):\n"
 		"                   the TC26 and RFC 7836 control examples with their\n"
-		"                   private keys imported as session objects, then two\n"
-		"                   session key pairs of the token derived both ways for\n"
-		"                   every KDF and key type; only session objects\n"
+		"                   private keys imported, then two key pairs of the\n"
+		"                   token derived both ways for every KDF and key type;\n"
+		"                   session objects, and temporary token objects when\n"
+		"                   the token refuses them and --write-tests is given\n"
 		"  --save-dir DIR   save the journal, signatures, certificate and CSR\n"
 		"                   into DIR, created if missing\n"
 		"  --pin-env NAME   with --login: take the PIN from this environment\n"
@@ -2265,6 +2277,7 @@ probe_write_tests(CK_SLOT_ID slot)
 		line("not confirmed: write tests skipped");
 		return;
 	}
+	write_confirmed = 1;
 	if (!HAVE(f, C_OpenSession) || !HAVE(f, C_CloseSession))
 		return;
 	rv = f->C_OpenSession(slot, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL_PTR,
@@ -2302,18 +2315,55 @@ probe_write_tests(CK_SLOT_ID slot)
 
 /*
  * --derive-tests: GOST R 34.10-2012 key agreement (VKO, RFC 7836 4.3) through
- * CKM_GOSTR3410_12_DERIVE and CKM_VKO_GOSTR3410_2012_512.  Only session
- * objects are created, so nothing on the token changes.  First the control
+ * CKM_GOSTR3410_12_DERIVE and CKM_VKO_GOSTR3410_2012_512.  First the control
  * examples of the TC26 PKCS#11 extension (3.13, 3.14) and RFC 7836 (B.7,
- * B.8) with their private keys imported as session objects; then two key
- * pairs made by the token, whose two sides must agree on every KDF and key
- * type.
+ * B.8) with their private keys imported; then two key pairs made by the
+ * token, whose two sides must agree on every KDF and key type.  The keys are
+ * session objects, so nothing on the token changes.  Probe 4 found that a
+ * Rutoken ECP 3.0 refuses session GOST private keys (CKR_TEMPLATE_INCONSISTENT)
+ * both imported and generated, so the templates below are tried in turn; the
+ * last one makes temporary token objects with the probe label and CKA_ID,
+ * only after the confirmed --write-tests, and deletes them.
  */
 
 static const CK_BYTE streebog_256_oid[] = {
 	0x06, 0x08, 0x2a, 0x85, 0x03, 0x07, 0x01, 0x01, 0x02, 0x02 };
 static const CK_BYTE streebog_512_oid[] = {
 	0x06, 0x08, 0x2a, 0x85, 0x03, 0x07, 0x01, 0x01, 0x02, 0x03 };
+
+static const CK_OBJECT_CLASS vko_private_class = CKO_PRIVATE_KEY;
+static const CK_OBJECT_CLASS vko_public_class = CKO_PUBLIC_KEY;
+static const CK_KEY_TYPE vko_key_256 = CKK_GOSTR3410;
+static const CK_KEY_TYPE vko_key_512 = CKK_GOSTR3410_512;
+static const CK_BBOOL vko_yes = CK_TRUE, vko_no = CK_FALSE;
+
+/* one key template of --derive-tests */
+struct vko_template {
+	int token;	/* CKA_TOKEN: a temporary token object */
+	int ids;	/* CKA_LABEL and CKA_ID of the probe */
+	int hash;	/* CKA_GOSTR3411_PARAMS */
+	int derive;	/* CKA_DERIVE */
+	const char *name;
+};
+
+/* tried in turn until the token takes one; later keys start from it */
+static const struct vko_template vko_imports[] = {
+	{ 0, 0, 0, 1, "session object, TC26 template" },
+	{ 0, 0, 1, 1, "session object with CKA_GOSTR3411_PARAMS" },
+	{ 0, 1, 1, 1, "session object with CKA_LABEL and CKA_ID" },
+	{ 1, 1, 1, 1, "temporary token object" }
+};
+static const struct vko_template vko_pairs[] = {
+	{ 0, 0, 1, 1, "session key pair" },
+	{ 0, 1, 1, 1, "session key pair with CKA_LABEL and CKA_ID" },
+	{ 1, 1, 1, 1, "temporary token key pair" }
+};
+/* tried once when the token refuses every session template: shows whether
+ * it refuses CKA_DERIVE or the session private key itself */
+static const struct vko_template vko_import_check = {
+	0, 1, 1, 0, "session object without CKA_DERIVE, a check only" };
+static const struct vko_template vko_pair_check = {
+	0, 1, 1, 0, "session key pair without CKA_DERIVE, a check only" };
 
 static const struct {
 	CK_ULONG kdf;
@@ -2418,41 +2468,143 @@ derive_value(CK_SESSION_HANDLE session, CK_MECHANISM_TYPE type,
 	return rv;
 }
 
+static CK_ULONG
+vko_add(CK_ATTRIBUTE *template, CK_ULONG count, CK_ATTRIBUTE_TYPE type,
+		const void *value, CK_ULONG length)
+{
+	template[count].type = type;
+	template[count].pValue = (CK_VOID_PTR)value;
+	template[count].ulValueLen = length;
+	return count + 1;
+}
+
+/* a GOST private (or, with public set, public) key template; value is the
+ * private key to import or NULL */
+static CK_ULONG
+vko_key_template(CK_ATTRIBUTE *template, const struct vko_template *v,
+		int big, int public, const CK_BYTE *value, CK_ULONG value_len)
+{
+	CK_ULONG n = 0;
+
+	n = vko_add(template, n, CKA_CLASS,
+			public ? &vko_public_class : &vko_private_class,
+			sizeof(CK_OBJECT_CLASS));
+	n = vko_add(template, n, CKA_KEY_TYPE, big ? &vko_key_512 : &vko_key_256,
+			sizeof(CK_KEY_TYPE));
+	n = vko_add(template, n, CKA_TOKEN, v->token ? &vko_yes : &vko_no,
+			sizeof(CK_BBOOL));
+	n = vko_add(template, n, CKA_PRIVATE, public ? &vko_no : &vko_yes,
+			sizeof(CK_BBOOL));
+	if (!public && v->derive)
+		n = vko_add(template, n, CKA_DERIVE, &vko_yes, sizeof(CK_BBOOL));
+	if (value)
+		n = vko_add(template, n, CKA_VALUE, value, value_len);
+	if (v->ids) {
+		n = vko_add(template, n, CKA_LABEL, probe_label,
+				sizeof(probe_label) - 1);
+		n = vko_add(template, n, CKA_ID, probe_id, sizeof(probe_id));
+	}
+	n = vko_add(template, n, CKA_GOSTR3410_PARAMS,
+			big ? gost_vko_paramset_512a : gost_vko_paramset_cpa,
+			big ? sizeof(gost_vko_paramset_512a) :
+			sizeof(gost_vko_paramset_cpa));
+	if (v->hash)
+		n = vko_add(template, n, CKA_GOSTR3411_PARAMS,
+				big ? streebog_512_oid : streebog_256_oid,
+				big ? sizeof(streebog_512_oid) : sizeof(streebog_256_oid));
+	return n;
+}
+
+/* the token refused the template rather than failed */
+static int
+template_refused(CK_RV rv)
+{
+	return rv == CKR_TEMPLATE_INCOMPLETE || rv == CKR_TEMPLATE_INCONSISTENT ||
+		rv == CKR_ATTRIBUTE_VALUE_INVALID || rv == CKR_ATTRIBUTE_TYPE_INVALID;
+}
+
+static CK_RV
+vko_create(CK_SESSION_HANDLE session, const struct vko_template *v,
+		const struct gost_vko_vector *vector, CK_OBJECT_HANDLE *key)
+{
+	CK_ATTRIBUTE template[12];
+	CK_ULONG n;
+	char call[96];
+	CK_RV rv;
+
+	n = vko_key_template(template, v, vector->key_type == CKK_GOSTR3410_512,
+			0, vector->private_key, vector->private_len);
+	rv = f->C_CreateObject(session, template, n, key);
+	snprintf(call, sizeof(call), "C_CreateObject(private key, %s)", v->name);
+	show_rv(call, rv);
+	return rv;
+}
+
+static CK_RV
+vko_generate(CK_SESSION_HANDLE session, const struct vko_template *v, int big,
+		CK_OBJECT_HANDLE *public_key, CK_OBJECT_HANDLE *private_key)
+{
+	CK_ATTRIBUTE public_template[12], private_template[12];
+	CK_ULONG public_count, private_count;
+	CK_MECHANISM mechanism = { big ? CKM_GOSTR3410_512_KEY_PAIR_GEN :
+		CKM_GOSTR3410_KEY_PAIR_GEN, NULL_PTR, 0 };
+	char call[96];
+	CK_RV rv;
+
+	public_count = vko_key_template(public_template, v, big, 1, NULL, 0);
+	private_count = vko_key_template(private_template, v, big, 0, NULL, 0);
+	rv = f->C_GenerateKeyPair(session, &mechanism, public_template,
+			public_count, private_template, private_count, public_key,
+			private_key);
+	snprintf(call, sizeof(call), "C_GenerateKeyPair(%s)", v->name);
+	show_rv(call, rv);
+	return rv;
+}
+
+/* a token object needs the confirmed write tests */
+static int
+vko_token_allowed(const struct vko_template *v)
+{
+	if (!v->token || write_confirmed)
+		return 1;
+	line("%s: not tried, it needs --write-tests", v->name);
+	return 0;
+}
+
+static size_t vko_import_from, vko_pair_from;
+static int vko_import_checked, vko_pair_checked;
+
 static CK_OBJECT_HANDLE
 import_vko_private_key(CK_SESSION_HANDLE session,
 		const struct gost_vko_vector *vector)
 {
-	CK_OBJECT_CLASS private_class = CKO_PRIVATE_KEY;
-	CK_KEY_TYPE key_type = vector->key_type;
-	CK_BBOOL yes = CK_TRUE, no = CK_FALSE;
-	int big = key_type == CKK_GOSTR3410_512;
-	/* the template of the TC26 examples; some tokens also want the hash */
-	CK_ATTRIBUTE template[8] = {
-		{ CKA_CLASS, &private_class, sizeof(private_class) },
-		{ CKA_KEY_TYPE, &key_type, sizeof(key_type) },
-		{ CKA_TOKEN, &no, sizeof(no) },
-		{ CKA_PRIVATE, &yes, sizeof(yes) },
-		{ CKA_DERIVE, &yes, sizeof(yes) },
-		{ CKA_VALUE, (CK_VOID_PTR)vector->private_key, vector->private_len },
-		{ CKA_GOSTR3410_PARAMS, (CK_VOID_PTR)vector->paramset,
-			vector->paramset_len },
-		{ CKA_GOSTR3411_PARAMS, (CK_VOID_PTR)(big ? streebog_512_oid :
-				streebog_256_oid),
-			big ? sizeof(streebog_512_oid) : sizeof(streebog_256_oid) }
-	};
 	CK_OBJECT_HANDLE key = CK_INVALID_HANDLE;
+	size_t i;
 	CK_RV rv;
 
 	if (!HAVE(f, C_CreateObject))
 		return CK_INVALID_HANDLE;
-	rv = f->C_CreateObject(session, template, 7, &key);
-	show_rv("C_CreateObject(private key, TC26 template)", rv);
-	if (rv == CKR_TEMPLATE_INCOMPLETE || rv == CKR_TEMPLATE_INCONSISTENT ||
-			rv == CKR_ATTRIBUTE_VALUE_INVALID) {
-		rv = f->C_CreateObject(session, template, 8, &key);
-		show_rv("C_CreateObject(private key, with CKA_GOSTR3411_PARAMS)", rv);
+	for (i = vko_import_from; i < sizeof(vko_imports) / sizeof(vko_imports[0]);
+			i++) {
+		if (vko_imports[i].token && !vko_import_checked) {
+			vko_import_checked = 1;
+			if (vko_create(session, &vko_import_check, vector, &key) ==
+					CKR_OK && HAVE(f, C_DestroyObject))
+				show_rv("C_DestroyObject(the check key)",
+						f->C_DestroyObject(session, key));
+			key = CK_INVALID_HANDLE;
+		}
+		if (!vko_token_allowed(&vko_imports[i]))
+			break;
+		rv = vko_create(session, &vko_imports[i], vector, &key);
+		if (rv == CKR_OK) {
+			vko_import_from = i;
+			return key;
+		}
+		if (!template_refused(rv))
+			break;
 	}
-	return rv == CKR_OK ? key : CK_INVALID_HANDLE;
+	return CK_INVALID_HANDLE;
 }
 
 static int
@@ -2460,45 +2612,33 @@ generate_vko_pair(CK_SESSION_HANDLE session, int big,
 		CK_OBJECT_HANDLE *public_key, CK_OBJECT_HANDLE *private_key,
 		CK_BYTE *value, CK_ULONG *value_len)
 {
-	CK_OBJECT_CLASS public_class = CKO_PUBLIC_KEY;
-	CK_OBJECT_CLASS private_class = CKO_PRIVATE_KEY;
-	CK_KEY_TYPE key_type = big ? CKK_GOSTR3410_512 : CKK_GOSTR3410;
-	CK_BBOOL yes = CK_TRUE, no = CK_FALSE;
-	const CK_BYTE *curve = big ? gost_vko_paramset_512a : gost_vko_paramset_cpa;
-	CK_ULONG curve_len = big ? sizeof(gost_vko_paramset_512a) :
-		sizeof(gost_vko_paramset_cpa);
-	const CK_BYTE *hash = big ? streebog_512_oid : streebog_256_oid;
-	CK_ULONG hash_len = big ? sizeof(streebog_512_oid) : sizeof(streebog_256_oid);
-	CK_ATTRIBUTE public_template[] = {
-		{ CKA_CLASS, &public_class, sizeof(public_class) },
-		{ CKA_KEY_TYPE, &key_type, sizeof(key_type) },
-		{ CKA_TOKEN, &no, sizeof(no) },
-		{ CKA_PRIVATE, &no, sizeof(no) },
-		{ CKA_GOSTR3410_PARAMS, (CK_VOID_PTR)curve, curve_len },
-		{ CKA_GOSTR3411_PARAMS, (CK_VOID_PTR)hash, hash_len }
-	};
-	CK_ATTRIBUTE private_template[] = {
-		{ CKA_CLASS, &private_class, sizeof(private_class) },
-		{ CKA_KEY_TYPE, &key_type, sizeof(key_type) },
-		{ CKA_TOKEN, &no, sizeof(no) },
-		{ CKA_PRIVATE, &yes, sizeof(yes) },
-		{ CKA_DERIVE, &yes, sizeof(yes) },
-		{ CKA_GOSTR3410_PARAMS, (CK_VOID_PTR)curve, curve_len },
-		{ CKA_GOSTR3411_PARAMS, (CK_VOID_PTR)hash, hash_len }
-	};
-	CK_MECHANISM mechanism = { big ? CKM_GOSTR3410_512_KEY_PAIR_GEN :
-		CKM_GOSTR3410_KEY_PAIR_GEN, NULL_PTR, 0 };
 	CK_ATTRIBUTE public_value = { CKA_VALUE, value, 128 };
-	CK_RV rv;
+	CK_OBJECT_HANDLE check_public, check_private;
+	size_t i;
+	CK_RV rv = CKR_TEMPLATE_INCONSISTENT;
 
 	if (!HAVE(f, C_GenerateKeyPair))
 		return 0;
-	rv = f->C_GenerateKeyPair(session, &mechanism, public_template,
-			sizeof(public_template) / sizeof(public_template[0]),
-			private_template,
-			sizeof(private_template) / sizeof(private_template[0]),
-			public_key, private_key);
-	show_rv("C_GenerateKeyPair(session key pair)", rv);
+	for (i = vko_pair_from; i < sizeof(vko_pairs) / sizeof(vko_pairs[0]); i++) {
+		if (vko_pairs[i].token && !vko_pair_checked) {
+			vko_pair_checked = 1;
+			if (vko_generate(session, &vko_pair_check, big, &check_public,
+					&check_private) == CKR_OK && HAVE(f, C_DestroyObject)) {
+				f->C_DestroyObject(session, check_public);
+				show_rv("C_DestroyObject(the check key pair)",
+						f->C_DestroyObject(session, check_private));
+			}
+		}
+		if (!vko_token_allowed(&vko_pairs[i]))
+			break;
+		rv = vko_generate(session, &vko_pairs[i], big, public_key, private_key);
+		if (rv == CKR_OK) {
+			vko_pair_from = i;
+			break;
+		}
+		if (!template_refused(rv))
+			break;
+	}
 	if (rv != CKR_OK)
 		return 0;
 	rv = f->C_GetAttributeValue(session, *public_key, &public_value, 1);
@@ -2506,7 +2646,13 @@ generate_vko_pair(CK_SESSION_HANDLE session, int big,
 	*value_len = public_value.ulValueLen;
 	if (rv == CKR_OK && *value_len != (CK_ULONG)(big ? 128 : 64))
 		line("the public key is %lu bytes, not %d", *value_len, big ? 128 : 64);
-	return rv == CKR_OK && *value_len == (CK_ULONG)(big ? 128 : 64);
+	if (rv == CKR_OK && *value_len == (CK_ULONG)(big ? 128 : 64))
+		return 1;
+	if (HAVE(f, C_DestroyObject)) {
+		f->C_DestroyObject(session, *public_key);
+		f->C_DestroyObject(session, *private_key);
+	}
+	return 0;
 }
 
 /* derive from both sides of the pair and compare */
@@ -2526,8 +2672,13 @@ check_vko_agreement(CK_SESSION_HANDLE session, CK_MECHANISM_TYPE type,
 	rv_b = derive_value(session, type, private_b, kdf, public_a, public_len,
 			ukm, ukm_len, key_type, side_b, &len_b);
 	if (rv_a != CKR_OK || rv_b != CKR_OK) {
-		line("%s, %s, %s: %s / %s", derive_mechanism_name(type), kdf_name,
-				derive_key_type_name(key_type), rv_name(rv_a), rv_name(rv_b));
+		char name_a[48];
+
+		snprintf(name_a, sizeof(name_a), "%s", rv_name(rv_a));
+		line("%s, %s, %s: %s (0x%lx) / %s (0x%lx)",
+				derive_mechanism_name(type), kdf_name,
+				derive_key_type_name(key_type), name_a, (unsigned long)rv_a,
+				rv_name(rv_b), (unsigned long)rv_b);
 		return;
 	}
 	line("%s, %s, %s: %lu bytes, %s", derive_mechanism_name(type), kdf_name,
@@ -2569,8 +2720,7 @@ probe_derive_tests(CK_SLOT_ID slot)
 				vector->source, derive_mechanism_name(vector->mechanism));
 		key = import_vko_private_key(session, vector);
 		if (key == CK_INVALID_HANDLE) {
-			line("SKIPPED: the token does not take this private key as a "
-					"session object");
+			line("SKIPPED: the token does not take this private key");
 			continue;
 		}
 		rv = derive_value(session, vector->mechanism, key, CKD_NULL,
@@ -2591,8 +2741,8 @@ probe_derive_tests(CK_SLOT_ID slot)
 	}
 
 	for (big = 0; big <= 1; big++) {
-		step("--derive-tests: two GOST R 34.10-2012 %d session key pairs "
-				"made by the token", big ? 512 : 256);
+		step("--derive-tests: two GOST R 34.10-2012 %d key pairs made by the "
+				"token", big ? 512 : 256);
 		if (!generate_vko_pair(session, big, &public_a, &private_a, value_a,
 				&len_a)) {
 			line("SKIPPED: no %d-bit key pair", big ? 512 : 256);
@@ -2626,6 +2776,11 @@ probe_derive_tests(CK_SLOT_ID slot)
 			f->C_DestroyObject(session, private_a);
 		}
 	}
+
+	/* the token objects are deleted above; this catches what a failed
+	 * call left */
+	if (write_confirmed)
+		destroy_probe_objects(session, "after the derive tests");
 
 	step("--derive-tests: close the read-write session");
 	show_rv("C_CloseSession", f->C_CloseSession(session));
