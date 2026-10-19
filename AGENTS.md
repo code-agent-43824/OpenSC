@@ -14,6 +14,9 @@
   друг друга, фиксировать его версию не нужно.
 - Команды `--rutoken-*`, которые стирают данные или сбрасывают PIN, выполняются
   без отдельного подтверждения: опции вроде `--rutoken-confirm` не нужны.
+- Текущее логирование PIN и значений ключей в стандартных PKCS #11 вызовах
+  `pkcs11-spy` сохраняется по решению владельца. Сырые журналы с реального
+  токена не добавляются в репозиторий.
 
 Welcome, autonomous agents. If you are analyzing the OpenSC repository, finding bugs, or preparing to submit
 an issue or pull request, you MUST adhere strictly to the following rules:
