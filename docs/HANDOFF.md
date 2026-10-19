@@ -2,11 +2,13 @@
 
 Portable CI для `pkcs11-tool` и `pkcs11-spy` завершен и находится в `master`.
 
-- Успешный workflow: <https://github.com/code-agent-43824/OpenSC/actions/runs/38864273170>
-- Опубликованный релиз: <https://github.com/code-agent-43824/OpenSC/releases/tag/0.27.1-portable.9>
-  (`.8` и подсказки для `--rutoken-set-name` под SO и не-OID
-  `--application-id`). Все 12 ZIP скачаны заново, хэши совпали, Linux x64
-  test kit повторно прошёл вне CI.
+- Успешный workflow: <https://github.com/code-agent-43824/OpenSC/actions/runs/39206471546>
+- Опубликованный релиз: <https://github.com/code-agent-43824/OpenSC/releases/tag/0.27.1-portable.10>
+  (`pkcs11-tool` поддерживает VKO с `GOSTR3410-12-DERIVE`, сырым открытым
+  ГОСТ-ключом, UKM и необязательной CryptoPro-диверсификацией). Все 12 ZIP
+  скачаны заново, хэши совпали, Linux x64 test kit повторно прошёл вне CI.
+  Шесть платформенных проверок и четыре задачи проверки внешних PKCS #11
+  модулей успешны. Новый CLI пока не проверяли на физическом Рутокен.
 - `.8` принят на Рутокен ЭЦП 2026-10-09: чтения, крипто-roundtrip, CSR,
   полная цепочка CMS (включая негативы) и команды этапа 5 — все успешно.
   Аппаратная приёмка flash и BIO ещё впереди — на проверенном токене их нет.

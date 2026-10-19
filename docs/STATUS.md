@@ -191,3 +191,24 @@ repository`: GitHub сам отключил workflows в форке («Workflows
 have been disabled»), хотя настройка репозитория разрешала все действия.
 Владелец включил их кнопкой на вкладке Actions. В upstream ничего не
 отправляется.
+
+## VKO и релиз `.10` (2026-10-19)
+
+`pkcs11-tool` получил поддержку `--derive --mechanism GOSTR3410-12-DERIVE`.
+`--input-file` принимает сырую точку открытого ГОСТ-ключа из `CKA_VALUE`
+(64 байта для ГОСТ-256, 128 для ГОСТ-512), `--vko-ukm` задаёт UKM, а
+`--vko-kdf cpdiversify` включает CryptoPro-диверсификацию. Результат
+по умолчанию имеет тип GOST28147; `--key-type` позволяет выбрать также
+GENERIC, MAGMA и KUZNECHIK. Проверяется формат UKM и длина точки,
+полученный 32-байтовый ключ записывается в файл или stdout.
+
+Релиз [`0.27.1-portable.10`](https://github.com/code-agent-43824/OpenSC/releases/tag/0.27.1-portable.10)
+собран workflow <https://github.com/code-agent-43824/OpenSC/actions/runs/39206471546>
+из `de5a41671`: шесть сборок, шесть проверок на чистых runner и публикация
+успешны. Test kit проверяет двустороннее VKO для ГОСТ-256/512 и
+CryptoPro-диверсификацию через SoftHSM. Все 12 ZIP скачаны из релиза:
+`SHA256SUMS` совпал, вложенных ZIP нет; Linux x64 test kit повторно прошёл
+вне CI. Отдельный workflow проверки внешних PKCS #11 модулей также успешен:
+<https://github.com/code-agent-43824/OpenSC/actions/runs/39206455550>.
+Новый CLI на физическом Рутокен пока не проверяли; аппаратная проба ранее
+установила формат параметра механизма.
