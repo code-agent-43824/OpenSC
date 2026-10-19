@@ -384,7 +384,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
-          notes='Portable pkcs11-tool and pkcs11-spy packages plus independently downloadable test kits for Linux x64/ARM64, Windows x86/x64/ARM64, and macOS universal. pkcs11-tool now supports VKO with CKM_GOSTR3410_12_DERIVE, a raw GOST public point, UKM, and optional CryptoPro diversification. Each clean runner checks the CLI with the latest portable SoftHSM on GOST-256 and GOST-512 key pairs, alongside the existing Rutoken ABI, CMS, and direct/spy scenarios. VKO through this CLI has not yet been checked on a physical Rutoken.'
+          notes='Portable pkcs11-tool and pkcs11-spy packages plus independently downloadable test kits for Linux x64/ARM64, Windows x86/x64/ARM64, and macOS universal. pkcs11-spy now names TC26 GOST-2012 key types and mechanisms, including GOST-512, Kuznechik, Magma, VKO, and Streebog HMAC. Each clean runner verifies these names in a VKO spy trace and repeats the GOST-256/512 VKO, Rutoken ABI, CMS, and direct/spy tests with the latest portable SoftHSM. The VKO CLI from the previous release was also verified on a physical Rutoken ECP.'
           scripts/portable/check-release-tag.sh
           gh release create "$RELEASE_TAG" release-assets/* \
             --target "$GITHUB_SHA" \

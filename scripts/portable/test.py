@@ -125,6 +125,32 @@ def verify_vko_cli(tool: Path, module: Path, work_dir: Path,
     print("PASS: pkcs11-tool VKO 256/512-bit and CryptoPro diversification")
 
 
+def verify_vko_spy_names(tool: Path, spy: Path, log_path: Path,
+                         work_dir: Path, env: Dict[str, str]) -> None:
+    login = ["--token-label", "opensc-direct", "--login", "--pin", "654321"]
+    run(tool, spy, login + ["--keypairgen", "--key-type",
+                            "GOSTR3410-2012-512:C", "--usage-derive",
+                            "--id", "a105"], env)
+    for key_id, peer, result_type in (("a103", "d", "KUZNECHIK"),
+                                      ("a101", "b", "MAGMA")):
+        output = work_dir / f"vko-spy-{result_type.lower()}.key"
+        run(tool, spy, login + [
+            "--derive", "--mechanism", "GOSTR3410-12-DERIVE", "--id", key_id,
+            "--input-file", str(work_dir / f"vko-{peer}.point"),
+            "--vko-ukm", "0102030405060708", "--key-type", result_type,
+            "--output-file", str(output),
+        ], env)
+        if output.stat().st_size != 32:
+            raise RuntimeError(f"VKO spy {result_type} result has the wrong length")
+
+    log = log_path.read_text(encoding="utf-8", errors="replace")
+    for name in ("CKM_GOSTR3410_512_KEY_PAIR_GEN", "CKM_GOSTR3410_12_DERIVE",
+                 "CKK_GOSTR3410_512", "CKK_KUZNECHIK", "CKK_MAGMA"):
+        if name not in log:
+            raise RuntimeError(f"pkcs11-spy did not name {name}")
+    print("PASS: pkcs11-spy names GOST VKO mechanisms and key types")
+
+
 def verify_spy_log(log_path: Path) -> None:
     log = log_path.read_text(encoding="utf-8", errors="replace")
     if "OpenSC PKCS#11 spy" not in log or "Loaded:" not in log:
@@ -542,8 +568,12 @@ def main() -> None:
         scenario(tool, softhsm, work_dir, "direct", env)
         verify_vko_cli(tool, softhsm, work_dir, env)
 
-        spy_log = work_dir / "pkcs11-spy.log"
         env["PKCS11SPY"] = str(softhsm)
+        vko_spy_log = work_dir / "pkcs11-spy-vko.log"
+        env["PKCS11SPY_OUTPUT"] = str(vko_spy_log)
+        verify_vko_spy_names(tool, spy, vko_spy_log, work_dir, env)
+
+        spy_log = work_dir / "pkcs11-spy.log"
         env["PKCS11SPY_OUTPUT"] = str(spy_log)
         scenario(tool, spy, work_dir, "spy", env)
         verify_spy_log(spy_log)

@@ -28,6 +28,9 @@ pkcs11-spy keeps the previous environment/Registry behavior.
 
 The spy log can include PINs and object contents passed to PKCS #11 functions;
 treat it as sensitive diagnostic data.
+The spy names TC26 GOST-2012 key types and mechanisms, including GOST-512,
+Kuznechik, Magma, VKO derivation, and Streebog HMAC; unknown vendor values
+remain numeric in the log.
 
 To derive a GOST 28147-89 key by VKO, use a GOST R 34.10-2012 private key
 created with --usage-derive and a file containing the other party's raw public
