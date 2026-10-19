@@ -80,6 +80,51 @@ def scenario(
         raise RuntimeError("deleted data object is still listed")
 
 
+def verify_vko_cli(tool: Path, module: Path, work_dir: Path,
+                   env: Dict[str, str]) -> None:
+    login = ["--token-label", "opensc-direct", "--login", "--pin", "654321"]
+    pairs = (("a", "a101", "GOSTR3410-2012-256:A", 64),
+             ("b", "a102", "GOSTR3410-2012-256:A", 64),
+             ("c", "a103", "GOSTR3410-2012-512:C", 128),
+             ("d", "a104", "GOSTR3410-2012-512:C", 128))
+    for name, key_id, key_type, point_len in pairs:
+        run(tool, module, login + ["--keypairgen", "--key-type", key_type,
+                                  "--usage-derive", "--id", key_id], env)
+        point = work_dir / f"vko-{name}.point"
+        run(tool, module, login + ["--read-object", "--type", "pubkey",
+                                  "--id", key_id, "--output-file", str(point)], env)
+        if point.stat().st_size != point_len:
+            raise RuntimeError(f"VKO {name} public point has the wrong length")
+
+    def derive(name: str, key_id: str, peer: str, kdf: str = "null") -> bytes:
+        output = work_dir / f"vko-{name}-{kdf}.key"
+        arguments = login + [
+            "--derive", "--mechanism", "GOSTR3410-12-DERIVE", "--id", key_id,
+            "--input-file", str(work_dir / f"vko-{peer}.point"),
+            "--vko-ukm", "0102030405060708",
+            "--output-file", str(output),
+        ]
+        if kdf != "null":
+            arguments += ["--vko-kdf", kdf, "--key-type", "GENERIC"]
+        run(tool, module, arguments, env)
+        value = output.read_bytes()
+        if len(value) != 32:
+            raise RuntimeError(f"VKO {name} derived {len(value)} bytes, expected 32")
+        return value
+
+    plain = derive("a", "a101", "b")
+    if plain != derive("b", "a102", "a"):
+        raise RuntimeError("VKO 256-bit peers derived different keys")
+    if derive("a", "a101", "b", "cpdiversify") != derive(
+            "b", "a102", "a", "cpdiversify"):
+        raise RuntimeError("VKO CryptoPro-diversified peers derived different keys")
+    if plain == (work_dir / "vko-a-cpdiversify.key").read_bytes():
+        raise RuntimeError("VKO diversification did not change the key")
+    if derive("c", "a103", "d") != derive("d", "a104", "c"):
+        raise RuntimeError("VKO 512-bit peers derived different keys")
+    print("PASS: pkcs11-tool VKO 256/512-bit and CryptoPro diversification")
+
+
 def verify_spy_log(log_path: Path) -> None:
     log = log_path.read_text(encoding="utf-8", errors="replace")
     if "OpenSC PKCS#11 spy" not in log or "Loaded:" not in log:
@@ -495,6 +540,7 @@ def main() -> None:
             verify_spy_config(tool, spy, softhsm, work_dir, env)
 
         scenario(tool, softhsm, work_dir, "direct", env)
+        verify_vko_cli(tool, softhsm, work_dir, env)
 
         spy_log = work_dir / "pkcs11-spy.log"
         env["PKCS11SPY"] = str(softhsm)

@@ -224,6 +224,8 @@ enum {
 	OPT_TEST_EC,
 	OPT_DERIVE,
 	OPT_DERIVE_PASS_DER,
+	OPT_VKO_UKM,
+	OPT_VKO_KDF,
 	OPT_DECRYPT,
 	OPT_ENCRYPT,
 	OPT_UNWRAP,
@@ -324,6 +326,8 @@ static const struct option options[] = {
 	{ "hash",		0, NULL,		'h' },
 	{ "derive",		0, NULL,		OPT_DERIVE },
 	{ "derive-pass-der",	0, NULL,		OPT_DERIVE_PASS_DER },
+	{ "vko-ukm",		1, NULL,		OPT_VKO_UKM },
+	{ "vko-kdf",		1, NULL,		OPT_VKO_KDF },
 	{ "mechanism",		1, NULL,		'm' },
 	{ "hash-algorithm",	1, NULL,		OPT_HASH_ALGORITHM },
 	{ "mgf",		1, NULL,		OPT_MGF },
@@ -470,6 +474,8 @@ static const char *option_help[] = {
 		"Hash some data",
 		"Derive a secret key using another key and some data",
 		"Derive ECDHpass DER encoded pubkey for compatibility with some PKCS#11 implementations",
+		"VKO UKM as hex bytes (required with GOSTR3410-12-DERIVE)",
+		"VKO key derivation function: null (default) or cpdiversify",
 		"Specify mechanism (use -M for a list of supported mechanisms), or by hexadecimal, e.g., 0x80001234",
 		"Specify hash algorithm used with RSA-PKCS-PSS signature and RSA-PKCS-OAEP decryption",
 		"Specify MGF (Message Generation Function) used for RSA-PSS signature and RSA-OAEP decryption (possible values are MGF1-SHA1 to MGF1-SHA512)",
@@ -492,7 +498,7 @@ static const char *option_help[] = {
 		"Specify the type and (not always compulsory) flavour (byte-wise symmetric key length, bit-wise asymmetric key length, elliptic curve identifier, etc.) of the key to create, for example RSA:2048, EC:prime256v1, EC:ED25519, EC:X448, GOSTR3410-2012-256:B, DES:8, DES3:24, AES:16, AES: or GENERIC:64",
 		"Specify 'sign' key usage flag (sets SIGN in privkey, sets VERIFY in pubkey)",
 		"Specify 'decrypt' key usage flag (sets DECRYPT in privkey and ENCRYPT in pubkey for RSA, sets both DECRYPT and ENCRYPT for secret keys)",
-		"Specify 'derive' key usage flag (EC only)",
+		"Specify 'derive' key usage flag (EC and GOST private keys)",
 		"Specify 'wrap' key usage flag",
 		"Specify 'encapsulate' key usage flag (sets ENCAPSULATE in public and DECAPSULATE in private)",
 		"Write an object (key, cert, data) to the card",
@@ -657,6 +663,9 @@ static int		opt_key_usage_wrap = 0;
 static int		opt_key_usage_encapsulate = 0;
 static int		opt_key_usage_default = 1; /* uses defaults if no opt_key_usage options */
 static int		opt_derive_pass_der = 0;
+static const char *	opt_vko_ukm = NULL;
+static CK_ULONG	opt_vko_kdf = CKD_NULL;
+static int		opt_vko_kdf_used = 0;
 static unsigned long	opt_random_bytes = 0;
 static CK_MECHANISM_TYPE opt_hash_alg = 0;
 static unsigned long	opt_mgf = 0;
@@ -1482,6 +1491,18 @@ int main(int argc, char * argv[])
 			do_derive = 1;
 			action_count++;
 			break;
+		case OPT_VKO_UKM:
+			opt_vko_ukm = optarg;
+			break;
+		case OPT_VKO_KDF:
+			if (!strcasecmp(optarg, "null"))
+				opt_vko_kdf = CKD_NULL;
+			else if (!strcasecmp(optarg, "cpdiversify"))
+				opt_vko_kdf = CKD_CPDIVERSIFY_KDF;
+			else
+				util_fatal("--vko-kdf must be null or cpdiversify");
+			opt_vko_kdf_used = 1;
+			break;
 #ifndef _WIN32
 		case OPT_TEST_FORK:
 			do_test_fork = 1;
@@ -1820,6 +1841,13 @@ int main(int argc, char * argv[])
 
 	if (action_count == 0)
 		util_print_usage_and_die(app_name, options, option_help, NULL);
+	if ((opt_vko_ukm || opt_vko_kdf_used) &&
+			(!do_derive || !opt_mechanism_used ||
+			 opt_mechanism != CKM_GOSTR3410_12_DERIVE))
+		util_fatal("--vko-ukm and --vko-kdf require --derive --mechanism GOSTR3410-12-DERIVE");
+	if (do_derive && opt_mechanism_used &&
+			opt_mechanism == CKM_GOSTR3410_12_DERIVE && opt_derive_pass_der)
+		util_fatal("--derive-pass-der is only for ECDH");
 
 	if (opt_rutoken_json && rutoken_action_count == 0)
 		util_fatal("--rutoken-json requires a --rutoken-* command");
@@ -9769,6 +9797,89 @@ derive_hkdf(CK_SESSION_HANDLE session, CK_OBJECT_HANDLE key)
 }
 
 static void
+vko_put_u32(CK_BYTE *out, CK_ULONG value)
+{
+	int i;
+	for (i = 0; i < 4; i++)
+		out[i] = (CK_BYTE)(value >> (8 * i));
+}
+
+static CK_OBJECT_HANDLE
+derive_gost_vko_key(CK_SESSION_HANDLE session, CK_OBJECT_HANDLE key,
+		CK_KEY_TYPE base_key_type)
+{
+	CK_BYTE point[129], ukm[32], parameter[12 + 128 + sizeof(ukm)];
+	CK_ULONG result_type = CKK_GOST28147;
+	CK_OBJECT_CLASS result_class = CKO_SECRET_KEY;
+	CK_BBOOL on_token = CK_FALSE;
+	CK_ATTRIBUTE result_template[] = {
+		{CKA_CLASS, &result_class, sizeof(result_class)},
+		{CKA_KEY_TYPE, &result_type, sizeof(result_type)},
+		{CKA_TOKEN, &on_token, sizeof(on_token)}
+	};
+	CK_MECHANISM mechanism = {CKM_GOSTR3410_12_DERIVE, parameter, 0};
+	CK_OBJECT_HANDLE result = CK_INVALID_HANDLE;
+	CK_RV rv;
+	FILE *file;
+	size_t point_len, ukm_len = sizeof(ukm), ukm_hex_len, i;
+	int nonzero = 0;
+
+	if (base_key_type != CKK_GOSTR3410 && base_key_type != CKK_GOSTR3410_512)
+		util_fatal("GOSTR3410-12-DERIVE requires a GOST R 34.10-2012 private key");
+	if (!opt_input || !opt_vko_ukm)
+		util_fatal("GOSTR3410-12-DERIVE requires --input-file and --vko-ukm");
+	ukm_hex_len = strlen(opt_vko_ukm);
+	if (!ukm_hex_len || ukm_hex_len > 2 * sizeof(ukm) || ukm_hex_len % 2)
+		util_fatal("--vko-ukm must contain 1 to 32 hex bytes");
+	if (sc_hex_to_bin(opt_vko_ukm, ukm, &ukm_len) || !ukm_len)
+		util_fatal("--vko-ukm must contain 1 to 32 hex bytes");
+	for (i = 0; i < ukm_len; i++)
+		nonzero |= ukm[i];
+	if (!nonzero)
+		util_fatal("--vko-ukm must not be zero");
+
+	if (opt_key_type) {
+		if (!strcasecmp(opt_key_type, "GOST28147"))
+			result_type = CKK_GOST28147;
+		else if (!strcasecmp(opt_key_type, "GENERIC"))
+			result_type = CKK_GENERIC_SECRET;
+		else if (!strcasecmp(opt_key_type, "MAGMA"))
+			result_type = CKK_MAGMA;
+		else if (!strcasecmp(opt_key_type, "KUZNECHIK"))
+			result_type = CKK_KUZNECHIK;
+		else
+			util_fatal("VKO result key type must be GOST28147, GENERIC, MAGMA or KUZNECHIK");
+	}
+
+	file = fopen(opt_input, "rb");
+	if (!file)
+		util_fatal("Cannot open %s: %m", opt_input);
+	point_len = fread(point, 1, sizeof(point), file);
+	if (ferror(file))
+		util_fatal("Cannot read %s: %m", opt_input);
+	fclose(file);
+	if (point_len != (base_key_type == CKK_GOSTR3410_512 ? 128U : 64U))
+		util_fatal("VKO peer point in --input-file must be %u raw bytes (CKA_VALUE)",
+				base_key_type == CKK_GOSTR3410_512 ? 128U : 64U);
+
+	/* Rutoken's mechanism parameter is a flat buffer, not
+	 * CK_GOSTR3410_DERIVE_PARAMS: 32-bit LE KDF, point length, X || Y,
+	 * UKM length and UKM. Both point coordinates are little-endian. */
+	vko_put_u32(parameter, opt_vko_kdf);
+	vko_put_u32(parameter + 4, (CK_ULONG)point_len);
+	memcpy(parameter + 8, point, point_len);
+	vko_put_u32(parameter + 8 + point_len, (CK_ULONG)ukm_len);
+	memcpy(parameter + 12 + point_len, ukm, ukm_len);
+	mechanism.ulParameterLen = (CK_ULONG)(12 + point_len + ukm_len);
+
+	rv = p11->C_DeriveKey(session, &mechanism, key, result_template,
+			ARRAY_SIZE(result_template), &result);
+	if (rv != CKR_OK)
+		p11_fatal("C_DeriveKey", rv);
+	return result;
+}
+
+static void
 derive_key(CK_SLOT_ID slot, CK_SESSION_HANDLE session, CK_OBJECT_HANDLE key)
 {
 	CK_BYTE *value = NULL;
@@ -9790,12 +9901,17 @@ derive_key(CK_SLOT_ID slot, CK_SESSION_HANDLE session, CK_OBJECT_HANDLE key)
 	case CKM_HKDF_DERIVE:
 		derived_key = derive_hkdf(session, key);
 		break;
+	case CKM_GOSTR3410_12_DERIVE:
+		derived_key = derive_gost_vko_key(session, key, key_type);
+		break;
 	default:
 		util_fatal("Key type %lu does not support derive", key_type);
 		break;
 	}
 
 	value = getVALUE(session, derived_key, &value_len);
+	if (opt_mechanism == CKM_GOSTR3410_12_DERIVE && (!value || !value_len))
+		util_fatal("VKO derived key has no readable CKA_VALUE");
 	if (value && value_len > 0) {
 		fd = STDOUT_FILENO;
 		if (opt_output)   {

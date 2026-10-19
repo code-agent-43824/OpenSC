@@ -28,3 +28,18 @@ pkcs11-spy keeps the previous environment/Registry behavior.
 
 The spy log can include PINs and object contents passed to PKCS #11 functions;
 treat it as sensitive diagnostic data.
+
+To derive a GOST 28147-89 key by VKO, use a GOST R 34.10-2012 private key
+created with --usage-derive and a file containing the other party's raw public
+point (64 bytes for GOST-256, 128 bytes for GOST-512). The point is CKA_VALUE
+of that party's public key; --read-object --type pubkey --output-file can save
+it. For example:
+
+  bin/pkcs11-tool --module /absolute/path/to/libsofthsm2.so --login \
+    --derive --mechanism GOSTR3410-12-DERIVE --id 01 \
+    --input-file peer.point --vko-ukm 0102030405060708 \
+    --output-file shared.key
+
+--vko-kdf cpdiversify selects CryptoPro diversification; the default is bare
+VKO. --key-type can select GENERIC, MAGMA or KUZNECHIK instead of GOST28147.
+The output file contains the raw derived key and should be kept private.

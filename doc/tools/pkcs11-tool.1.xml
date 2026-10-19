@@ -175,7 +175,7 @@
 					<term>
 						<option>--usage-derive</option>
 					</term>
-					<listitem><para>Specify 'derive' key usage flag (EC only).</para></listitem>
+					<listitem><para>Specify 'derive' key usage flag (EC and GOST private keys).</para></listitem>
 				</varlistentry>
 
 				<varlistentry>
@@ -766,6 +766,18 @@
 						<option>--derive-pass-der</option>
 					</term>
 					<listitem><para>Derive ECDHpass DER encoded pubkey for compatibility with some PKCS#11 implementations</para></listitem>
+				</varlistentry>
+				<varlistentry>
+					<term>
+						<option>--vko-ukm</option> <replaceable>hex</replaceable>
+					</term>
+					<listitem><para>UKM bytes in hexadecimal for <option>--derive --mechanism GOSTR3410-12-DERIVE</option>. Required together with <option>--input-file</option>, which must contain the peer's raw 64- or 128-byte GOST public point (the public key's CKA_VALUE, little-endian X then Y). The base private key must have CKA_DERIVE set; use <option>--usage-derive</option> when generating it. The derived session key defaults to GOST28147; <option>--key-type</option> can select GOST28147, GENERIC, MAGMA or KUZNECHIK. The 32-byte value is written to <option>--output-file</option> or standard output.</para></listitem>
+				</varlistentry>
+				<varlistentry>
+					<term>
+						<option>--vko-kdf</option> <replaceable>null|cpdiversify</replaceable>
+					</term>
+					<listitem><para>VKO derivation mode: bare VKO (null, the default) or CryptoPro key diversification (cpdiversify). The PKCS #11 module determines which UKM lengths and modes it supports.</para></listitem>
 				</varlistentry>
 
 				<varlistentry>
