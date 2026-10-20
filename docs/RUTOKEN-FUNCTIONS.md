@@ -273,7 +273,9 @@ license, journal, volumes, certificates, PIN status. Все проверены �
 
 ### Объекты аутентификации (отложено)
 
-По решению владельца отложены: на проверенном токене биометрии нет.
+По решению владельца пока не выполнять работы в этой области: на
+проверенном токене биометрии нет. Следующее описание — исторический проект
+интерфейса, не текущая задача.
 
 - Объекты `CKO_VENDOR_AUTHENTICATION_FACTOR` типа `CKVAF_BIO_FP_CONVOLUTION`
   (свертка отпечатка по ГОСТ Р ИСО/МЭК 19794-2), атрибуты: число сверток, ID,
@@ -304,7 +306,7 @@ license, journal, volumes, certificates, PIN status. Все проверены �
 | Функция | Команда | Условия и поведение |
 |---|---|---|
 | `SetTokenName(hSession, label, len)` | `--rutoken-set-name ИМЯ --login` | Сессия RW под Пользователем. Устройство: 0–255 байт UTF-8 приняты, `C_GetTokenInfo` показывает первые 32; пустое имя читается как «Rutoken ECP <no label>» |
-| `SetLicense(hSession, N, 72 байта)` | `--rutoken-set-license N --input-file F --login` | RW под Пользователем (Администратор не проверялся). Устройство: номера 1–4 и ровно 72 байта, иначе `CKR_ARGUMENTS_BAD`; повторная запись принята. Содержимое не печатается, буфер затирается |
+| `SetLicense(hSession, N, 72 байта)` | `--rutoken-set-license N --input-file F --login` | RW под Пользователем; позднее в приемке `.8` успешно проверен и SO. Устройство: номера 1–4 и ровно 72 байта, иначе `CKR_ARGUMENTS_BAD`; повторная запись принята. Содержимое не печатается, буфер затирается |
 | `SetLocalPIN(slot, PIN Пользователя или текущий локальный, новый, ID)` | `--rutoken-set-local-pin ID [--rutoken-auth-pin env:A] [--new-pin env:B]` | Без сессии и входа: `--login` и `--pin` отвергаются, чтобы `C_Login` с локальным PIN не тратил попытку PIN Пользователя. ID 3–31. Устройство: новый PIN — по PIN Пользователя, заданный — только по текущему значению (неверное тратит попытку локального PIN); минимальная длина как у PIN Пользователя, 10 попыток |
 | `UnblockUserPIN(hSession)` | `--rutoken-unblock-user-pin --login --login-type so` | Сессия RW под Администратором. Устройство: попытки PIN Пользователя восстановлены, у незаблокированного локального PIN — нет |
 | `TokenManage(hSession, mode, pValue)` | `--rutoken-token-manage РЕЖИМ --login --login-type so` | `force-user-pin-change` (6), `default-user-pin` (5, новый PIN из `--new-pin`), `standard-default-user-pin` (3), `reset-user-pin` (4); для Рутокен Bluetooth `bluetooth-timeout:МИН` (1, 0–70, 0 — по умолчанию) и `channel:usb\|bluetooth` (2), на других токенах `CKR_FUNCTION_NOT_SUPPORTED`. Устройство: режим 4 — смена PIN Пользователя, без права Администратора на нее (`TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN`) — `CKR_USER_NOT_LOGGED_IN`; режим 5 включает `TOKEN_FLAGS_USER_PIN_NOT_DEFAULT` |
@@ -319,8 +321,8 @@ license, journal, volumes, certificates, PIN status. Все проверены �
 | `ChangeVolumeAttributes(slot, владелец, PIN, раздел, режим, bPermanent)` | Отложено с разделами Flash. Постоянное изменение переподключает токен, `slotID` может смениться — токен ищется заново по серийному номеру | `--rutoken-volume-access ID:РЕЖИМ [--rutoken-permanent]` |
 | `FormatDrive(slot, CKU_SO, PIN, layout[], n)` | Отложено с разделами Flash. Стирает Flash, 1–8 разделов, переподключение | `--rutoken-format-drive РАЗМЕР:РЕЖИМ:ВЛАДЕЛЕЦ,...` |
 
-Устаревшие функции остаются в таблице и получают команды
-`--rutoken-legacy-*`, скрытые из краткой справки:
+Устаревшие функции остаются в таблице spy; перечисленные ниже
+`--rutoken-legacy-*` — прежний проект CLI, который пока не реализовывать:
 
 - `LoadActivationKey` — прошивка 20, по матрице не поддерживается ни одной
   моделью.
@@ -470,10 +472,13 @@ PIN; блокировка PIN Пользователя неверными PIN и
 | `InitToken`, сброс к заводским настройкам | С открытой сессией — `CKR_SESSION_EXISTS`; без нее `CKR_OK` за 3,3–3,4 с; объекты и локальные PIN удалены; лицензии, запись журнала и счетчик изменений остались |
 | Ключ с `CKA_VENDOR_CONFIRM_BY_TOUCH` без кнопки | `CKR_TEMPLATE_INCONSISTENT` без команд генерации; объектов `CKH_VENDOR_TOUCH_INTERFACE` нет |
 
-Открыто: режим 4 `TokenManage` при политике с Администратором,
-`SetLicense` под Администратором, `UseRepairMode`, Магма как ключ эмитента,
-имена длиннее 255 байт и аутентификаторы; работа с разделами Flash отложена
-(`PLAN.md`). Команды токена для записи, подписи, хэша, хранения объектов,
+Для нового расследования открыты: режим 4 `TokenManage` при политике с
+Администратором, отрицательные случаи `SetLicense`, непроверенные варианты
+`UseRepairMode` и имена длиннее 255 байт (план и условия — в
+[`PLAN.md`](PLAN.md)). Успешный `SetLicense` под SO подтвержден приемкой
+`.8`; повторная запись тестовой лицензии и базовый repair уже проверены.
+Ключи эмитента и CRISP исключены навсегда; Flash, BIO и legacy сейчас не
+исследуются. Команды токена для записи, подписи, хэша, хранения объектов,
 PKCS#7 и изменяющих функций разобраны в `RUTOKEN-APDU.md`.
 
 ## Полевой отчёт (Рутокен ЭЦП 2.0, релиз 0.27.1-portable.5)
