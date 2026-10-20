@@ -47,10 +47,13 @@ Copy-Item $OpenSSLCopyright (Join-Path $StageDir "LICENSE-OpenSSL.txt")
 
 $Stub = Join-Path $RutokenTestDir "rutoken-stub.dll"
 $Driver = Join-Path $RutokenTestDir "rutoken-driver.exe"
+$PrivilegeProbe = Join-Path $RutokenTestDir "rutoken-privilege-probe.exe"
 & cl /nologo /LD "/I$RootDir\src" "/Fo$RutokenTestDir\rutoken-stub.obj" "/Fe$Stub" "$RootDir\tests\rutoken-stub.c" /link /export:C_GetFunctionList
 if ($LASTEXITCODE -ne 0) { throw "Rutoken stub build failed" }
 & cl /nologo "/I$RootDir\src" "/Fo$RutokenTestDir\rutoken-driver.obj" "/Fe$Driver" "$RootDir\tests\rutoken-driver.c"
 if ($LASTEXITCODE -ne 0) { throw "Rutoken driver build failed" }
+& cl /nologo "/I$RootDir\src" "/Fo$RutokenTestDir\rutoken-privilege-probe.obj" "/Fe$PrivilegeProbe" "$RootDir\tests\rutoken-privilege-probe.c"
+if ($LASTEXITCODE -ne 0) { throw "Rutoken privilege probe build failed" }
 Remove-Item (Join-Path $RutokenTestDir "*.obj") -Force
 Remove-Item (Join-Path $RutokenTestDir "*.lib") -Force -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $RutokenTestDir "*.exp") -Force -ErrorAction SilentlyContinue
@@ -67,7 +70,7 @@ foreach ($Binary in $Tool, $OpenSCLibrary, $Spy) {
     }
 }
 
-foreach ($Binary in $Stub, $Driver) {
+foreach ($Binary in $Stub, $Driver, $PrivilegeProbe) {
     if (-not (& dumpbin /headers $Binary | Select-String -Pattern $ExpectedMachine)) {
         throw "$Binary does not have the expected $($env:PORTABLE_ARCH) machine type"
     }

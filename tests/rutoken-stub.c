@@ -208,6 +208,22 @@ C_GetFunctionList(CK_FUNCTION_LIST_PTR_PTR ppFunctionList)
 }
 
 CK_RV
+C_GetInfo(CK_INFO_PTR pInfo)
+{
+	if (!pInfo)
+		return CKR_ARGUMENTS_BAD;
+	memset(pInfo, ' ', sizeof(*pInfo));
+	pInfo->cryptokiVersion.major = 2;
+	pInfo->cryptokiVersion.minor = 40;
+	pInfo->flags = 0;
+	pInfo->libraryVersion.major = 0;
+	pInfo->libraryVersion.minor = 1;
+	memcpy(pInfo->manufacturerID, "OpenSC", 6);
+	memcpy(pInfo->libraryDescription, "Rutoken test stub", 17);
+	return CKR_OK;
+}
+
+CK_RV
 C_GetSlotList(CK_BBOOL tokenPresent, CK_SLOT_ID_PTR pSlotList,
 		CK_ULONG_PTR pulCount)
 {
@@ -1890,6 +1906,7 @@ static CK_FUNCTION_LIST standard_functions = {
 	.version = { 2, 40 },
 	.C_Initialize = C_Initialize,
 	.C_Finalize = C_Finalize,
+	.C_GetInfo = C_GetInfo,
 	.C_GetFunctionList = C_GetFunctionList,
 	.C_GetSlotList = C_GetSlotList,
 	.C_GetSlotInfo = C_GetSlotInfo,

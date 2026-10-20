@@ -224,6 +224,56 @@ def verify_rutoken_extensions(
         raise RuntimeError("Rutoken spy log did not redact sensitive input")
 
 
+def verify_privilege_probe(test_dir: Path, platform: str) -> None:
+    if platform.startswith("windows-"):
+        helper = test_dir / "rutoken-privilege-probe.exe"
+        stub = test_dir / "rutoken-stub.dll"
+    elif platform == "macos-universal":
+        helper = test_dir / "rutoken-privilege-probe"
+        stub = test_dir / "rutoken-stub.dylib"
+    else:
+        helper = test_dir / "rutoken-privilege-probe"
+        stub = test_dir / "rutoken-stub.so"
+    if not helper.is_file():
+        raise RuntimeError("Rutoken privilege probe is missing")
+    if not platform.startswith("windows-"):
+        helper.chmod(helper.stat().st_mode | 0o111)
+    env = os.environ.copy()
+    env["RUTOKEN_PROBE_TEST_PIN"] = "12345678"
+    cases = (
+        (["module-info", "none", "ro", "-"], "C_GetInfo", "CKR_OK"),
+        (["token-label", "none", "ro", "-"], "C_GetTokenInfo", "CKR_OK"),
+        (["object-count", "user", "ro", "RUTOKEN_PROBE_TEST_PIN"],
+         "C_FindObjects", "CKR_OK"),
+        (["reset-user-pin", "none", "rw", "-"],
+         "C_EX_TokenManage", "CKR_USER_NOT_LOGGED_IN"),
+        (["reset-user-pin", "user", "rw", "RUTOKEN_PROBE_TEST_PIN"],
+         "C_EX_TokenManage", "CKR_USER_NOT_LOGGED_IN"),
+        (["set-license", "none", "rw", "-", "1"],
+         "C_EX_SetLicense", "CKR_USER_NOT_LOGGED_IN"),
+        (["set-license", "user", "ro", "RUTOKEN_PROBE_TEST_PIN", "1"],
+         "C_EX_SetLicense", "CKR_SESSION_READ_ONLY"),
+        (["set-name", "none", "rw", "-", "probe"],
+         "C_EX_SetTokenName", "CKR_USER_NOT_LOGGED_IN"),
+    )
+    for arguments, stage, rv in cases:
+        result = subprocess.run(
+            [str(helper), str(stub), "7", *arguments], env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, errors="replace",
+        )
+        if result.returncode:
+            raise RuntimeError("Rutoken privilege probe failed: " + result.stderr)
+        data = json.loads(result.stdout)
+        if data.get("stage") != stage or data.get("rv") != rv:
+            raise RuntimeError("Rutoken privilege probe returned an unexpected result")
+        if arguments[0] == "module-info" and not data.get("module_version"):
+            raise RuntimeError("Rutoken privilege probe omitted the module version")
+        if arguments[0] == "object-count" and "object_count" not in data:
+            raise RuntimeError("Rutoken privilege probe omitted the object count")
+    print("PASS: Rutoken privilege probe returns direct role/session results")
+
+
 def verify_rutoken_cli(
     tool: Path,
     spy: Path,
@@ -547,6 +597,7 @@ def main() -> None:
 
         if rutoken_test_dir is not None:
             verify_rutoken_extensions(rutoken_test_dir, spy, platform, work_dir)
+            verify_privilege_probe(rutoken_test_dir, platform)
             verify_rutoken_cli(tool, spy, rutoken_test_dir, platform, work_dir, env)
             if platform.startswith("windows-"):
                 rutoken_stub = rutoken_test_dir / "rutoken-stub.dll"
