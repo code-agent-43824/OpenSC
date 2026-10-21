@@ -56,7 +56,8 @@ class Runner:
         self.report = {"version": 1, "case": args.case, "slot": args.slot,
                        "status": "running", "steps": [],
                        "tool_sha256": sha256(args.tool),
-                       "module_sha256": sha256(args.module)}
+                       "module_sha256": sha256(args.module),
+                       "helper_sha256": sha256(args.helper)}
         self.save()
 
     def save(self):
