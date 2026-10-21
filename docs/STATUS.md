@@ -14,10 +14,12 @@
 [`scripts/rutoken/README.md`](../scripts/rutoken/README.md). Владелец передал
 аппаратный прогон от 2026-10-21: 128 шагов, оба варианта repair успешны,
 `TokenManage` mode 4 под SO работает при политиках `admin`/`both`, а имя
-длиной 256 байт читается обратно. Исходник приложенной прямой пробы имеет неверный ABI,
-поэтому результаты mode 4 под USER и `C_GetTokenInfo.label` недостоверны;
-разбор и оставшиеся проверки — в
-[`RUTOKEN-PRIVILEGE-20261021.md`](RUTOKEN-PRIVILEGE-20261021.md).
+длиной 256 байт читается обратно. Первый прямой helper имел неверный ABI.
+Повторная проба штатным helper подтвердила mode 4 под USER при политиках
+`user`/`both`, отказ при `admin` и первые 32 байта `C_GetTokenInfo.label`.
+CLI теперь допускает `reset-user-pin` под USER. Разбор и оставшиеся проверки —
+в [`RUTOKEN-PRIVILEGE-FOLLOWUP-20261021.md`](RUTOKEN-PRIVILEGE-FOLLOWUP-20261021.md)
+и [`PLAN.md`](PLAN.md).
 
 Реализован workflow portable-релиза `pkcs11-tool` и `pkcs11-spy` для Linux x64/ARM64, Windows x86/x64/ARM64 и macOS universal. Сборки статически включают сторонние библиотеки; Windows-архивы содержат требуемую проектную `opensc.dll` рядом с executable. PE/ELF/Mach-O файлы проверяются на архитектуру и отсутствие незапланированных динамических зависимостей.
 

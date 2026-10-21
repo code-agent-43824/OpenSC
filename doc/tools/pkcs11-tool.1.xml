@@ -571,15 +571,20 @@
 					<term>
 						<option>--rutoken-token-manage</option> <replaceable>mode</replaceable>
 					</term>
-					<listitem><para>Call <option>C_EX_TokenManage</option> under
-					<option>--login</option> <option>--login-type</option> so.
+					<listitem><para>Call <option>C_EX_TokenManage</option>. PIN
+					modes require <option>--login</option> <option>--login-type</option>
+					so, except <literal>reset-user-pin</literal>, which also accepts
+					<literal>user</literal> (the default login role) when the token's
+					PIN policy permits it.
 					Modes: <literal>force-user-pin-change</literal> (the user must
 					change the PIN), <literal>default-user-pin</literal> (a new
 					default User PIN, given with <option>--new-pin</option>),
 					<literal>standard-default-user-pin</literal> (back to the factory
 					default), <literal>reset-user-pin</literal> (reset the User PIN
-					to the default one; requires a token that lets the SO change the
-					User PIN), and for Rutoken ECP
+					to the default one; requires
+					<literal>TOKEN_FLAGS_USER_CHANGE_USER_PIN</literal> with User login
+					or <literal>TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN</literal> with SO login),
+					and for Rutoken ECP
 					Bluetooth <literal>bluetooth-timeout:</literal><replaceable>minutes</replaceable>
 					(0 to 70, 0 for the default) and
 					<literal>channel:usb</literal> or

@@ -407,7 +407,18 @@ run_change $so_login --rutoken-token-manage default-user-pin \
 expect "$text" 'USER_PIN_NOT_DEFAULT'
 # shellcheck disable=SC2086
 fails $so_login --rutoken-token-manage reset-user-pin
-expect "$text" 'TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN)'
+expect "$text" 'TOKEN_FLAGS_USER_CHANGE_USER_PIN or SO with TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN'
+run_change --login --login-type user --pin env:RUTOKEN_TEST_USER_PIN \
+	--rutoken-token-manage reset-user-pin --rutoken-json > "$json"
+expect "$json" '"token_manage":{"mode":"reset-user-pin","mode_code":4}'
+run_change --login --pin env:RUTOKEN_TEST_USER_PIN \
+	--rutoken-token-manage reset-user-pin > "$text"
+expect "$text" 'Rutoken token manage reset-user-pin: done'
+fails --rutoken-token-manage reset-user-pin
+expect "$text" 'needs --login with user (default) or so'
+fails --login --login-type user --pin env:RUTOKEN_TEST_USER_PIN \
+	--rutoken-token-manage force-user-pin-change
+expect "$text" 'needs --login --login-type so'
 # shellcheck disable=SC2086
 fails $so_login --rutoken-token-manage bluetooth-timeout:10 --rutoken-json
 expect "$text" '"token_manage":{"mode":"bluetooth-timeout","mode_code":1,"error":{"function":"C_EX_TokenManage","rv":"CKR_FUNCTION_NOT_SUPPORTED"'

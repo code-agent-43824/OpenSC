@@ -580,7 +580,7 @@ static const char *option_help[] = {
 		"Set Rutoken local PIN <arg> (3..31) to --new-pin, authorized by --rutoken-auth-pin",
 		"The user PIN for a new local PIN or the current value of an existing one, as env:<name>; asked if absent",
 		"Unblock the Rutoken user PIN (needs --login --login-type so)",
-		"Rutoken PIN policy or Bluetooth mode: force-user-pin-change, default-user-pin, standard-default-user-pin, reset-user-pin, bluetooth-timeout:<minutes> or channel:usb|bluetooth (needs --login --login-type so)",
+		"Rutoken PIN policy or Bluetooth mode: force-user-pin-change, default-user-pin, standard-default-user-pin, reset-user-pin, bluetooth-timeout:<minutes> or channel:usb|bluetooth (PIN modes need --login --login-type so; reset-user-pin also accepts user)",
 		"Format the Rutoken: all objects and local PINs are erased",
 		"Format the Rutoken and replace its emitent key",
 		"New SO PIN of --rutoken-init-token and --rutoken-restore-factory-defaults, as env:<name>; asked if absent",
@@ -3916,7 +3916,13 @@ rutoken_check_change(const struct rutoken_request *request, int modifiers,
 		break;
 	case RUTOKEN_TOKEN_MANAGE:
 		/* the PIN modes; nothing is known of the Bluetooth ones */
-		if (request->manage_mode != MODE_SET_BLUETOOTH_POWEROFF_TIMEOUT &&
+		if (request->manage_mode == MODE_RESET_PIN_TO_DEFAULT) {
+			if (!opt_login || (opt_login_type != -1 &&
+					opt_login_type != CKU_USER &&
+					opt_login_type != CKU_SO))
+				util_fatal("--rutoken-token-manage %s needs --login "
+						"with user (default) or so", request->manage_name);
+		} else if (request->manage_mode != MODE_SET_BLUETOOTH_POWEROFF_TIMEOUT &&
 				request->manage_mode != MODE_SET_CHANNEL_TYPE &&
 				(!opt_login || opt_login_type != CKU_SO))
 			util_fatal("--rutoken-token-manage %s needs --login --login-type so",
@@ -4676,9 +4682,9 @@ rutoken_token_manage(CK_SESSION_HANDLE session,
 			rutoken_hint("the Bluetooth modes need a Rutoken ECP Bluetooth");
 		if (rv == CKR_USER_NOT_LOGGED_IN &&
 				request->manage_mode == MODE_RESET_PIN_TO_DEFAULT)
-			rutoken_hint("the reset changes the user PIN, so the token must "
-					"let the Administrator change it (user PIN policy admin "
-					"or both, TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN)");
+			rutoken_hint("the reset needs a permitted role: USER with "
+					"TOKEN_FLAGS_USER_CHANGE_USER_PIN or SO with "
+					"TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN");
 		if (opt_rutoken_json)
 			json_end("}");
 		return 1;

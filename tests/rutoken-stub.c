@@ -1668,7 +1668,13 @@ C_EX_TokenManage(CK_SESSION_HANDLE hSession, CK_ULONG ulMode,
 	if (ulMode == MODE_SET_BLUETOOTH_POWEROFF_TIMEOUT ||
 			ulMode == MODE_SET_CHANNEL_TYPE)
 		return CKR_FUNCTION_NOT_SUPPORTED;
-	if (!so_logged_in())
+	if (ulMode == MODE_RESET_PIN_TO_DEFAULT ?
+			!logged_in ||
+			!((login_user == CKU_USER &&
+				(token.user_pin_policy & TOKEN_FLAGS_USER_CHANGE_USER_PIN)) ||
+				(login_user == CKU_SO &&
+				(token.user_pin_policy & TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN))) :
+			!so_logged_in())
 		return CKR_USER_NOT_LOGGED_IN;
 	if (!pValue)
 		return CKR_ARGUMENTS_BAD;
@@ -1691,10 +1697,6 @@ C_EX_TokenManage(CK_SESSION_HANDLE hSession, CK_ULONG ulMode,
 	case MODE_RESET_PIN_TO_DEFAULT:
 		if (*(CK_USER_TYPE *)pValue != CKU_USER)
 			return CKR_ARGUMENTS_BAD;
-		/* the reset changes the user PIN: the device refused it (69 82)
-		 * while only the user might change the user PIN */
-		if (!(token.user_pin_policy & TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN))
-			return CKR_USER_NOT_LOGGED_IN;
 		strcpy(token.user.value, token.custom_user_default[0] ?
 				token.custom_user_default : STUB_STANDARD_USER_PIN);
 		token.user.retries = token.user.max_retries;

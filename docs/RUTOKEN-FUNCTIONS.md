@@ -305,11 +305,11 @@ license, journal, volumes, certificates, PIN status. Все проверены �
 
 | Функция | Команда | Условия и поведение |
 |---|---|---|
-| `SetTokenName(hSession, label, len)` | `--rutoken-set-name ИМЯ --login` | Сессия RW под Пользователем. Устройство: 0–255 байт UTF-8 приняты, `C_GetTokenInfo` показывает первые 32; пустое имя читается как «Rutoken ECP <no label>» |
+| `SetTokenName(hSession, label, len)` | `--rutoken-set-name ИМЯ --login` | Сессия RW под Пользователем. На проверенном устройстве приняты имена до 256 байт UTF-8 включительно; больший предел не проверен. `C_GetTokenInfo` показывает первые 32 байта; пустое имя читается как «Rutoken ECP <no label>» |
 | `SetLicense(hSession, N, 72 байта)` | `--rutoken-set-license N --input-file F --login` | RW под Пользователем; позднее в приемке `.8` успешно проверен и SO. Устройство: номера 1–4 и ровно 72 байта, иначе `CKR_ARGUMENTS_BAD`; повторная запись принята. Содержимое не печатается, буфер затирается |
 | `SetLocalPIN(slot, PIN Пользователя или текущий локальный, новый, ID)` | `--rutoken-set-local-pin ID [--rutoken-auth-pin env:A] [--new-pin env:B]` | Без сессии и входа: `--login` и `--pin` отвергаются, чтобы `C_Login` с локальным PIN не тратил попытку PIN Пользователя. ID 3–31. Устройство: новый PIN — по PIN Пользователя, заданный — только по текущему значению (неверное тратит попытку локального PIN); минимальная длина как у PIN Пользователя, 10 попыток |
 | `UnblockUserPIN(hSession)` | `--rutoken-unblock-user-pin --login --login-type so` | Сессия RW под Администратором. Устройство: попытки PIN Пользователя восстановлены, у незаблокированного локального PIN — нет |
-| `TokenManage(hSession, mode, pValue)` | `--rutoken-token-manage РЕЖИМ --login --login-type so` | `force-user-pin-change` (6), `default-user-pin` (5, новый PIN из `--new-pin`), `standard-default-user-pin` (3), `reset-user-pin` (4); для Рутокен Bluetooth `bluetooth-timeout:МИН` (1, 0–70, 0 — по умолчанию) и `channel:usb\|bluetooth` (2), на других токенах `CKR_FUNCTION_NOT_SUPPORTED`. Устройство: режим 4 — смена PIN Пользователя, без права Администратора на нее (`TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN`) — `CKR_USER_NOT_LOGGED_IN`; режим 5 включает `TOKEN_FLAGS_USER_PIN_NOT_DEFAULT` |
+| `TokenManage(hSession, mode, pValue)` | `--rutoken-token-manage РЕЖИМ --login --login-type so`; для `reset-user-pin` также `--login-type user` или просто `--login` (USER по умолчанию) | `force-user-pin-change` (6), `default-user-pin` (5, новый PIN из `--new-pin`), `standard-default-user-pin` (3), `reset-user-pin` (4); для Рутокен Bluetooth `bluetooth-timeout:МИН` (1, 0–70, 0 — по умолчанию) и `channel:usb\|bluetooth` (2), на других токенах `CKR_FUNCTION_NOT_SUPPORTED`. На проверенном устройстве режим 4 под USER проходит при политике `user`/`both` (`TOKEN_FLAGS_USER_CHANGE_USER_PIN`), под SO — при `admin`/`both` (`TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN`); иначе `CKR_USER_NOT_LOGGED_IN`. Режим 5 включает `TOKEN_FLAGS_USER_PIN_NOT_DEFAULT` |
 | `InitToken(slot, SO PIN, CK_RUTOKEN_INIT_PARAM)` | `--rutoken-init-token` | Текущий PIN Администратора — `--so-pin`, новые — `--rutoken-new-so-pin` и `--new-pin`; метка — `--label`; `--rutoken-user-pin-policy user\|admin\|both` (по умолчанию `user`, как с завода), `--rutoken-min-pin-length SO:USER` (6:6), `--rutoken-retries SO:USER` (10:10), `--rutoken-sm-mode N` (0), `--rutoken-repair-mode` — без PIN Администратора. Открытых сессий быть не должно: `CKR_SESSION_EXISTS` без обращения к токену. Устройство: около 3,4 с; удаляются объекты и локальные PIN, остаются лицензии, запись журнала и счетчик изменений |
 | `SlotManage(MODE_RESTORE_FACTORY_DEFAULTS)` | `--rutoken-restore-factory-defaults --rutoken-emitent-key F` | Те же параметры форматирования, кроме ремонтного режима; ключ эмитента — 32 байта из файла, `--rutoken-emitent-key-type kuznyechik\|magma` (по умолчанию Кузнечик), `--rutoken-emitent-key-retries N` (10). Устройство: как `InitToken` плюс ключ эмитента, Кузнечик с 10 попытками принят, около 3,3 с |
 
@@ -472,14 +472,15 @@ PIN; блокировка PIN Пользователя неверными PIN и
 | `InitToken`, сброс к заводским настройкам | С открытой сессией — `CKR_SESSION_EXISTS`; без нее `CKR_OK` за 3,3–3,4 с; объекты и локальные PIN удалены; лицензии, запись журнала и счетчик изменений остались |
 | Ключ с `CKA_VENDOR_CONFIRM_BY_TOUCH` без кнопки | `CKR_TEMPLATE_INCONSISTENT` без команд генерации; объектов `CKH_VENDOR_TOUCH_INTERFACE` нет |
 
-Аппаратный прогон 2026-10-21 частично закрыл эти вопросы: mode 4 через CLI
-под SO с политиками `admin`/`both`, имена по 256 байт и оба варианта repair
-с заблокированным SO PIN прошли. Предел имени 255 байт из прежней пробы не
-универсален. Исходник прямого helper в новом архиве имеет неверный ABI, поэтому его
-результаты mode 4 под USER и сравнения `C_GetTokenInfo.label` недостоверны;
-подробности и оставшиеся проверки — в
-[`RUTOKEN-PRIVILEGE-20261021.md`](RUTOKEN-PRIVILEGE-20261021.md) и
-[`PLAN.md`](PLAN.md). Успешный `SetLicense` под SO подтвержден приемкой `.8`;
+Аппаратный прогон 2026-10-21 подтвердил mode 4 через CLI под SO с политиками
+`admin`/`both`, имена по 256 байт и оба варианта repair с заблокированным
+SO PIN. Первый прямой helper имел неверный ABI, поэтому его результаты под
+USER и сравнения `C_GetTokenInfo.label` были недостоверны. Повторная проба
+штатным helper подтвердила mode 4 под USER с политиками `user`/`both` и
+первые 32 байта метки. Подробности — в
+[`RUTOKEN-PRIVILEGE-FOLLOWUP-20261021.md`](RUTOKEN-PRIVILEGE-FOLLOWUP-20261021.md)
+и [`PLAN.md`](PLAN.md). Предел имени 255 байт из прежней пробы не
+универсален. Успешный `SetLicense` под SO подтвержден приемкой `.8`;
 повторная запись тестовой лицензии и базовый repair уже проверены.
 Ключи эмитента и CRISP исключены навсегда; Flash, BIO и legacy сейчас не
 исследуются. Команды токена для записи, подписи, хэша, хранения объектов,
