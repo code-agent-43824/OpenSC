@@ -191,6 +191,94 @@ class Runner:
                 self.env["RT_ACTIVE_USER_PIN"] = self.env["RT_DEFAULT_USER_PIN"]
             self.info(prefix + ".after")
 
+    def followup(self):
+        """Resolve the inconclusive USER reset and standard-label probe cells."""
+        baseline = self.info("followup.name.before").get("name", {}).get("label")
+        if not isinstance(baseline, str) or len(baseline.encode("utf-8")) > 256:
+            raise ScenarioError("followup: original token name cannot be restored")
+        self.report["followup"] = {"standard_label": {}, "user_reset": {}}
+        self.save()
+
+        def check_standard_label(step, expected):
+            row, data = self.probe(step, "token-label", "none", "ro")
+            if row["rv"] != "CKR_OK" or not isinstance(data.get("label_hex"), str):
+                raise ScenarioError(f"{step}: C_GetTokenInfo unavailable")
+            actual = bytes.fromhex(data["label_hex"])
+            if len(actual) != 32:
+                raise ScenarioError(f"{step}: C_GetTokenInfo label is not 32 bytes")
+            row["prefix_matches"] = (actual.rstrip(b" \0") ==
+                                     expected.encode("utf-8")[:32].rstrip(b" \0"))
+            self.report["followup"]["standard_label"][step.rsplit(".", 1)[-1]] = (
+                row["prefix_matches"])
+            self.save()
+
+        check_standard_label("followup.name.standard_before", baseline)
+        user = ("--login", "--pin", "env:RT_ACTIVE_USER_PIN")
+        known_name = "A" * 256
+        try:
+            row, _, _ = self.cli("followup.name.set_256", *user,
+                                 "--rutoken-set-name", known_name, "--rutoken-json")
+            if row["exit_code"]:
+                raise ScenarioError("followup: cannot set the 256-byte test name")
+            actual = self.info("followup.name.read_256").get("name", {}).get("label")
+            if actual != known_name:
+                raise ScenarioError("followup: GetTokenName differs from the test name")
+            check_standard_label("followup.name.standard_256", known_name)
+        finally:
+            row, _, _ = self.cli("followup.name.restore", *user,
+                                 "--rutoken-set-name", baseline, "--rutoken-json")
+            if row["exit_code"]:
+                raise ScenarioError("followup: original name could not be restored")
+            if self.info("followup.name.restored").get("name", {}).get("label") != baseline:
+                raise ScenarioError("followup: original name differs after restore")
+
+        formatted = False
+        try:
+            for policy in ("user", "admin", "both"):
+                prefix = "followup.manage." + policy
+                formatted = True
+                self.initialize(prefix + ".init", policy)
+                so = ("--login", "--login-type", "so", "--so-pin",
+                      "env:RT_ACTIVE_SO_PIN")
+                row, _, _ = self.cli(prefix + ".default", *so,
+                                     "--rutoken-token-manage", "default-user-pin",
+                                     "--new-pin", "env:RT_DEFAULT_USER_PIN",
+                                     "--rutoken-json")
+                if row["exit_code"]:
+                    raise ScenarioError(f"{prefix}: cannot set the test default PIN")
+                self.info(prefix + ".before_reset")
+                reset, _ = self.probe(prefix + ".user_rw", "reset-user-pin",
+                                      "user", "rw")
+                default_login = self.login(prefix + ".default_login", "user",
+                                           self.env["RT_DEFAULT_USER_PIN"])
+                if default_login["exit_code"] == 0:
+                    pin_after = "default"
+                    self.env["RT_ACTIVE_USER_PIN"] = self.env["RT_DEFAULT_USER_PIN"]
+                elif self.login(prefix + ".new_login", "user",
+                                self.env["RT_NEW_USER_PIN"])["exit_code"] == 0:
+                    pin_after = "new"
+                    self.env["RT_ACTIVE_USER_PIN"] = self.env["RT_NEW_USER_PIN"]
+                else:
+                    raise ScenarioError(f"{prefix}: neither known USER PIN works")
+                reset["pin_after"] = pin_after
+                self.report["followup"]["user_reset"][policy] = {
+                    "rv": reset["rv"], "code": reset.get("code"),
+                    "pin_after": pin_after}
+                self.save()
+                self.info(prefix + ".after_reset")
+        finally:
+            if formatted:
+                self.initialize("followup.restore.init", "both")
+                row, _, _ = self.cli("followup.restore.name", *user,
+                                     "--rutoken-set-name", baseline,
+                                     "--rutoken-json")
+                if row["exit_code"]:
+                    raise ScenarioError("followup: original name could not be restored")
+                if self.info("followup.restore.after").get("name", {}).get("label") != baseline:
+                    raise ScenarioError("followup: original name differs after restore")
+                self.report["followup"]["restored_known_pins_and_name"] = True
+                self.save()
+
     def license(self):
         free_slot = None
         for number in range(1, 5):
@@ -320,7 +408,7 @@ def main():
     parser.add_argument("--expected-serial", required=True,
                         help="hex serial from --rutoken-info --rutoken-json")
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--case", choices=("all", "manage", "license", "name", "repair"),
+    parser.add_argument("--case", choices=("all", "manage", "license", "name", "repair", "followup"),
                         default="all")
     parser.add_argument("--timeout", type=int, default=180)
     args = parser.parse_args()
@@ -332,14 +420,14 @@ def main():
             parser.error(f"{name} does not exist: {path}")
         setattr(args, name, path)
     required = {"RT_SO_PIN", "RT_USER_PIN"}
-    if args.case in ("all", "manage", "repair"):
+    if args.case in ("all", "manage", "repair", "followup"):
         required |= {"RT_NEW_SO_PIN", "RT_NEW_USER_PIN"}
-    if args.case in ("all", "manage"):
+    if args.case in ("all", "manage", "followup"):
         required.add("RT_DEFAULT_USER_PIN")
     missing = sorted(name for name in required if not os.environ.get(name))
     if missing:
         parser.error("missing PIN environment variables: " + ", ".join(missing))
-    if args.case in ("all", "manage") and os.environ["RT_DEFAULT_USER_PIN"] == os.environ["RT_NEW_USER_PIN"]:
+    if args.case in ("all", "manage", "followup") and os.environ["RT_DEFAULT_USER_PIN"] == os.environ["RT_NEW_USER_PIN"]:
         parser.error("RT_DEFAULT_USER_PIN must differ from RT_NEW_USER_PIN")
     args.output = args.output.resolve()
     if args.output.exists():

@@ -12,6 +12,10 @@ Portable CI для `pkcs11-tool` и `pkcs11-spy` завершен и наход�
 [`rutoken-privilege-probe`](../tests/rutoken-privilege-probe.c). Объектов до
 repair было ноль: проверить их удаление можно только с заранее созданным
 тестовым объектом. Исправлений CLI по этому архиву пока не требуется.
+Для оставшихся двух вопросов подготовлен
+[`run_privilege_followup.sh`](../scripts/rutoken/run_privilege_followup.sh)
+и [инструкция](../scripts/rutoken/FOLLOWUP-README.md); полный `all`
+повторять не нужно.
 Изменения сохранены локально в `master`. `make check`
 прошёл (12 PASS, 1 SKIP без считывателя), прямая проба и сценарий лицензии
 прошли на заглушке. Публикация следующего portable-релиза `.12` пока
