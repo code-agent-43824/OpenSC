@@ -399,6 +399,223 @@ class Runner:
         self.probe("repair.restored_objects", "object-count", "user", "ro")
         (self.args.output / "generated-pins.json").unlink()
 
+    def closure(self):
+        """One physical run for the remaining privilege and repair questions."""
+        baseline = self.info("closure.baseline").get("name", {}).get("label")
+        if not isinstance(baseline, str) or len(baseline.encode("utf-8")) > 4096:
+            raise ScenarioError("closure: original name cannot be restored")
+        self.report["closure"] = {"baseline_name_bytes": len(baseline.encode("utf-8")),
+                                  "name_boundary": {}, "repair": {}}
+        self.save()
+        user = ("--login", "--pin", "env:RT_ACTIVE_USER_PIN")
+        so = ("--login", "--login-type", "so", "--so-pin",
+              "env:RT_ACTIVE_SO_PIN")
+
+        def count(name, role="user", access="ro"):
+            row, _ = self.probe(name, "object-count", role, access)
+            if row["rv"] != "CKR_OK" or not isinstance(row.get("object_count"), int):
+                raise ScenarioError(f"{name}: cannot count USER-visible objects")
+            return row["object_count"]
+
+        if count("closure.objects.preflight") != 0:
+            raise ScenarioError("closure: token contains USER-visible objects; use an empty disposable token")
+        if count("closure.objects.preflight_public", "none", "ro") != 0:
+            raise ScenarioError("closure: token contains public objects; use an empty disposable token")
+        if count("closure.objects.preflight_so", "so", "rw") != 0:
+            raise ScenarioError("closure: token contains SO-visible objects; use an empty disposable token")
+        if self.env["RT_DEFAULT_USER_PIN"] in (
+                self.env["RT_ACTIVE_USER_PIN"], self.env["RT_NEW_USER_PIN"]):
+            raise ScenarioError("closure: RT_DEFAULT_USER_PIN must differ from current and new USER PIN")
+
+        # All negative calls precede formatting. A surprising success stops the run.
+        for role, access in (("none", "rw"), ("none", "ro"),
+                             ("user", "ro"), ("so", "ro")):
+            name = f"closure.mode4.{role}_{access}"
+            row, _ = self.probe(name, "reset-user-pin", role, access)
+            if row["rv"] == "CKR_OK":
+                raise ScenarioError(f"{name}: unexpectedly reset the USER PIN")
+        if self.login("closure.mode4.user_still_valid", "user")["exit_code"]:
+            raise ScenarioError("closure: negative mode 4 calls changed the USER PIN")
+
+        free_slot = None
+        for number in range(1, 5):
+            row, data, _ = self.cli(f"closure.license.slot_{number}",
+                                    "--rutoken-license", str(number),
+                                    "--rutoken-json")
+            if (not row["exit_code"] and isinstance(data, dict) and
+                    data.get("license", {}).get("empty")):
+                free_slot = number
+                break
+        self.report["closure"]["free_license_slot"] = free_slot
+        self.save()
+        if free_slot is None:
+            self.report["incomplete"] = True
+            self.report["closure"]["license_status"] = "no_empty_slot"
+            self.save()
+        else:
+            dummy = self.args.output / "license-test.bin"
+            dummy.write_bytes(b"P" * 72)
+
+            def slot_is_empty(name):
+                row, data, _ = self.cli(name, "--rutoken-license",
+                                        str(free_slot), "--rutoken-json")
+                if (row["exit_code"] or not isinstance(data, dict) or
+                        not data.get("license", {}).get("empty")):
+                    raise ScenarioError(f"{name}: test license slot changed")
+
+            try:
+                row, _, _ = self.cli("closure.license.cli_none", "--rutoken-set-license",
+                                     str(free_slot), "--input-file", str(dummy),
+                                     "--rutoken-json")
+                if row["exit_code"] == 0:
+                    raise ScenarioError("closure: no-login CLI unexpectedly set a license")
+                slot_is_empty("closure.license.after_cli")
+                for role, access in (("none", "rw"), ("user", "ro"), ("so", "ro")):
+                    name = f"closure.license.{role}_{access}"
+                    row, _ = self.probe(name, "set-license", role, access,
+                                        free_slot)
+                    if row["rv"] == "CKR_OK":
+                        raise ScenarioError(f"{name}: unexpectedly set a license")
+                    slot_is_empty(name + ".after")
+                self.report["closure"]["license_status"] = "negative_cases_complete"
+                self.save()
+            finally:
+                dummy.unlink(missing_ok=True)
+
+        # Find the first rejected length, up to 4096 bytes, and verify that
+        # rejected calls leave the previous name untouched.
+        current_name = baseline
+        accepted = 256
+        rejected = None
+        def try_name(length):
+            nonlocal current_name
+            value = "A" * length
+            step = f"closure.name.bytes_{length}"
+            row, _, _ = self.cli(step, *user, "--rutoken-set-name", value,
+                                 "--rutoken-json")
+            actual = self.info(step + ".read").get("name", {}).get("label")
+            if row["exit_code"] == 0:
+                if actual != value:
+                    raise ScenarioError(f"{step}: successful write returned a different name")
+                current_name = value
+                return True
+            if actual != current_name:
+                raise ScenarioError(f"{step}: rejected CLI write changed the name")
+            # Distinguish a CLI limit from the physical module's limit.
+            direct, _ = self.probe(step + ".direct", "set-name", "user", "rw",
+                                   value)
+            if direct["rv"] == "CKR_OK":
+                if self.info(step + ".direct_read").get("name", {}).get("label") != value:
+                    raise ScenarioError(f"{step}: direct write returned a different name")
+                self.report["closure"]["name_boundary"].setdefault(
+                    "cli_rejected_module_accepted_bytes", []).append(length)
+                self.save()
+                current_name = value
+                return True
+            if self.info(step + ".direct_rejected_read").get(
+                    "name", {}).get("label") != current_name:
+                raise ScenarioError(f"{step}: rejected write changed the name")
+            return False
+
+        try:
+            if not try_name(256):
+                raise ScenarioError("closure: previously accepted 256-byte name was rejected")
+            for length in (257, 512, 1024, 2048, 4096):
+                if try_name(length):
+                    accepted = length
+                else:
+                    rejected = length
+                    break
+            if rejected is not None:
+                while rejected - accepted > 1:
+                    middle = (accepted + rejected) // 2
+                    if try_name(middle):
+                        accepted = middle
+                    else:
+                        rejected = middle
+            self.report["closure"]["name_boundary"].update({
+                "highest_confirmed_accepted_bytes": accepted,
+                "first_confirmed_rejected_bytes": rejected,
+                "search_cap_bytes": 4096})
+            self.save()
+            for role, access in (("none", "rw"), ("user", "ro"), ("so", "rw")):
+                step = f"closure.name.{role}_{access}"
+                row, _ = self.probe(step, "set-name", role, access, "probe")
+                if row["rv"] == "CKR_OK":
+                    raise ScenarioError(f"{step}: unexpectedly changed the name")
+                if self.info(step + ".read").get("name", {}).get("label") != current_name:
+                    raise ScenarioError(f"{step}: negative call changed the name")
+        finally:
+            row, _, _ = self.cli("closure.name.restore", *user,
+                                 "--rutoken-set-name", baseline, "--rutoken-json")
+            if row["exit_code"] or self.info("closure.name.restored").get(
+                    "name", {}).get("label") != baseline:
+                raise ScenarioError("closure: original name could not be restored")
+
+        # Fix the policy at both before checking the corrected CLI. There are
+        # no USER-visible objects to destroy at this point.
+        self.initialize("closure.policy_both", "both")
+        row, _, _ = self.cli("closure.mode4.set_test_default", *so,
+                             "--rutoken-token-manage", "default-user-pin",
+                             "--new-pin", "env:RT_DEFAULT_USER_PIN", "--rutoken-json")
+        if row["exit_code"]:
+            raise ScenarioError("closure: cannot set test default USER PIN")
+        row, _, _ = self.cli("closure.mode4.cli_user_rw", *user,
+                             "--rutoken-token-manage", "reset-user-pin",
+                             "--rutoken-json")
+        if row["exit_code"]:
+            raise ScenarioError("closure: corrected CLI rejected USER/RW reset")
+        if self.login("closure.mode4.default_login", "user",
+                      self.env["RT_DEFAULT_USER_PIN"])["exit_code"]:
+            raise ScenarioError("closure: USER reset succeeded but default PIN does not work")
+        self.env["RT_ACTIVE_USER_PIN"] = self.env["RT_DEFAULT_USER_PIN"]
+        self.info("closure.mode4.after")
+
+        marker = self.args.output / "repair-marker.bin"
+        marker.write_bytes(b"OpenSC disposable repair marker\n")
+        try:
+            row, _, _ = self.cli("closure.repair.create_object", *user,
+                                 "--write-object", str(marker), "--type", "data",
+                                 "--id", "eec10a22", "--label", "OpenSC repair marker")
+            if row["exit_code"]:
+                raise ScenarioError("closure: cannot create repair test object")
+            before = count("closure.repair.objects_before")
+            if before < 1:
+                raise ScenarioError("closure: repair test object is not visible")
+            self.report["closure"]["repair"]["objects_before"] = before
+            self.save()
+            self.block_so("closure.repair.block_so")
+            row, _, _ = self.cli("closure.repair.call", "--rutoken-init-token",
+                                 "--rutoken-repair-mode",
+                                 "--rutoken-new-so-pin", "env:RT_NEW_SO_PIN",
+                                 "--new-pin", "env:RT_NEW_USER_PIN",
+                                 "--rutoken-user-pin-policy", "both",
+                                 "--label", "OpenSC privilege probe", "--rutoken-json")
+            if row["exit_code"]:
+                raise ScenarioError("closure: explicit-PIN repair failed")
+            self.env["RT_ACTIVE_SO_PIN"] = self.env["RT_NEW_SO_PIN"]
+            self.env["RT_ACTIVE_USER_PIN"] = self.env["RT_NEW_USER_PIN"]
+            # Check both PINs immediately after this repair, before any format.
+            for role in ("user", "so"):
+                if self.login("closure.repair." + role + "_login", role)["exit_code"]:
+                    raise ScenarioError(f"closure: new {role} PIN does not work")
+            after = count("closure.repair.objects_after")
+            after_so = count("closure.repair.objects_after_so", "so", "rw")
+            self.report["closure"]["repair"]["objects_after"] = after
+            self.report["closure"]["repair"]["objects_after_so"] = after_so
+            self.save()
+            if after != 0 or after_so != 0:
+                raise ScenarioError("closure: repair did not remove the test object")
+            row, _, _ = self.cli("closure.restore.name", *user,
+                                 "--rutoken-set-name", baseline, "--rutoken-json")
+            if row["exit_code"] or self.info("closure.final").get(
+                    "name", {}).get("label") != baseline:
+                raise ScenarioError("closure: original name could not be restored after repair")
+            self.report["closure"]["repair"]["known_pins_and_name_restored"] = True
+            self.save()
+        finally:
+            marker.unlink(missing_ok=True)
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -408,7 +625,7 @@ def main():
     parser.add_argument("--expected-serial", required=True,
                         help="hex serial from --rutoken-info --rutoken-json")
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--case", choices=("all", "manage", "license", "name", "repair", "followup"),
+    parser.add_argument("--case", choices=("all", "manage", "license", "name", "repair", "followup", "closure"),
                         default="all")
     parser.add_argument("--timeout", type=int, default=180)
     args = parser.parse_args()
@@ -420,14 +637,14 @@ def main():
             parser.error(f"{name} does not exist: {path}")
         setattr(args, name, path)
     required = {"RT_SO_PIN", "RT_USER_PIN"}
-    if args.case in ("all", "manage", "repair", "followup"):
+    if args.case in ("all", "manage", "repair", "followup", "closure"):
         required |= {"RT_NEW_SO_PIN", "RT_NEW_USER_PIN"}
-    if args.case in ("all", "manage", "followup"):
+    if args.case in ("all", "manage", "followup", "closure"):
         required.add("RT_DEFAULT_USER_PIN")
     missing = sorted(name for name in required if not os.environ.get(name))
     if missing:
         parser.error("missing PIN environment variables: " + ", ".join(missing))
-    if args.case in ("all", "manage", "followup") and os.environ["RT_DEFAULT_USER_PIN"] == os.environ["RT_NEW_USER_PIN"]:
+    if args.case in ("all", "manage", "followup", "closure") and os.environ["RT_DEFAULT_USER_PIN"] == os.environ["RT_NEW_USER_PIN"]:
         parser.error("RT_DEFAULT_USER_PIN must differ from RT_NEW_USER_PIN")
     args.output = args.output.resolve()
     if args.output.exists():
