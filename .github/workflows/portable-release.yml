@@ -393,7 +393,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
-          notes='Portable pkcs11-tool and pkcs11-spy packages plus independently downloadable test kits for Linux x64/ARM64, Windows x86/x64/ARM64, and macOS universal. This release adds noninteractive privilege scenarios for a disposable physical Rutoken ECP: TokenManage reset under three PIN policies, negative SetLicense permissions, 255/256-byte token-name boundaries, and repair of a blocked SO PIN. A narrow direct PKCS #11 probe handles combinations rejected by the CLI before reaching the module. The test kits verify the probe ABI against the Rutoken stub; physical-token results are still needed to resolve the remaining behavior questions. See PRIVILEGE-README.md in each test kit.'
+          notes='Portable pkcs11-tool and pkcs11-spy packages plus independently downloadable test kits for Linux x64/ARM64, Windows x86/x64/ARM64, and macOS universal. Each test kit runs the shipped tools with SoftHSM and the Rutoken stub on a clean runner. See docs/HANDOFF.md and docs/PLAN.md at this release tag for the current feature coverage and physical-token results.'
           scripts/portable/check-release-tag.sh
           gh release create "$RELEASE_TAG" release-assets/* \
             --target "$GITHUB_SHA" \
