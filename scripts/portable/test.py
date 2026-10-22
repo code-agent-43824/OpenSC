@@ -240,6 +240,7 @@ def verify_privilege_probe(test_dir: Path, platform: str) -> None:
         helper.chmod(helper.stat().st_mode | 0o111)
     env = os.environ.copy()
     env["RUTOKEN_PROBE_TEST_PIN"] = "12345678"
+    env["RUTOKEN_PROBE_TEST_SO_PIN"] = "87654321"
     cases = (
         (["module-info", "none", "ro", "-"], "C_GetInfo", "CKR_OK"),
         (["token-label", "none", "ro", "-"], "C_GetTokenInfo", "CKR_OK"),
@@ -248,6 +249,8 @@ def verify_privilege_probe(test_dir: Path, platform: str) -> None:
         (["reset-user-pin", "none", "rw", "-"],
          "C_EX_TokenManage", "CKR_USER_NOT_LOGGED_IN"),
         (["reset-user-pin", "user", "rw", "RUTOKEN_PROBE_TEST_PIN"],
+         "C_EX_TokenManage", "CKR_OK"),
+        (["reset-user-pin", "so", "rw", "RUTOKEN_PROBE_TEST_SO_PIN"],
          "C_EX_TokenManage", "CKR_USER_NOT_LOGGED_IN"),
         (["set-license", "none", "rw", "-", "1"],
          "C_EX_SetLicense", "CKR_USER_NOT_LOGGED_IN"),
@@ -266,7 +269,11 @@ def verify_privilege_probe(test_dir: Path, platform: str) -> None:
             raise RuntimeError("Rutoken privilege probe failed: " + result.stderr)
         data = json.loads(result.stdout)
         if data.get("stage") != stage or data.get("rv") != rv:
-            raise RuntimeError("Rutoken privilege probe returned an unexpected result")
+            raise RuntimeError(
+                f"Rutoken privilege probe {arguments[0]} "
+                f"{arguments[1]}/{arguments[2]}: expected {stage}/{rv}, "
+                f"got {data.get('stage')}/{data.get('rv')}"
+            )
         if arguments[0] == "module-info" and not data.get("module_version"):
             raise RuntimeError("Rutoken privilege probe omitted the module version")
         if arguments[0] == "object-count" and "object_count" not in data:
