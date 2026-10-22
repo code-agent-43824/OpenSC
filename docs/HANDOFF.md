@@ -22,6 +22,10 @@ CLI пока не запускался. До repair в прежней пробе
 удаление созданного объекта при repair и немедленный вход под новым USER PIN.
 Аппаратного результата этой пробы пока нет; после него обновить матрицу
 `PLAN.md` и исправлять только подтвержденные дефекты CLI.
+Автономный Linux x64 комплект опубликован отдельно от portable-релизов:
+[`rutoken-privilege-closure-20261022`](https://github.com/code-agent-43824/OpenSC/releases/tag/rutoken-privilege-closure-20261022).
+Скачанный с GitHub ZIP повторно совпал по SHA-256
+`11c26e57ff088cc2dfbc9444049d23a2da3e4775cbcb0c6963b23a0031fb49cd`.
 Изменения в `master` и опубликованном релизе
 [`0.27.1-portable.12`](https://github.com/code-agent-43824/OpenSC/releases/tag/0.27.1-portable.12)
 (коммит `20e15f319`). Локальный `make check` прошёл (13 unit PASS;
