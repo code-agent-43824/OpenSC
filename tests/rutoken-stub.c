@@ -64,8 +64,9 @@ static CK_USER_TYPE login_user;
 /* Token state that the stage 5 functions change.  It survives C_Finalize,
  * as a token does, until the process ends. */
 #define STUB_PIN_MAX 32
-/* the device took names of 255 bytes; an empty one reads as the default */
-#define STUB_LABEL_MAX 255
+/* The physical ECP accepted at least 4096 bytes. This is the stub's tested
+ * bound, not a claim about the device's actual maximum. */
+#define STUB_LABEL_MAX 4096
 #define STUB_NO_LABEL "Rutoken ECP <no label>"
 #define STUB_STANDARD_USER_PIN "12345678"
 #define STUB_STANDARD_SO_PIN "87654321"

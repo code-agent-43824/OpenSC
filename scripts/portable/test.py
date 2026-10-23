@@ -444,6 +444,14 @@ def verify_rutoken_cli(
             print(output, end="")
             raise RuntimeError(f"pkcs11-tool Rutoken output lacks: {expected}")
 
+    long_name = "A" * 4096
+    long_name_result = json.loads(tool_output(
+        login + ["--rutoken-set-name", long_name, "--rutoken-name",
+                 "--rutoken-json"]))
+    if (long_name_result.get("set_name", {}).get("length") != 4096 or
+            long_name_result.get("name", {}).get("label") != long_name):
+        raise RuntimeError("pkcs11-tool did not round-trip a 4096-byte Rutoken name")
+
     log = log_path.read_text(encoding="utf-8", errors="replace")
     if "CKR_GENERAL_ERROR" in log:
         raise RuntimeError("a Rutoken buffer was not released through pkcs11-spy")
