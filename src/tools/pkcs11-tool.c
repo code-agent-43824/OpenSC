@@ -224,6 +224,8 @@ enum {
 	OPT_TEST_EC,
 	OPT_DERIVE,
 	OPT_DERIVE_PASS_DER,
+	OPT_VKO_UKM,
+	OPT_VKO_KDF,
 	OPT_DECRYPT,
 	OPT_ENCRYPT,
 	OPT_UNWRAP,
@@ -252,8 +254,6 @@ enum {
 	OPT_TAG_BITS,
 	OPT_SALT_FILE,
 	OPT_INFO_FILE,
-	OPT_GOST_UKM,
-	OPT_GOST_KDF,
 	OPT_PUBLIC_KEY_INFO,
 	OPT_RUTOKEN_INFO,
 	OPT_RUTOKEN_NAME,
@@ -326,6 +326,8 @@ static const struct option options[] = {
 	{ "hash",		0, NULL,		'h' },
 	{ "derive",		0, NULL,		OPT_DERIVE },
 	{ "derive-pass-der",	0, NULL,		OPT_DERIVE_PASS_DER },
+	{ "vko-ukm",		1, NULL,		OPT_VKO_UKM },
+	{ "vko-kdf",		1, NULL,		OPT_VKO_KDF },
 	{ "mechanism",		1, NULL,		'm' },
 	{ "hash-algorithm",	1, NULL,		OPT_HASH_ALGORITHM },
 	{ "mgf",		1, NULL,		OPT_MGF },
@@ -399,8 +401,6 @@ static const struct option options[] = {
 	{ "tag-bits-len", 	1, NULL, 		OPT_TAG_BITS},
 	{ "salt-file", 		1, NULL,		OPT_SALT_FILE},
 	{ "info-file",		1, NULL,		OPT_INFO_FILE},
-	{ "gost-ukm",		1, NULL,		OPT_GOST_UKM},
-	{ "gost-kdf",		1, NULL,		OPT_GOST_KDF},
 	{ "public-key-info",	0, NULL,		OPT_PUBLIC_KEY_INFO},
 	{ "rutoken-info",	0, NULL,		OPT_RUTOKEN_INFO},
 	{ "rutoken-name",	0, NULL,		OPT_RUTOKEN_NAME},
@@ -474,6 +474,8 @@ static const char *option_help[] = {
 		"Hash some data",
 		"Derive a secret key using another key and some data",
 		"Derive ECDHpass DER encoded pubkey for compatibility with some PKCS#11 implementations",
+		"VKO UKM as hex bytes (required with GOSTR3410-12-DERIVE and VKO-GOSTR3410-12-512)",
+		"VKO key derivation function for GOSTR3410-12-DERIVE: null (default), cpdiversify, 4357 or gostr3411-2012-256",
 		"Specify mechanism (use -M for a list of supported mechanisms), or by hexadecimal, e.g., 0x80001234",
 		"Specify hash algorithm used with RSA-PKCS-PSS signature and RSA-PKCS-OAEP decryption",
 		"Specify MGF (Message Generation Function) used for RSA-PSS signature and RSA-OAEP decryption (possible values are MGF1-SHA1 to MGF1-SHA512)",
@@ -496,7 +498,7 @@ static const char *option_help[] = {
 		"Specify the type and (not always compulsory) flavour (byte-wise symmetric key length, bit-wise asymmetric key length, elliptic curve identifier, etc.) of the key to create, for example RSA:2048, EC:prime256v1, EC:ED25519, EC:X448, GOSTR3410-2012-256:B, DES:8, DES3:24, AES:16, AES: or GENERIC:64",
 		"Specify 'sign' key usage flag (sets SIGN in privkey, sets VERIFY in pubkey)",
 		"Specify 'decrypt' key usage flag (sets DECRYPT in privkey and ENCRYPT in pubkey for RSA, sets both DECRYPT and ENCRYPT for secret keys)",
-		"Specify 'derive' key usage flag (EC only)",
+		"Specify 'derive' key usage flag (EC and GOST private keys)",
 		"Specify 'wrap' key usage flag",
 		"Specify 'encapsulate' key usage flag (sets ENCAPSULATE in public and DECAPSULATE in private)",
 		"Write an object (key, cert, data) to the card",
@@ -547,8 +549,6 @@ static const char *option_help[] = {
 		"Specify the required length (in bits) for the authentication tag for AEAD ciphers",
 		"Specify the file containing the salt for HKDF (optional)",
 		"Specify the file containing the info for HKDF (optional)",
-		"UKM in hex for GOST R 34.10-2012 key agreement (--derive), at least 8 bytes",
-		"KDF for GOSTR3410-12-DERIVE: null (default), 4357, cpdiversify or gostr3411-2012-256",
 		"When reading a public key, try to read PUBLIC_KEY_INFO (DER encoding of SPKI)",
 		"Show extended Rutoken token information",
 		"Show the extended Rutoken token name",
@@ -580,7 +580,7 @@ static const char *option_help[] = {
 		"Set Rutoken local PIN <arg> (3..31) to --new-pin, authorized by --rutoken-auth-pin",
 		"The user PIN for a new local PIN or the current value of an existing one, as env:<name>; asked if absent",
 		"Unblock the Rutoken user PIN (needs --login --login-type so)",
-		"Rutoken PIN policy or Bluetooth mode: force-user-pin-change, default-user-pin, standard-default-user-pin, reset-user-pin, bluetooth-timeout:<minutes> or channel:usb|bluetooth (needs --login --login-type so)",
+		"Rutoken PIN policy or Bluetooth mode: force-user-pin-change, default-user-pin, standard-default-user-pin, reset-user-pin, bluetooth-timeout:<minutes> or channel:usb|bluetooth (PIN modes need --login --login-type so; reset-user-pin also accepts user)",
 		"Format the Rutoken: all objects and local PINs are erased",
 		"Format the Rutoken and replace its emitent key",
 		"New SO PIN of --rutoken-init-token and --rutoken-restore-factory-defaults, as env:<name>; asked if absent",
@@ -663,6 +663,9 @@ static int		opt_key_usage_wrap = 0;
 static int		opt_key_usage_encapsulate = 0;
 static int		opt_key_usage_default = 1; /* uses defaults if no opt_key_usage options */
 static int		opt_derive_pass_der = 0;
+static const char *	opt_vko_ukm = NULL;
+static CK_ULONG	opt_vko_kdf = CKD_NULL;
+static int		opt_vko_kdf_used = 0;
 static unsigned long	opt_random_bytes = 0;
 static CK_MECHANISM_TYPE opt_hash_alg = 0;
 static unsigned long	opt_mgf = 0;
@@ -676,8 +679,6 @@ static const char *opt_aad = NULL;
 static unsigned long opt_tag_bits = 0;
 static const char *opt_salt_file = NULL;
 static const char *opt_info_file = NULL;
-static const char *opt_gost_ukm = NULL;
-static const char *opt_gost_kdf = NULL;
 static int opt_public_key_info = 0; /* return pubkey as SPKI DER */
 static struct pkcs11_uri *opt_uri = NULL;
 static int opt_uri_with_slot_id = 0; /* include slot-id in PKCS#11 URI */
@@ -1490,6 +1491,22 @@ int main(int argc, char * argv[])
 			do_derive = 1;
 			action_count++;
 			break;
+		case OPT_VKO_UKM:
+			opt_vko_ukm = optarg;
+			break;
+		case OPT_VKO_KDF:
+			if (!strcasecmp(optarg, "null"))
+				opt_vko_kdf = CKD_NULL;
+			else if (!strcasecmp(optarg, "cpdiversify"))
+				opt_vko_kdf = CKD_CPDIVERSIFY_KDF;
+			else if (!strcasecmp(optarg, "4357"))
+				opt_vko_kdf = CKM_KDF_4357;
+			else if (!strcasecmp(optarg, "gostr3411-2012-256"))
+				opt_vko_kdf = CKM_KDF_GOSTR3411_2012_256;
+			else
+				util_fatal("--vko-kdf must be null, cpdiversify, 4357 or gostr3411-2012-256");
+			opt_vko_kdf_used = 1;
+			break;
 #ifndef _WIN32
 		case OPT_TEST_FORK:
 			do_test_fork = 1;
@@ -1553,12 +1570,6 @@ int main(int argc, char * argv[])
 			break;
 		case OPT_INFO_FILE:
 			opt_info_file = optarg;
-			break;
-		case OPT_GOST_UKM:
-			opt_gost_ukm = optarg;
-			break;
-		case OPT_GOST_KDF:
-			opt_gost_kdf = optarg;
 			break;
 		case OPT_PUBLIC_KEY_INFO:
 			opt_public_key_info = 1;
@@ -1834,6 +1845,20 @@ int main(int argc, char * argv[])
 
 	if (action_count == 0)
 		util_print_usage_and_die(app_name, options, option_help, NULL);
+	if ((opt_vko_ukm || opt_vko_kdf_used) &&
+			(!do_derive || !opt_mechanism_used ||
+			 (opt_mechanism != CKM_GOSTR3410_12_DERIVE &&
+			  opt_mechanism != CKM_VKO_GOSTR3410_2012_512)))
+		util_fatal("--vko-ukm and --vko-kdf require --derive --mechanism "
+				"GOSTR3410-12-DERIVE or VKO-GOSTR3410-12-512");
+	if (opt_vko_kdf_used && opt_mechanism == CKM_VKO_GOSTR3410_2012_512 &&
+			opt_vko_kdf != CKD_NULL)
+		util_fatal("VKO-GOSTR3410-12-512 takes no KDF; drop --vko-kdf");
+	if (do_derive && opt_mechanism_used &&
+			(opt_mechanism == CKM_GOSTR3410_12_DERIVE ||
+			 opt_mechanism == CKM_VKO_GOSTR3410_2012_512) &&
+			opt_derive_pass_der)
+		util_fatal("--derive-pass-der is only for ECDH");
 
 	if (opt_rutoken_json && rutoken_action_count == 0)
 		util_fatal("--rutoken-json requires a --rutoken-* command");
@@ -3902,7 +3927,13 @@ rutoken_check_change(const struct rutoken_request *request, int modifiers,
 		break;
 	case RUTOKEN_TOKEN_MANAGE:
 		/* the PIN modes; nothing is known of the Bluetooth ones */
-		if (request->manage_mode != MODE_SET_BLUETOOTH_POWEROFF_TIMEOUT &&
+		if (request->manage_mode == MODE_RESET_PIN_TO_DEFAULT) {
+			if (!opt_login || (opt_login_type != -1 &&
+					opt_login_type != CKU_USER &&
+					opt_login_type != CKU_SO))
+				util_fatal("--rutoken-token-manage %s needs --login "
+						"with user (default) or so", request->manage_name);
+		} else if (request->manage_mode != MODE_SET_BLUETOOTH_POWEROFF_TIMEOUT &&
 				request->manage_mode != MODE_SET_CHANNEL_TYPE &&
 				(!opt_login || opt_login_type != CKU_SO))
 			util_fatal("--rutoken-token-manage %s needs --login --login-type so",
@@ -4662,9 +4693,9 @@ rutoken_token_manage(CK_SESSION_HANDLE session,
 			rutoken_hint("the Bluetooth modes need a Rutoken ECP Bluetooth");
 		if (rv == CKR_USER_NOT_LOGGED_IN &&
 				request->manage_mode == MODE_RESET_PIN_TO_DEFAULT)
-			rutoken_hint("the reset changes the user PIN, so the token must "
-					"let the Administrator change it (user PIN policy admin "
-					"or both, TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN)");
+			rutoken_hint("the reset needs a permitted role: USER with "
+					"TOKEN_FLAGS_USER_CHANGE_USER_PIN or SO with "
+					"TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN");
 		if (opt_rutoken_json)
 			json_end("}");
 		return 1;
@@ -9883,139 +9914,109 @@ bad:
 			path, (unsigned long)expected, expected == 128 ? "512" : "256");
 }
 
-static CK_ULONG
-gost_kdf_type(const char *name)
-{
-	if (!name || !strcasecmp(name, "null"))
-		return CKD_NULL;
-	if (!strcasecmp(name, "4357"))
-		return CKM_KDF_4357;
-	if (!strcasecmp(name, "cpdiversify"))
-		return CKD_CPDIVERSIFY_KDF;
-	if (!strcasecmp(name, "gostr3411-2012-256"))
-		return CKM_KDF_GOSTR3411_2012_256;
-	util_fatal("--gost-kdf: use null, 4357, cpdiversify or gostr3411-2012-256, "
-			"not \"%s\"", name);
-	return CKD_NULL;
-}
-
 static void
-gost_put_le32(CK_BYTE *p, CK_ULONG value)
+vko_put_u32(CK_BYTE *out, CK_ULONG value)
 {
-	p[0] = (CK_BYTE)value;
-	p[1] = (CK_BYTE)(value >> 8);
-	p[2] = (CK_BYTE)(value >> 16);
-	p[3] = (CK_BYTE)(value >> 24);
+	int i;
+	for (i = 0; i < 4; i++)
+		out[i] = (CK_BYTE)(value >> (8 * i));
 }
 
 /* VKO GOST R 34.10-2012 (RFC 7836 4.3) through the TC26 mechanisms.
  * CKM_GOSTR3410_12_DERIVE (VKO_GOSTR3410_2012_256, 256- and 512-bit keys,
- * 256-bit result) takes a byte string of little-endian 32-bit fields: kdf,
- * public key length, public key, UKM length, UKM (TC26 extension 5.11).
- * CKM_VKO_GOSTR3410_2012_512 (512-bit keys, 512-bit result) takes
- * CK_ECDH1_DERIVE_PARAMS with the UKM in pSharedData (5.12). */
+ * 256-bit result, TC26 5.11) takes a flat buffer, not
+ * CK_GOSTR3410_DERIVE_PARAMS: 32-bit LE KDF, point length, X || Y, UKM
+ * length and UKM; both point coordinates are little-endian.
+ * CKM_VKO_GOSTR3410_2012_512 (512-bit keys, 512-bit result, TC26 5.12)
+ * takes CK_ECDH1_DERIVE_PARAMS with the UKM in pSharedData. */
 static CK_OBJECT_HANDLE
-derive_gost_key(CK_SESSION_HANDLE session, CK_OBJECT_HANDLE key,
-		CK_MECHANISM_TYPE mech_type)
+derive_gost_vko_key(CK_SESSION_HANDLE session, CK_OBJECT_HANDLE key,
+		CK_KEY_TYPE base_key_type, CK_MECHANISM_TYPE mech_type)
 {
-	CK_KEY_TYPE base_type = getKEY_TYPE(session, key);
-	CK_ULONG pub_len = base_type == CKK_GOSTR3410_512 ? 128 : 64;
+	CK_BYTE point[128], ukm[32], parameter[12 + 128 + sizeof(ukm)];
+	CK_ULONG result_type = CKK_GOST28147;
+	CK_OBJECT_CLASS result_class = CKO_SECRET_KEY;
+	CK_BBOOL on_token = CK_FALSE;
+	CK_ATTRIBUTE result_template[] = {
+		{CKA_CLASS, &result_class, sizeof(result_class)},
+		{CKA_KEY_TYPE, &result_type, sizeof(result_type)},
+		{CKA_TOKEN, &on_token, sizeof(on_token)}
+	};
+	CK_ECDH1_DERIVE_PARAMS vko512_params;
+	CK_MECHANISM mechanism = {mech_type, parameter, 0};
+	CK_OBJECT_HANDLE result = CK_INVALID_HANDLE;
 	int vko512 = mech_type == CKM_VKO_GOSTR3410_2012_512;
-	unsigned char peer[128], ukm[64];
-	size_t ukm_len = sizeof(ukm);
-	CK_ULONG kdf = gost_kdf_type(opt_gost_kdf);
-	CK_OBJECT_CLASS key_class = CKO_SECRET_KEY;
-	CK_KEY_TYPE new_type;
-	CK_ULONG value_len = 0;
-	CK_BBOOL _true = TRUE, _false = FALSE;
-	CK_ATTRIBUTE template[8];
-	CK_ECDH1_DERIVE_PARAMS vko_params;
-	CK_BYTE *params = NULL;
-	CK_ULONG params_len = 0;
-	CK_MECHANISM mech;
-	CK_OBJECT_HANDLE newkey = CK_INVALID_HANDLE;
-	int n = 0;
+	CK_ULONG point_len = base_key_type == CKK_GOSTR3410_512 ? 128 : 64;
 	CK_RV rv;
+	size_t ukm_len = sizeof(ukm), ukm_hex_len, i;
+	int nonzero = 0;
 
-	if (base_type != CKK_GOSTR3410 && base_type != CKK_GOSTR3410_512)
-		util_fatal("%s needs a GOST R 34.10-2012 private key",
+	if (base_key_type != CKK_GOSTR3410 && base_key_type != CKK_GOSTR3410_512)
+		util_fatal("%s requires a GOST R 34.10-2012 private key",
 				p11_mechanism_to_name(mech_type));
-	if (vko512 && base_type != CKK_GOSTR3410_512)
-		util_fatal("VKO-GOSTR3410-12-512 needs a 512-bit GOST R 34.10-2012 key");
-	if (vko512 && kdf != CKD_NULL)
-		util_fatal("VKO-GOSTR3410-12-512 takes no KDF; drop --gost-kdf");
-	if (!opt_gost_ukm)
-		util_fatal("GOST key agreement needs --gost-ukm <hex>, at least 8 bytes");
-	if (sc_hex_to_bin(opt_gost_ukm, ukm, &ukm_len) || ukm_len < 8)
-		util_fatal("--gost-ukm: give 8 to %u bytes in hex", (unsigned)sizeof(ukm));
-	if (kdf == CKD_CPDIVERSIFY_KDF && ukm_len != 8)
+	if (vko512 && base_key_type != CKK_GOSTR3410_512)
+		util_fatal("VKO-GOSTR3410-12-512 requires a 512-bit GOST R 34.10-2012 private key");
+	if (!opt_input || !opt_vko_ukm)
+		util_fatal("%s requires --input-file and --vko-ukm",
+				p11_mechanism_to_name(mech_type));
+	ukm_hex_len = strlen(opt_vko_ukm);
+	if (!ukm_hex_len || ukm_hex_len > 2 * sizeof(ukm) || ukm_hex_len % 2)
+		util_fatal("--vko-ukm must contain 1 to 32 hex bytes");
+	if (sc_hex_to_bin(opt_vko_ukm, ukm, &ukm_len) || !ukm_len)
+		util_fatal("--vko-ukm must contain 1 to 32 hex bytes");
+	for (i = 0; i < ukm_len; i++)
+		nonzero |= ukm[i];
+	if (!nonzero)
+		util_fatal("--vko-ukm must not be zero");
+	if (opt_vko_kdf == CKD_CPDIVERSIFY_KDF && ukm_len != 8)
 		fprintf(stderr, "Warning: the CryptoPro diversification of RFC 4357 6.5 "
-				"uses a 64-bit UKM; --gost-ukm has %lu bytes\n",
+				"uses a 64-bit UKM; --vko-ukm has %lu bytes\n",
 				(unsigned long)ukm_len);
-	gost_peer_key(opt_input, pub_len, peer);
-
-	/* the key the result becomes; the value is extractable so it can be
-	 * written out and compared with the other side */
-	if (!opt_key_type)
-		new_type = vko512 ? CKK_GENERIC_SECRET : CKK_GOST28147;
-	else if (!vko512 && !strcasecmp(opt_key_type, "GOST28147"))
-		new_type = CKK_GOST28147;
-	else if (!vko512 && !strcasecmp(opt_key_type, "MAGMA"))
-		new_type = CKK_MAGMA;
-	else if (!vko512 && (!strcasecmp(opt_key_type, "KUZNECHIK") ||
-				!strcasecmp(opt_key_type, "KUZNYECHIK")))
-		new_type = CKK_KUZNECHIK;
-	else if (vko512 && !strcasecmp(opt_key_type, "MAGMA-TWIN"))
-		new_type = CKK_MAGMA_TWIN_KEY;
-	else if (vko512 && (!strcasecmp(opt_key_type, "KUZNECHIK-TWIN") ||
-				!strcasecmp(opt_key_type, "KUZNYECHIK-TWIN")))
-		new_type = CKK_KUZNECHIK_TWIN_KEY;
-	else if (!strcasecmp(opt_key_type, "GENERIC"))
-		new_type = CKK_GENERIC_SECRET;
-	else
-		util_fatal("--key-type for %s: use %s", p11_mechanism_to_name(mech_type),
-				vko512 ? "GENERIC, MAGMA-TWIN or KUZNECHIK-TWIN" :
-				"GOST28147, MAGMA, KUZNECHIK or GENERIC");
-	if (new_type == CKK_GENERIC_SECRET)
-		value_len = vko512 ? 64 : 32;
-
-	FILL_ATTR(template[n], CKA_CLASS, &key_class, sizeof(key_class)); n++;
-	FILL_ATTR(template[n], CKA_KEY_TYPE, &new_type, sizeof(new_type)); n++;
-	FILL_ATTR(template[n], CKA_TOKEN, &_false, sizeof(_false)); n++;
-	FILL_ATTR(template[n], CKA_PRIVATE, &_false, sizeof(_false)); n++;
-	FILL_ATTR(template[n], CKA_SENSITIVE, &_false, sizeof(_false)); n++;
-	FILL_ATTR(template[n], CKA_EXTRACTABLE, &_true, sizeof(_true)); n++;
-	if (value_len) {
-		FILL_ATTR(template[n], CKA_VALUE_LEN, &value_len, sizeof(value_len));
-		n++;
-	}
 
 	if (vko512) {
-		memset(&vko_params, 0, sizeof(vko_params));
-		vko_params.kdf = CKD_NULL;
-		vko_params.pSharedData = ukm;
-		vko_params.ulSharedDataLen = (CK_ULONG)ukm_len;
-		vko_params.pPublicData = peer;
-		vko_params.ulPublicDataLen = pub_len;
-		mech.pParameter = &vko_params;
-		mech.ulParameterLen = sizeof(vko_params);
-	} else {
-		params_len = 4 + 4 + pub_len + 4 + (CK_ULONG)ukm_len;
-		params = malloc(params_len);
-		if (!params)
-			util_fatal("Out of memory");
-		gost_put_le32(params, kdf);
-		gost_put_le32(params + 4, pub_len);
-		memcpy(params + 8, peer, pub_len);
-		gost_put_le32(params + 8 + pub_len, (CK_ULONG)ukm_len);
-		memcpy(params + 12 + pub_len, ukm, ukm_len);
-		mech.pParameter = params;
-		mech.ulParameterLen = params_len;
+		result_type = CKK_GENERIC_SECRET;
+		if (opt_key_type && !strcasecmp(opt_key_type, "MAGMA-TWIN"))
+			result_type = CKK_MAGMA_TWIN_KEY;
+		else if (opt_key_type && !strcasecmp(opt_key_type, "KUZNECHIK-TWIN"))
+			result_type = CKK_KUZNECHIK_TWIN_KEY;
+		else if (opt_key_type && strcasecmp(opt_key_type, "GENERIC"))
+			util_fatal("VKO-GOSTR3410-12-512 result key type must be GENERIC, MAGMA-TWIN or KUZNECHIK-TWIN");
+	} else if (opt_key_type) {
+		if (!strcasecmp(opt_key_type, "GOST28147"))
+			result_type = CKK_GOST28147;
+		else if (!strcasecmp(opt_key_type, "GENERIC"))
+			result_type = CKK_GENERIC_SECRET;
+		else if (!strcasecmp(opt_key_type, "MAGMA"))
+			result_type = CKK_MAGMA;
+		else if (!strcasecmp(opt_key_type, "KUZNECHIK"))
+			result_type = CKK_KUZNECHIK;
+		else
+			util_fatal("VKO result key type must be GOST28147, GENERIC, MAGMA or KUZNECHIK");
 	}
-	mech.mechanism = mech_type;
 
-	rv = p11->C_DeriveKey(session, &mech, key, template, n, &newkey);
-	free(params);
+	/* raw CKA_VALUE, a DER OCTET STRING or a SubjectPublicKeyInfo */
+	gost_peer_key(opt_input, point_len, point);
+
+	if (vko512) {
+		memset(&vko512_params, 0, sizeof(vko512_params));
+		vko512_params.kdf = CKD_NULL;
+		vko512_params.pSharedData = ukm;
+		vko512_params.ulSharedDataLen = (CK_ULONG)ukm_len;
+		vko512_params.pPublicData = point;
+		vko512_params.ulPublicDataLen = point_len;
+		mechanism.pParameter = &vko512_params;
+		mechanism.ulParameterLen = sizeof(vko512_params);
+	} else {
+		vko_put_u32(parameter, opt_vko_kdf);
+		vko_put_u32(parameter + 4, point_len);
+		memcpy(parameter + 8, point, point_len);
+		vko_put_u32(parameter + 8 + point_len, (CK_ULONG)ukm_len);
+		memcpy(parameter + 12 + point_len, ukm, ukm_len);
+		mechanism.ulParameterLen = (CK_ULONG)(12 + point_len + ukm_len);
+	}
+
+	rv = p11->C_DeriveKey(session, &mechanism, key, result_template,
+			ARRAY_SIZE(result_template), &result);
 	if (rv == CKR_MECHANISM_INVALID || rv == CKR_MECHANISM_PARAM_INVALID ||
 			rv == CKR_TEMPLATE_INCONSISTENT)
 		fprintf(stderr, "Hint: check that \"pkcs11-tool -M\" lists %s with "
@@ -10023,7 +10024,7 @@ derive_gost_key(CK_SESSION_HANDLE session, CK_OBJECT_HANDLE key,
 				p11_mechanism_to_name(mech_type));
 	if (rv != CKR_OK)
 		p11_fatal("C_DeriveKey", rv);
-	return newkey;
+	return result;
 }
 
 static void
@@ -10036,12 +10037,7 @@ derive_key(CK_SLOT_ID slot, CK_SESSION_HANDLE session, CK_OBJECT_HANDLE key)
 	ssize_t sz;
 	CK_KEY_TYPE key_type = getKEY_TYPE(session, key);
 
-	/* a GOST key agrees keys by VKO; the first derive mechanism of the
-	 * token could be ECDH, which a GOST key cannot use */
-	if (!opt_mechanism_used &&
-			(key_type == CKK_GOSTR3410 || key_type == CKK_GOSTR3410_512))
-		opt_mechanism = CKM_GOSTR3410_12_DERIVE;
-	else if (!opt_mechanism_used)
+	if (!opt_mechanism_used)
 		if (!find_mechanism(slot, CKF_DERIVE|opt_allow_sw, NULL, 0, &opt_mechanism))
 			util_fatal("Derive mechanism not supported");
 
@@ -10055,7 +10051,7 @@ derive_key(CK_SLOT_ID slot, CK_SESSION_HANDLE session, CK_OBJECT_HANDLE key)
 		break;
 	case CKM_GOSTR3410_12_DERIVE:
 	case CKM_VKO_GOSTR3410_2012_512:
-		derived_key = derive_gost_key(session, key, opt_mechanism);
+		derived_key = derive_gost_vko_key(session, key, key_type, opt_mechanism);
 		break;
 	default:
 		util_fatal("Key type %lu does not support derive", key_type);
@@ -10063,6 +10059,10 @@ derive_key(CK_SLOT_ID slot, CK_SESSION_HANDLE session, CK_OBJECT_HANDLE key)
 	}
 
 	value = getVALUE(session, derived_key, &value_len);
+	if ((opt_mechanism == CKM_GOSTR3410_12_DERIVE ||
+			opt_mechanism == CKM_VKO_GOSTR3410_2012_512) &&
+			(!value || !value_len))
+		util_fatal("VKO derived key has no readable CKA_VALUE");
 	if (value && value_len > 0) {
 		fd = STDOUT_FILENO;
 		if (opt_output)   {

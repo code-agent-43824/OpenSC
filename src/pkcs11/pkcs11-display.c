@@ -28,6 +28,7 @@
 #endif
 
 #include "pkcs11-display.h"
+#include "pkcs11-rutoken.h"
 
 #include "common/compat_strlcat.h"
 
@@ -379,9 +380,9 @@ static enum_specs ck_key_s[] = {
   {CKK_SHA224_HMAC     , "CKK_SHA224_HMAC     "},
   {CKK_SEED            , "CKK_SEED            "},
   {CKK_GOSTR3410       , "CKK_GOSTR3410       "},
+  {CKK_GOSTR3410_512   , "CKK_GOSTR3410_512   "},
   {CKK_GOSTR3411       , "CKK_GOSTR3411       "},
   {CKK_GOST28147       , "CKK_GOST28147       "},
-  {CKK_GOSTR3410_512   , "CKK_GOSTR3410_512   "},
   {CKK_KUZNECHIK       , "CKK_KUZNECHIK       "},
   {CKK_MAGMA           , "CKK_MAGMA           "},
   {CKK_KUZNECHIK_TWIN_KEY, "CKK_KUZNECHIK_TWIN_KEY"},
@@ -789,10 +790,18 @@ static enum_specs ck_mec_s[] = {
   {CKM_GOSTR3410_WITH_GOSTR3411           , "CKM_GOSTR3410_WITH_GOSTR3411           "},
   {CKM_GOSTR3410_KEY_WRAP                 , "CKM_GOSTR3410_KEY_WRAP                 "},
   {CKM_GOSTR3410_DERIVE                   , "CKM_GOSTR3410_DERIVE                   "},
+  {CKM_GOSTR3410_512_KEY_PAIR_GEN         , "CKM_GOSTR3410_512_KEY_PAIR_GEN         "},
+  {CKM_GOSTR3410_512                      , "CKM_GOSTR3410_512                      "},
   {CKM_GOSTR3410_12_DERIVE                , "CKM_GOSTR3410_12_DERIVE                "},
   {CKM_VKO_GOSTR3410_2012_512             , "CKM_VKO_GOSTR3410_2012_512             "},
+  {CKM_GOSTR3410_WITH_GOSTR3411_12_256   , "CKM_GOSTR3410_WITH_GOSTR3411_12_256   "},
+  {CKM_GOSTR3410_WITH_GOSTR3411_12_512   , "CKM_GOSTR3410_WITH_GOSTR3411_12_512   "},
   {CKM_GOSTR3411                          , "CKM_GOSTR3411                          "},
   {CKM_GOSTR3411_HMAC                     , "CKM_GOSTR3411_HMAC                     "},
+  {CKM_GOSTR3411_12_256                   , "CKM_GOSTR3411_12_256                   "},
+  {CKM_GOSTR3411_12_512                   , "CKM_GOSTR3411_12_512                   "},
+  {CKM_GOSTR3411_12_256_HMAC              , "CKM_GOSTR3411_12_256_HMAC              "},
+  {CKM_GOSTR3411_12_512_HMAC              , "CKM_GOSTR3411_12_512_HMAC              "},
   {CKM_GOST28147_KEY_GEN                  , "CKM_GOST28147_KEY_GEN                  "},
   {CKM_GOST28147_ECB                      , "CKM_GOST28147_ECB                      "},
   {CKM_GOST28147                          , "CKM_GOST28147                          "},

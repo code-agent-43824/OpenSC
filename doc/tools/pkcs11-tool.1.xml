@@ -175,7 +175,7 @@
 					<term>
 						<option>--usage-derive</option>
 					</term>
-					<listitem><para>Specify 'derive' key usage flag (EC only).</para></listitem>
+					<listitem><para>Specify 'derive' key usage flag (EC and GOST private keys).</para></listitem>
 				</varlistentry>
 
 				<varlistentry>
@@ -571,15 +571,20 @@
 					<term>
 						<option>--rutoken-token-manage</option> <replaceable>mode</replaceable>
 					</term>
-					<listitem><para>Call <option>C_EX_TokenManage</option> under
-					<option>--login</option> <option>--login-type</option> so.
+					<listitem><para>Call <option>C_EX_TokenManage</option>. PIN
+					modes require <option>--login</option> <option>--login-type</option>
+					so, except <literal>reset-user-pin</literal>, which also accepts
+					<literal>user</literal> (the default login role) when the token's
+					PIN policy permits it.
 					Modes: <literal>force-user-pin-change</literal> (the user must
 					change the PIN), <literal>default-user-pin</literal> (a new
 					default User PIN, given with <option>--new-pin</option>),
 					<literal>standard-default-user-pin</literal> (back to the factory
 					default), <literal>reset-user-pin</literal> (reset the User PIN
-					to the default one; requires a token that lets the SO change the
-					User PIN), and for Rutoken ECP
+					to the default one; requires
+					<literal>TOKEN_FLAGS_USER_CHANGE_USER_PIN</literal> with User login
+					or <literal>TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN</literal> with SO login),
+					and for Rutoken ECP
 					Bluetooth <literal>bluetooth-timeout:</literal><replaceable>minutes</replaceable>
 					(0 to 70, 0 for the default) and
 					<literal>channel:usb</literal> or
@@ -761,23 +766,23 @@
 					<listitem><para>Derive a secret key using another key and some data.
 					With a GOST R 34.10-2012 private key (<option>--id</option> or
 					<option>--label</option>) this is the VKO key agreement of RFC 7836:
-					<literal>GOSTR3410-12-DERIVE</literal> (the default for these keys,
-					VKO_GOSTR3410_2012_256 for 256- and 512-bit keys, a 32-byte result)
-					or <literal>VKO-GOSTR3410-12-512</literal> (VKO_GOSTR3410_2012_512,
-					512-bit keys, a 64-byte result), chosen with <option>-m</option>. The
+					<literal>GOSTR3410-12-DERIVE</literal> (VKO_GOSTR3410_2012_256 for
+					256- and 512-bit keys, a 32-byte result) or
+					<literal>VKO-GOSTR3410-12-512</literal> (VKO_GOSTR3410_2012_512,
+					512-bit keys, a 64-byte result), given with <option>-m</option>. The
 					peer public key is read from <option>--input-file</option>: the
 					raw 64- or 128-byte little-endian X|Y of <literal>CKA_VALUE</literal>
 					(as <option>--read-object --type pubkey</option> writes it), the same
 					in a DER OCTET STRING, or a SubjectPublicKeyInfo in DER or PEM. The
-					UKM is given with <option>--gost-ukm</option>, the KDF with
-					<option>--gost-kdf</option>, and the type of the derived session key
+					UKM is given with <option>--vko-ukm</option>, the KDF with
+					<option>--vko-kdf</option>, and the type of the derived session key
 					with <option>--key-type</option>: <literal>GOST28147</literal>
 					(default), <literal>MAGMA</literal>, <literal>KUZNECHIK</literal> or
 					<literal>GENERIC</literal>, and for VKO-GOSTR3410-12-512
 					<literal>GENERIC</literal> (default), <literal>MAGMA-TWIN</literal>
-					or <literal>KUZNECHIK-TWIN</literal>. The key is extractable and its
-					value is written to <option>--output-file</option> or standard
-					output, so both sides can compare it.</para></listitem>
+					or <literal>KUZNECHIK-TWIN</literal>. Its value is written to
+					<option>--output-file</option> or standard output, so both sides can
+					compare it.</para></listitem>
 				</varlistentry>
 
 				<varlistentry>
@@ -785,6 +790,18 @@
 						<option>--derive-pass-der</option>
 					</term>
 					<listitem><para>Derive ECDHpass DER encoded pubkey for compatibility with some PKCS#11 implementations</para></listitem>
+				</varlistentry>
+				<varlistentry>
+					<term>
+						<option>--vko-ukm</option> <replaceable>hex</replaceable>
+					</term>
+					<listitem><para>UKM bytes in hexadecimal (1 to 32) for <option>--derive --mechanism GOSTR3410-12-DERIVE</option> or <option>VKO-GOSTR3410-12-512</option>; both sides use the same value. Required together with <option>--input-file</option>, which holds the peer's GOST public key: the raw 64- or 128-byte point (the public key's CKA_VALUE, little-endian X then Y), the same in a DER OCTET STRING, or a SubjectPublicKeyInfo in DER or PEM. The base private key must have CKA_DERIVE set; use <option>--usage-derive</option> when generating it. The derived session key defaults to GOST28147 (GENERIC for VKO-GOSTR3410-12-512); see <option>--derive</option> for the key types. TC26 asks for at least 8 bytes of UKM; RFC 7836 recommends 64 bits or more, and 128 bits or more for VKO-GOSTR3410-12-512 with static keys; the CryptoPro diversification of RFC 4357 uses exactly 64 bits.</para></listitem>
+				</varlistentry>
+				<varlistentry>
+					<term>
+						<option>--vko-kdf</option> <replaceable>null|cpdiversify|4357|gostr3411-2012-256</replaceable>
+					</term>
+					<listitem><para>The KDF that GOSTR3410-12-DERIVE applies to the VKO result: bare VKO (<literal>null</literal>, the default), CryptoPro key diversification (<literal>cpdiversify</literal>, <literal>CKD_CPDIVERSIFY_KDF</literal>, RFC 4357 6.5), <literal>4357</literal> (<literal>CKM_KDF_4357</literal>) or <literal>gostr3411-2012-256</literal> (<literal>CKM_KDF_GOSTR3411_2012_256</literal>, RFC 7836 4.5). VKO-GOSTR3410-12-512 takes none. The PKCS #11 module determines which UKM lengths and modes it supports.</para></listitem>
 				</varlistentry>
 
 				<varlistentry>
@@ -1096,30 +1113,6 @@
 						<option>--info-file</option> <replaceable>filename</replaceable>
 					</term>
 					<listitem><para>Specify the file containing the info for HKDF (optional)</para></listitem>
-				</varlistentry>
-
-				<varlistentry>
-					<term>
-						<option>--gost-ukm</option> <replaceable>hex</replaceable>
-					</term>
-					<listitem><para>The UKM of GOST R 34.10-2012 key agreement with
-					<option>--derive</option>, at least 8 bytes in hex; both sides use
-					the same value. RFC 7836 recommends 64 bits or more, and 128 bits
-					or more for VKO-GOSTR3410-12-512 with static keys; the CryptoPro
-					diversification of RFC 4357 uses exactly 64 bits.</para></listitem>
-				</varlistentry>
-
-				<varlistentry>
-					<term>
-						<option>--gost-kdf</option> <replaceable>kdf</replaceable>
-					</term>
-					<listitem><para>The KDF that GOSTR3410-12-DERIVE applies to the VKO
-					result: <literal>null</literal> (default, the VKO value itself),
-					<literal>4357</literal> (<literal>CKM_KDF_4357</literal>),
-					<literal>cpdiversify</literal> (<literal>CKD_CPDIVERSIFY_KDF</literal>,
-					RFC 4357 6.5) or <literal>gostr3411-2012-256</literal>
-					(<literal>CKM_KDF_GOSTR3411_2012_256</literal>, RFC 7836 4.5).
-					VKO-GOSTR3410-12-512 takes none.</para></listitem>
 				</varlistentry>
 
 				<varlistentry>

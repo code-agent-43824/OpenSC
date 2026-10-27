@@ -66,8 +66,9 @@ static CK_USER_TYPE login_user;
 /* Token state that the stage 5 functions change.  It survives C_Finalize,
  * as a token does, until the process ends. */
 #define STUB_PIN_MAX 32
-/* the device took names of 255 bytes; an empty one reads as the default */
-#define STUB_LABEL_MAX 255
+/* The physical ECP accepted at least 4096 bytes. This is the stub's tested
+ * bound, not a claim about the device's actual maximum. */
+#define STUB_LABEL_MAX 4096
 #define STUB_NO_LABEL "Rutoken ECP <no label>"
 #define STUB_STANDARD_USER_PIN "12345678"
 #define STUB_STANDARD_SO_PIN "87654321"
@@ -206,6 +207,22 @@ C_GetFunctionList(CK_FUNCTION_LIST_PTR_PTR ppFunctionList)
 	if (!ppFunctionList)
 		return CKR_ARGUMENTS_BAD;
 	*ppFunctionList = &standard_functions;
+	return CKR_OK;
+}
+
+CK_RV
+C_GetInfo(CK_INFO_PTR pInfo)
+{
+	if (!pInfo)
+		return CKR_ARGUMENTS_BAD;
+	memset(pInfo, ' ', sizeof(*pInfo));
+	pInfo->cryptokiVersion.major = 2;
+	pInfo->cryptokiVersion.minor = 40;
+	pInfo->flags = 0;
+	pInfo->libraryVersion.major = 0;
+	pInfo->libraryVersion.minor = 1;
+	memcpy(pInfo->manufacturerID, "OpenSC", 6);
+	memcpy(pInfo->libraryDescription, "Rutoken test stub", 17);
 	return CKR_OK;
 }
 
@@ -805,13 +822,13 @@ C_DeriveKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
 			type != CKK_MAGMA_TWIN_KEY && type != CKK_KUZNECHIK_TWIN_KEY &&
 				type != CKK_GENERIC_SECRET)
 		return CKR_TEMPLATE_INCONSISTENT;
-	if (type == CKK_GENERIC_SECRET) {
-		attribute = template_attribute(pTemplate, ulAttributeCount,
-				CKA_VALUE_LEN);
-		if (!attribute || attribute->ulValueLen != sizeof(CK_ULONG) ||
-				*(const CK_ULONG *)attribute->pValue != out_len)
-			return CKR_TEMPLATE_INCONSISTENT;
-	}
+	/* the mechanism fixes the length; pkcs11-tool sends no CKA_VALUE_LEN,
+	 * the probe does */
+	attribute = template_attribute(pTemplate, ulAttributeCount, CKA_VALUE_LEN);
+	if (attribute && (type != CKK_GENERIC_SECRET ||
+			attribute->ulValueLen != sizeof(CK_ULONG) ||
+			*(const CK_ULONG *)attribute->pValue != out_len))
+		return CKR_TEMPLATE_INCONSISTENT;
 
 	/* without a control example: a value of the UKM, kdf and key size only,
 	 * so that both sides of a key pair agree as VKO does */
@@ -1835,7 +1852,13 @@ C_EX_TokenManage(CK_SESSION_HANDLE hSession, CK_ULONG ulMode,
 	if (ulMode == MODE_SET_BLUETOOTH_POWEROFF_TIMEOUT ||
 			ulMode == MODE_SET_CHANNEL_TYPE)
 		return CKR_FUNCTION_NOT_SUPPORTED;
-	if (!so_logged_in())
+	if (ulMode == MODE_RESET_PIN_TO_DEFAULT ?
+			!logged_in ||
+			!((login_user == CKU_USER &&
+				(token.user_pin_policy & TOKEN_FLAGS_USER_CHANGE_USER_PIN)) ||
+				(login_user == CKU_SO &&
+				(token.user_pin_policy & TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN))) :
+			!so_logged_in())
 		return CKR_USER_NOT_LOGGED_IN;
 	if (!pValue)
 		return CKR_ARGUMENTS_BAD;
@@ -1858,10 +1881,6 @@ C_EX_TokenManage(CK_SESSION_HANDLE hSession, CK_ULONG ulMode,
 	case MODE_RESET_PIN_TO_DEFAULT:
 		if (*(CK_USER_TYPE *)pValue != CKU_USER)
 			return CKR_ARGUMENTS_BAD;
-		/* the reset changes the user PIN: the device refused it (69 82)
-		 * while only the user might change the user PIN */
-		if (!(token.user_pin_policy & TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN))
-			return CKR_USER_NOT_LOGGED_IN;
 		strcpy(token.user.value, token.custom_user_default[0] ?
 				token.custom_user_default : STUB_STANDARD_USER_PIN);
 		token.user.retries = token.user.max_retries;
@@ -2076,6 +2095,7 @@ static CK_FUNCTION_LIST standard_functions = {
 	.version = { 2, 40 },
 	.C_Initialize = C_Initialize,
 	.C_Finalize = C_Finalize,
+	.C_GetInfo = C_GetInfo,
 	.C_GetFunctionList = C_GetFunctionList,
 	.C_GetSlotList = C_GetSlotList,
 	.C_GetSlotInfo = C_GetSlotInfo,

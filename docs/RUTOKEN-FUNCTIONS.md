@@ -273,7 +273,9 @@ license, journal, volumes, certificates, PIN status. Все проверены �
 
 ### Объекты аутентификации (отложено)
 
-По решению владельца отложены: на проверенном токене биометрии нет.
+По решению владельца пока не выполнять работы в этой области: на
+проверенном токене биометрии нет. Следующее описание — исторический проект
+интерфейса, не текущая задача.
 
 - Объекты `CKO_VENDOR_AUTHENTICATION_FACTOR` типа `CKVAF_BIO_FP_CONVOLUTION`
   (свертка отпечатка по ГОСТ Р ИСО/МЭК 19794-2), атрибуты: число сверток, ID,
@@ -293,16 +295,21 @@ license, journal, volumes, certificates, PIN status. Все проверены �
 
 Стандартный `C_DeriveKey`, не функция расширения. `pkcs11-tool --derive` с
 закрытым ключом ГОСТ Р 34.10-2012 (`--id`/`--label`) выполняет VKO из
-RFC 7836 через механизмы спецификации ТК26 «Расширение PKCS#11»:
+RFC 7836 через механизмы спецификации ТК26 «Расширение PKCS#11». Механизм
+задаётся явно (`-m`). Интерфейс `--vko-*` вышел в `.10` и проверен на
+устройстве; KDF `4357` и `gostr3411-2012-256`, механизм VKO-512, twin-ключи
+и формы открытого ключа, кроме сырой, добавлены позже из ветки
+`claude/nice-einstein-yq1c5e`:
 
 | Механизм (`-m`) | Алгоритм | Ключи | Параметры | Результат |
 | --- | --- | --- | --- | --- |
-| `GOSTR3410-12-DERIVE` (`0xD4321007`, по умолчанию для ГОСТ-ключа) | VKO_GOSTR3410_2012_256, RFC 7836 4.3.1; ТК26 5.11 | 256 и 512 бит | байтовая строка из 32-битных little-endian полей: KDF, длина ключа (64/128), ключ, длина UKM (от 8), UKM | 32 байта, ключ `GOST28147` (по умолчанию), `MAGMA`, `KUZNECHIK` или `GENERIC` |
+| `GOSTR3410-12-DERIVE` (`0xD4321007`) | VKO_GOSTR3410_2012_256, RFC 7836 4.3.1; ТК26 5.11 | 256 и 512 бит | байтовая строка из 32-битных little-endian полей: KDF, длина ключа (64/128), ключ, длина UKM, UKM | 32 байта, ключ `GOST28147` (по умолчанию), `MAGMA`, `KUZNECHIK` или `GENERIC` |
 | `VKO-GOSTR3410-12-512` (`0xD4321038`) | VKO_GOSTR3410_2012_512, RFC 7836 4.3.2; ТК26 5.12 | 512 бит | `CK_ECDH1_DERIVE_PARAMS`: `kdf = CKD_NULL`, UKM в `pSharedData`, ключ 128 байт в `pPublicData` | 64 байта, ключ `GENERIC` (по умолчанию), `MAGMA-TWIN` или `KUZNECHIK-TWIN` |
 
-- `--gost-ukm HEX` — UKM, обязателен, от 8 байт; RFC 7836 рекомендует
+- `--vko-ukm HEX` — UKM, обязателен, 1–32 ненулевых байта. ТК26 требует
+  от 8 байт, утилита оставляет эту проверку токену; RFC 7836 рекомендует
   от 64 бит, а для VKO-512 со статическими ключами — от 128 бит.
-- `--gost-kdf` — только для `GOSTR3410-12-DERIVE`: `null` (`CKD_NULL`, само
+- `--vko-kdf` — только для `GOSTR3410-12-DERIVE`: `null` (`CKD_NULL`, само
   значение VKO, по умолчанию), `4357` (`CKM_KDF_4357`, `0xD4321025`),
   `cpdiversify` (`CKD_CPDIVERSIFY_KDF`, диверсификация CryptoPro из RFC 4357
   6.5 — с 64-битным UKM, иначе предупреждение) или `gostr3411-2012-256`
@@ -311,9 +318,10 @@ RFC 7836 через механизмы спецификации ТК26 «Рас�
   из `CKA_VALUE` (так его пишет `--read-object --type pubkey`), то же в DER
   OCTET STRING или SubjectPublicKeyInfo (RFC 9215) в DER или PEM; длина
   сверяется с размером ключа.
-- Выработанный ключ — сессионный, `CKA_SENSITIVE = false`,
-  `CKA_EXTRACTABLE = true`; его значение пишется в `--output-file` или на
-  stdout, чтобы стороны могли сравнить. Ошибки механизма, параметров или
+- Шаблон выработанного ключа — `CKA_CLASS`, `CKA_KEY_TYPE` и
+  `CKA_TOKEN = false`, как в проверенном на устройстве `.10`; значение
+  пишется в `--output-file` или на stdout, чтобы стороны могли сравнить.
+  Базовому ключу нужен `CKA_DERIVE` (`--usage-derive` при генерации). Ошибки механизма, параметров или
   шаблона сопровождаются подсказкой проверить `pkcs11-tool -M`.
 - spy расшифровывает параметры обоих механизмов: имя KDF, открытый ключ и
   UKM (они не секретны).
@@ -371,11 +379,11 @@ Probe 4 (2026-10-17, Рутокен ЭЦП 3.0 3127 USB, библиотека 2.
 
 | Функция | Команда | Условия и поведение |
 |---|---|---|
-| `SetTokenName(hSession, label, len)` | `--rutoken-set-name ИМЯ --login` | Сессия RW под Пользователем. Устройство: 0–255 байт UTF-8 приняты, `C_GetTokenInfo` показывает первые 32; пустое имя читается как «Rutoken ECP <no label>» |
-| `SetLicense(hSession, N, 72 байта)` | `--rutoken-set-license N --input-file F --login` | RW под Пользователем (Администратор не проверялся). Устройство: номера 1–4 и ровно 72 байта, иначе `CKR_ARGUMENTS_BAD`; повторная запись принята. Содержимое не печатается, буфер затирается |
+| `SetTokenName(hSession, label, len)` | `--rutoken-set-name ИМЯ --login` | Сессия RW под Пользователем. На проверенном устройстве побайтово прочитаны обратно имена до 4096 байт ASCII и до 256 байт UTF-8; истинный предел не найден. `C_GetTokenInfo` показывает первые 32 байта; пустое имя читается как «Rutoken ECP <no label>» |
+| `SetLicense(hSession, N, 72 байта)` | `--rutoken-set-license N --input-file F --login` | RW под Пользователем; позднее в приемке `.8` успешно проверен и SO. Устройство: номера 1–4 и ровно 72 байта, иначе `CKR_ARGUMENTS_BAD`; повторная запись принята. Содержимое не печатается, буфер затирается |
 | `SetLocalPIN(slot, PIN Пользователя или текущий локальный, новый, ID)` | `--rutoken-set-local-pin ID [--rutoken-auth-pin env:A] [--new-pin env:B]` | Без сессии и входа: `--login` и `--pin` отвергаются, чтобы `C_Login` с локальным PIN не тратил попытку PIN Пользователя. ID 3–31. Устройство: новый PIN — по PIN Пользователя, заданный — только по текущему значению (неверное тратит попытку локального PIN); минимальная длина как у PIN Пользователя, 10 попыток |
 | `UnblockUserPIN(hSession)` | `--rutoken-unblock-user-pin --login --login-type so` | Сессия RW под Администратором. Устройство: попытки PIN Пользователя восстановлены, у незаблокированного локального PIN — нет |
-| `TokenManage(hSession, mode, pValue)` | `--rutoken-token-manage РЕЖИМ --login --login-type so` | `force-user-pin-change` (6), `default-user-pin` (5, новый PIN из `--new-pin`), `standard-default-user-pin` (3), `reset-user-pin` (4); для Рутокен Bluetooth `bluetooth-timeout:МИН` (1, 0–70, 0 — по умолчанию) и `channel:usb\|bluetooth` (2), на других токенах `CKR_FUNCTION_NOT_SUPPORTED`. Устройство: режим 4 — смена PIN Пользователя, без права Администратора на нее (`TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN`) — `CKR_USER_NOT_LOGGED_IN`; режим 5 включает `TOKEN_FLAGS_USER_PIN_NOT_DEFAULT` |
+| `TokenManage(hSession, mode, pValue)` | `--rutoken-token-manage РЕЖИМ --login --login-type so`; для `reset-user-pin` также `--login-type user` или просто `--login` (USER по умолчанию) | `force-user-pin-change` (6), `default-user-pin` (5, новый PIN из `--new-pin`), `standard-default-user-pin` (3), `reset-user-pin` (4); для Рутокен Bluetooth `bluetooth-timeout:МИН` (1, 0–70, 0 — по умолчанию) и `channel:usb\|bluetooth` (2), на других токенах `CKR_FUNCTION_NOT_SUPPORTED`. На проверенном устройстве режим 4 под USER проходит при политике `user`/`both` (`TOKEN_FLAGS_USER_CHANGE_USER_PIN`), под SO — при `admin`/`both` (`TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN`); иначе `CKR_USER_NOT_LOGGED_IN`. Режим 5 включает `TOKEN_FLAGS_USER_PIN_NOT_DEFAULT` |
 | `InitToken(slot, SO PIN, CK_RUTOKEN_INIT_PARAM)` | `--rutoken-init-token` | Текущий PIN Администратора — `--so-pin`, новые — `--rutoken-new-so-pin` и `--new-pin`; метка — `--label`; `--rutoken-user-pin-policy user\|admin\|both` (по умолчанию `user`, как с завода), `--rutoken-min-pin-length SO:USER` (6:6), `--rutoken-retries SO:USER` (10:10), `--rutoken-sm-mode N` (0), `--rutoken-repair-mode` — без PIN Администратора. Открытых сессий быть не должно: `CKR_SESSION_EXISTS` без обращения к токену. Устройство: около 3,4 с; удаляются объекты и локальные PIN, остаются лицензии, запись журнала и счетчик изменений |
 | `SlotManage(MODE_RESTORE_FACTORY_DEFAULTS)` | `--rutoken-restore-factory-defaults --rutoken-emitent-key F` | Те же параметры форматирования, кроме ремонтного режима; ключ эмитента — 32 байта из файла, `--rutoken-emitent-key-type kuznyechik\|magma` (по умолчанию Кузнечик), `--rutoken-emitent-key-retries N` (10). Устройство: как `InitToken` плюс ключ эмитента, Кузнечик с 10 попытками принят, около 3,3 с |
 
@@ -387,8 +395,8 @@ Probe 4 (2026-10-17, Рутокен ЭЦП 3.0 3127 USB, библиотека 2.
 | `ChangeVolumeAttributes(slot, владелец, PIN, раздел, режим, bPermanent)` | Отложено с разделами Flash. Постоянное изменение переподключает токен, `slotID` может смениться — токен ищется заново по серийному номеру | `--rutoken-volume-access ID:РЕЖИМ [--rutoken-permanent]` |
 | `FormatDrive(slot, CKU_SO, PIN, layout[], n)` | Отложено с разделами Flash. Стирает Flash, 1–8 разделов, переподключение | `--rutoken-format-drive РАЗМЕР:РЕЖИМ:ВЛАДЕЛЕЦ,...` |
 
-Устаревшие функции остаются в таблице и получают команды
-`--rutoken-legacy-*`, скрытые из краткой справки:
+Устаревшие функции остаются в таблице spy; перечисленные ниже
+`--rutoken-legacy-*` — прежний проект CLI, который пока не реализовывать:
 
 - `LoadActivationKey` — прошивка 20, по матрице не поддерживается ни одной
   моделью.
@@ -538,10 +546,22 @@ PIN; блокировка PIN Пользователя неверными PIN и
 | `InitToken`, сброс к заводским настройкам | С открытой сессией — `CKR_SESSION_EXISTS`; без нее `CKR_OK` за 3,3–3,4 с; объекты и локальные PIN удалены; лицензии, запись журнала и счетчик изменений остались |
 | Ключ с `CKA_VENDOR_CONFIRM_BY_TOUCH` без кнопки | `CKR_TEMPLATE_INCONSISTENT` без команд генерации; объектов `CKH_VENDOR_TOUCH_INTERFACE` нет |
 
-Открыто: режим 4 `TokenManage` при политике с Администратором,
-`SetLicense` под Администратором, `UseRepairMode`, Магма как ключ эмитента,
-имена длиннее 255 байт и аутентификаторы; работа с разделами Flash отложена
-(`PLAN.md`). Команды токена для записи, подписи, хэша, хранения объектов,
+Аппаратный прогон 2026-10-21 подтвердил mode 4 через CLI под SO с политиками
+`admin`/`both`, имена по 256 байт и оба варианта repair с заблокированным
+SO PIN. Первый прямой helper имел неверный ABI, поэтому его результаты под
+USER и сравнения `C_GetTokenInfo.label` были недостоверны. Повторная проба
+штатным helper подтвердила mode 4 под USER с политиками `user`/`both` и
+первые 32 байта метки. Заключительная
+[аппаратная проба](RUTOKEN-PRIVILEGE-CLOSURE-20261023.md) проверила
+исправленный CLI, отрицательные права и сессии, имя до 4096 байт и удаление
+созданного объекта при repair. Подробности — в
+[`RUTOKEN-PRIVILEGE-FOLLOWUP-20261021.md`](RUTOKEN-PRIVILEGE-FOLLOWUP-20261021.md)
+и [`PLAN.md`](PLAN.md). Предел имени на проверенном устройстве остаётся
+неизвестным и составляет не менее 4096 байт. Успешный `SetLicense` под SO
+подтвержден приемкой `.8`;
+повторная запись тестовой лицензии и базовый repair уже проверены.
+Ключи эмитента и CRISP исключены навсегда; Flash, BIO и legacy сейчас не
+исследуются. Команды токена для записи, подписи, хэша, хранения объектов,
 PKCS#7 и изменяющих функций разобраны в `RUTOKEN-APDU.md`.
 
 ## Полевой отчёт (Рутокен ЭЦП 2.0, релиз 0.27.1-portable.5)

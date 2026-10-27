@@ -87,6 +87,9 @@ for arch in arm64 x86_64; do
   # shellcheck disable=SC2086
   clang $arch_flags -I"$root_dir/src" "$root_dir/tests/rutoken-driver.c" \
     -o "$work_dir/rutoken-driver-$arch"
+  clang $arch_flags -I"$root_dir/src" \
+    "$root_dir/tests/rutoken-privilege-probe.c" \
+    -o "$work_dir/rutoken-privilege-probe-$arch"
 done
 
 lipo -create "$work_dir/pkcs11-tool-arm64" "$work_dir/pkcs11-tool-x86_64" \
@@ -98,12 +101,17 @@ lipo -create "$work_dir/rutoken-stub-arm64.dylib" \
   -output "$rutoken_test_dir/rutoken-stub.dylib"
 lipo -create "$work_dir/rutoken-driver-arm64" "$work_dir/rutoken-driver-x86_64" \
   -output "$rutoken_test_dir/rutoken-driver"
+lipo -create "$work_dir/rutoken-privilege-probe-arm64" \
+  "$work_dir/rutoken-privilege-probe-x86_64" \
+  -output "$rutoken_test_dir/rutoken-privilege-probe"
 strip -x "$stage_dir/bin/pkcs11-tool" "$stage_dir/lib/pkcs11-spy.dylib"
 strip -x "$rutoken_test_dir/rutoken-stub.dylib" \
-  "$rutoken_test_dir/rutoken-driver"
+  "$rutoken_test_dir/rutoken-driver" \
+  "$rutoken_test_dir/rutoken-privilege-probe"
 codesign --force --sign - "$stage_dir/bin/pkcs11-tool" "$stage_dir/lib/pkcs11-spy.dylib"
 codesign --force --sign - "$rutoken_test_dir/rutoken-stub.dylib" \
-  "$rutoken_test_dir/rutoken-driver"
+  "$rutoken_test_dir/rutoken-driver" \
+  "$rutoken_test_dir/rutoken-privilege-probe"
 cp "$root_dir/packaging/portable/README.txt" "$stage_dir/README.txt"
 cp "$root_dir/packaging/portable/pkcs11-spy.conf" \
   "$stage_dir/lib/pkcs11-spy.conf"
@@ -120,7 +128,8 @@ for binary in "$stage_dir/bin/pkcs11-tool" "$stage_dir/lib/pkcs11-spy.dylib"; do
 done
 
 for binary in "$rutoken_test_dir/rutoken-stub.dylib" \
-  "$rutoken_test_dir/rutoken-driver"; do
+  "$rutoken_test_dir/rutoken-driver" \
+  "$rutoken_test_dir/rutoken-privilege-probe"; do
   lipo "$binary" -verify_arch arm64 x86_64
 done
 

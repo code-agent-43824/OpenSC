@@ -8,6 +8,8 @@ It contains:
   softhsm-package/  the matching ordinary SoftHSM portable module;
   rutoken-test/     ABI stub and driver for all Rutoken C_EX_* operations;
   test.py           the direct and pkcs11-spy integration scenario;
+  privilege_scenarios.py  noninteractive hardware privilege scenarios;
+  PRIVILEGE-README.md      setup and result interpretation;
   rutoken-cms-tamper-fuzz.py  synthetic PKCS #7 stub-envelope stress test;
   platform.txt      the target selected by the test launcher.
 
@@ -17,11 +19,19 @@ Run it from any directory with the platform Python 3 interpreter:
   Windows:     python test.py
 
 The test creates an isolated temporary home, initializes the bundled SoftHSM
-token, changes its PIN, writes, reads, compares and deletes a data object, then
-repeats the scenario through pkcs11-spy and validates the successful call
-sequence. It first checks the extended table layout and every Rutoken function
+token, changes its PIN, and writes, reads, compares and deletes a data object.
+It checks VKO through pkcs11-tool on GOST-256 and GOST-512 key pairs (including
+CryptoPro diversification) and checks GOST mechanism and key-type names in a
+VKO trace through pkcs11-spy, then repeats the data-object scenario through
+pkcs11-spy and validates the successful call sequence. It first checks the
+extended table layout and every Rutoken function
 pointer, return value and spy-log entry against the bundled harmless stub. The
 temporary token store and spy logs are removed after the run.
+
+The separate privilege_scenarios.py runs on a disposable physical Rutoken
+and its vendor module. It uses the bundled rutoken-test/rutoken-privilege-probe
+for calls that pkcs11-tool does not expose. Read PRIVILEGE-README.md before
+running it. test.py does not run those state-changing hardware scenarios.
 
 The commented opensc-package/lib/pkcs11-spy.conf template is also tested for
 configuration-file priority and fallback to environment variables.

@@ -207,6 +207,8 @@ jobs:
           cp -a softhsm-package/. artifact-testkit/softhsm-package/
           cp -a rutoken-test/. artifact-testkit/rutoken-test/
           cp scripts/portable/test.py artifact-testkit/test.py
+          cp scripts/rutoken/privilege_scenarios.py artifact-testkit/privilege_scenarios.py
+          cp scripts/rutoken/README.md artifact-testkit/PRIVILEGE-README.md
           cp tests/rutoken-cms-tamper-fuzz.py artifact-testkit/rutoken-cms-tamper-fuzz.py
           cp packaging/portable/TEST-KIT-README.txt artifact-testkit/README.txt
           printf '%s\n' 'linux-${{ matrix.arch }}' > artifact-testkit/platform.txt
@@ -257,6 +259,8 @@ jobs:
           Copy-Item softhsm-package\* artifact-testkit\softhsm-package -Recurse
           Copy-Item rutoken-test\* artifact-testkit\rutoken-test -Recurse
           Copy-Item scripts\portable\test.py artifact-testkit\test.py
+          Copy-Item scripts\rutoken\privilege_scenarios.py artifact-testkit\privilege_scenarios.py
+          Copy-Item scripts\rutoken\README.md artifact-testkit\PRIVILEGE-README.md
           Copy-Item tests\rutoken-cms-tamper-fuzz.py artifact-testkit\rutoken-cms-tamper-fuzz.py
           Copy-Item packaging\portable\TEST-KIT-README.txt artifact-testkit\README.txt
           Set-Content -LiteralPath artifact-testkit\platform.txt -Value 'windows-${{ matrix.arch }}' -NoNewline
@@ -298,6 +302,8 @@ jobs:
           cp -a softhsm-package/. artifact-testkit/softhsm-package/
           cp -a rutoken-test/. artifact-testkit/rutoken-test/
           cp scripts/portable/test.py artifact-testkit/test.py
+          cp scripts/rutoken/privilege_scenarios.py artifact-testkit/privilege_scenarios.py
+          cp scripts/rutoken/README.md artifact-testkit/PRIVILEGE-README.md
           cp tests/rutoken-cms-tamper-fuzz.py artifact-testkit/rutoken-cms-tamper-fuzz.py
           cp packaging/portable/TEST-KIT-README.txt artifact-testkit/README.txt
           printf '%s\n' macos-universal > artifact-testkit/platform.txt
@@ -369,12 +375,15 @@ jobs:
                 ;;
               opensc-testkit-*.zip)
                 zipinfo -1 "$archive" | grep -Fx 'test.py' >/dev/null
+                zipinfo -1 "$archive" | grep -Fx 'privilege_scenarios.py' >/dev/null
+                zipinfo -1 "$archive" | grep -Fx 'PRIVILEGE-README.md' >/dev/null
                 zipinfo -1 "$archive" | grep -Fx 'rutoken-cms-tamper-fuzz.py' >/dev/null
                 zipinfo -1 "$archive" | grep -Fx 'platform.txt' >/dev/null
                 zipinfo -1 "$archive" | grep -E '^opensc-package/(bin|lib)/pkcs11-(tool|spy)' >/dev/null
                 zipinfo -1 "$archive" | grep -Fx 'opensc-package/lib/pkcs11-spy.conf' >/dev/null
                 zipinfo -1 "$archive" | grep -E '^softhsm-package/(libsofthsm2|softhsm2)' >/dev/null
                 zipinfo -1 "$archive" | grep -E '^rutoken-test/rutoken-driver(\.exe)?$' >/dev/null
+                zipinfo -1 "$archive" | grep -E '^rutoken-test/rutoken-privilege-probe(\.exe)?$' >/dev/null
                 zipinfo -1 "$archive" | grep -E '^rutoken-test/rutoken-stub\.(so|dylib|dll)$' >/dev/null
                 ;;
             esac
@@ -384,7 +393,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
-          notes='Portable pkcs11-tool and pkcs11-spy packages plus independently downloadable test kits for Linux x64/ARM64, Windows x86/x64/ARM64, and macOS universal. This release frees Rutoken PKCS#7 verify output buffers also on error paths. Each clean runner checks 104 synthetic envelope variants 50 times each, including valid, modified, and truncated data, plus partial-output and failed-update cleanup through pkcs11-spy. These synthetic tests do not prove behavior of the proprietary Rutoken CMS parser or a physical token. The kit also checks the extended Rutoken ABI and direct/spy SoftHSM scenarios.'
+          notes='Portable pkcs11-tool and pkcs11-spy packages plus independently downloadable test kits for Linux x64/ARM64, Windows x86/x64/ARM64, and macOS universal. Each test kit runs the shipped tools with SoftHSM and the Rutoken stub on a clean runner. See docs/HANDOFF.md and docs/PLAN.md at this release tag for the current feature coverage and physical-token results.'
           scripts/portable/check-release-tag.sh
           gh release create "$RELEASE_TAG" release-assets/* \
             --target "$GITHUB_SHA" \

@@ -81,6 +81,77 @@ def scenario(
         raise RuntimeError("deleted data object is still listed")
 
 
+def verify_vko_cli(tool: Path, module: Path, work_dir: Path,
+                   env: Dict[str, str]) -> None:
+    login = ["--token-label", "opensc-direct", "--login", "--pin", "654321"]
+    pairs = (("a", "a101", "GOSTR3410-2012-256:A", 64),
+             ("b", "a102", "GOSTR3410-2012-256:A", 64),
+             ("c", "a103", "GOSTR3410-2012-512:C", 128),
+             ("d", "a104", "GOSTR3410-2012-512:C", 128))
+    for name, key_id, key_type, point_len in pairs:
+        run(tool, module, login + ["--keypairgen", "--key-type", key_type,
+                                  "--usage-derive", "--id", key_id], env)
+        point = work_dir / f"vko-{name}.point"
+        run(tool, module, login + ["--read-object", "--type", "pubkey",
+                                  "--id", key_id, "--output-file", str(point)], env)
+        if point.stat().st_size != point_len:
+            raise RuntimeError(f"VKO {name} public point has the wrong length")
+
+    def derive(name: str, key_id: str, peer: str, kdf: str = "null") -> bytes:
+        output = work_dir / f"vko-{name}-{kdf}.key"
+        arguments = login + [
+            "--derive", "--mechanism", "GOSTR3410-12-DERIVE", "--id", key_id,
+            "--input-file", str(work_dir / f"vko-{peer}.point"),
+            "--vko-ukm", "0102030405060708",
+            "--output-file", str(output),
+        ]
+        if kdf != "null":
+            arguments += ["--vko-kdf", kdf, "--key-type", "GENERIC"]
+        run(tool, module, arguments, env)
+        value = output.read_bytes()
+        if len(value) != 32:
+            raise RuntimeError(f"VKO {name} derived {len(value)} bytes, expected 32")
+        return value
+
+    plain = derive("a", "a101", "b")
+    if plain != derive("b", "a102", "a"):
+        raise RuntimeError("VKO 256-bit peers derived different keys")
+    if derive("a", "a101", "b", "cpdiversify") != derive(
+            "b", "a102", "a", "cpdiversify"):
+        raise RuntimeError("VKO CryptoPro-diversified peers derived different keys")
+    if plain == (work_dir / "vko-a-cpdiversify.key").read_bytes():
+        raise RuntimeError("VKO diversification did not change the key")
+    if derive("c", "a103", "d") != derive("d", "a104", "c"):
+        raise RuntimeError("VKO 512-bit peers derived different keys")
+    print("PASS: pkcs11-tool VKO 256/512-bit and CryptoPro diversification")
+
+
+def verify_vko_spy_names(tool: Path, spy: Path, log_path: Path,
+                         work_dir: Path, env: Dict[str, str]) -> None:
+    login = ["--token-label", "opensc-direct", "--login", "--pin", "654321"]
+    run(tool, spy, login + ["--keypairgen", "--key-type",
+                            "GOSTR3410-2012-512:C", "--usage-derive",
+                            "--id", "a105"], env)
+    for key_id, peer, result_type in (("a103", "d", "KUZNECHIK"),
+                                      ("a101", "b", "MAGMA")):
+        output = work_dir / f"vko-spy-{result_type.lower()}.key"
+        run(tool, spy, login + [
+            "--derive", "--mechanism", "GOSTR3410-12-DERIVE", "--id", key_id,
+            "--input-file", str(work_dir / f"vko-{peer}.point"),
+            "--vko-ukm", "0102030405060708", "--key-type", result_type,
+            "--output-file", str(output),
+        ], env)
+        if output.stat().st_size != 32:
+            raise RuntimeError(f"VKO spy {result_type} result has the wrong length")
+
+    log = log_path.read_text(encoding="utf-8", errors="replace")
+    for name in ("CKM_GOSTR3410_512_KEY_PAIR_GEN", "CKM_GOSTR3410_12_DERIVE",
+                 "CKK_GOSTR3410_512", "CKK_KUZNECHIK", "CKK_MAGMA"):
+        if name not in log:
+            raise RuntimeError(f"pkcs11-spy did not name {name}")
+    print("PASS: pkcs11-spy names GOST VKO mechanisms and key types")
+
+
 def verify_spy_log(log_path: Path) -> None:
     log = log_path.read_text(encoding="utf-8", errors="replace")
     if "OpenSC PKCS#11 spy" not in log or "Loaded:" not in log:
@@ -152,6 +223,63 @@ def verify_rutoken_extensions(
             raise RuntimeError(f"Rutoken spy log has no {function} call")
     if "<redacted>" not in log:
         raise RuntimeError("Rutoken spy log did not redact sensitive input")
+
+
+def verify_privilege_probe(test_dir: Path, platform: str) -> None:
+    if platform.startswith("windows-"):
+        helper = test_dir / "rutoken-privilege-probe.exe"
+        stub = test_dir / "rutoken-stub.dll"
+    elif platform == "macos-universal":
+        helper = test_dir / "rutoken-privilege-probe"
+        stub = test_dir / "rutoken-stub.dylib"
+    else:
+        helper = test_dir / "rutoken-privilege-probe"
+        stub = test_dir / "rutoken-stub.so"
+    if not helper.is_file():
+        raise RuntimeError("Rutoken privilege probe is missing")
+    if not platform.startswith("windows-"):
+        helper.chmod(helper.stat().st_mode | 0o111)
+    env = os.environ.copy()
+    env["RUTOKEN_PROBE_TEST_PIN"] = "12345678"
+    env["RUTOKEN_PROBE_TEST_SO_PIN"] = "87654321"
+    cases = (
+        (["module-info", "none", "ro", "-"], "C_GetInfo", "CKR_OK"),
+        (["token-label", "none", "ro", "-"], "C_GetTokenInfo", "CKR_OK"),
+        (["object-count", "user", "ro", "RUTOKEN_PROBE_TEST_PIN"],
+         "C_FindObjects", "CKR_OK"),
+        (["reset-user-pin", "none", "rw", "-"],
+         "C_EX_TokenManage", "CKR_USER_NOT_LOGGED_IN"),
+        (["reset-user-pin", "user", "rw", "RUTOKEN_PROBE_TEST_PIN"],
+         "C_EX_TokenManage", "CKR_OK"),
+        (["reset-user-pin", "so", "rw", "RUTOKEN_PROBE_TEST_SO_PIN"],
+         "C_EX_TokenManage", "CKR_USER_NOT_LOGGED_IN"),
+        (["set-license", "none", "rw", "-", "1"],
+         "C_EX_SetLicense", "CKR_USER_NOT_LOGGED_IN"),
+        (["set-license", "user", "ro", "RUTOKEN_PROBE_TEST_PIN", "1"],
+         "C_EX_SetLicense", "CKR_SESSION_READ_ONLY"),
+        (["set-name", "none", "rw", "-", "probe"],
+         "C_EX_SetTokenName", "CKR_USER_NOT_LOGGED_IN"),
+    )
+    for arguments, stage, rv in cases:
+        result = subprocess.run(
+            [str(helper), str(stub), "7", *arguments], env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, errors="replace",
+        )
+        if result.returncode:
+            raise RuntimeError("Rutoken privilege probe failed: " + result.stderr)
+        data = json.loads(result.stdout)
+        if data.get("stage") != stage or data.get("rv") != rv:
+            raise RuntimeError(
+                f"Rutoken privilege probe {arguments[0]} "
+                f"{arguments[1]}/{arguments[2]}: expected {stage}/{rv}, "
+                f"got {data.get('stage')}/{data.get('rv')}"
+            )
+        if arguments[0] == "module-info" and not data.get("module_version"):
+            raise RuntimeError("Rutoken privilege probe omitted the module version")
+        if arguments[0] == "object-count" and "object_count" not in data:
+            raise RuntimeError("Rutoken privilege probe omitted the object count")
+    print("PASS: Rutoken privilege probe returns direct role/session results")
 
 
 def verify_rutoken_cli(
@@ -298,7 +426,9 @@ def verify_rutoken_cli(
                      "env:RUTOKEN_TEST_NEW_USER_PIN", "--rutoken-info"], 0,
          "USER_PIN_NOT_DEFAULT"),
         (so_login + ["--rutoken-token-manage", "reset-user-pin"], 1,
-         "TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN)"),
+         "TOKEN_FLAGS_USER_CHANGE_USER_PIN or SO with TOKEN_FLAGS_ADMIN_CHANGE_USER_PIN"),
+        (login + ["--rutoken-token-manage", "reset-user-pin"], 0,
+         "Rutoken token manage reset-user-pin: done"),
         (["--rutoken-init-token", "--so-pin", "env:RUTOKEN_TEST_SO_PIN",
           *new_pins, "--label", "Stage 5"], 0,
          'label              : "Stage 5"'),
@@ -314,6 +444,14 @@ def verify_rutoken_cli(
         if expected not in output:
             print(output, end="")
             raise RuntimeError(f"pkcs11-tool Rutoken output lacks: {expected}")
+
+    long_name = "A" * 4096
+    long_name_result = json.loads(tool_output(
+        login + ["--rutoken-set-name", long_name, "--rutoken-name",
+                 "--rutoken-json"]))
+    if (long_name_result.get("set_name", {}).get("length") != 4096 or
+            long_name_result.get("name", {}).get("label") != long_name):
+        raise RuntimeError("pkcs11-tool did not round-trip a 4096-byte Rutoken name")
 
     log = log_path.read_text(encoding="utf-8", errors="replace")
     if "CKR_GENERAL_ERROR" in log:
@@ -409,18 +547,19 @@ def verify_rutoken_cli(
                         + base64.encodebytes(spki).decode("ascii")
                         + "-----END PUBLIC KEY-----\n", encoding="ascii")
     derived = work_dir / "rutoken-vko.bin"
-    derive = login + ["--derive", "--id", "0102", "--output-file", str(derived)]
+    derive = login + ["--derive", "--id", "0102", "--output-file", str(derived),
+                      "-m", "GOSTR3410-12-DERIVE"]
     for peer in (peer_raw, peer_pem):
-        tool_output(derive + ["-m", "GOSTR3410-12-DERIVE", "--gost-ukm",
-                              "0102030405060708", "--input-file", str(peer)])
+        tool_output(derive + ["--vko-ukm", "0102030405060708",
+                              "--input-file", str(peer)])
         if derived.read_bytes() != kek_256:
             raise RuntimeError(f"GOST VKO from {peer.name} differs from TC26 3.13")
     for kdf in ("4357", "cpdiversify", "gostr3411-2012-256"):
-        tool_output(derive + ["--gost-kdf", kdf, "--gost-ukm", "0102030405060708",
+        tool_output(derive + ["--vko-kdf", kdf, "--vko-ukm", "0102030405060708",
                               "--input-file", str(peer_raw), "--key-type", "KUZNECHIK"])
         if len(derived.read_bytes()) != 32:
-            raise RuntimeError(f"GOST VKO with --gost-kdf {kdf} is not 32 bytes")
-    if "needs --gost-ukm" not in tool_output(
+            raise RuntimeError(f"GOST VKO with --vko-kdf {kdf} is not 32 bytes")
+    if "requires --input-file and --vko-ukm" not in tool_output(
             derive + ["--input-file", str(peer_raw)], expected_code=1):
         raise RuntimeError("pkcs11-tool GOST derive without UKM did not fail")
     rfc_peer = work_dir / "rutoken-vko-rfc.raw"
@@ -429,7 +568,7 @@ def verify_rutoken_cli(
     env_512["RUTOKEN_STUB_GOST512"] = "1"
     result = subprocess.run(
         [str(tool), "--module", str(spy), "--slot", "7", *derive,
-         "-m", "VKO-GOSTR3410-12-512", "--gost-ukm", "1d80603c8544c727",
+         "-m", "VKO-GOSTR3410-12-512", "--vko-ukm", "1d80603c8544c727",
          "--input-file", str(rfc_peer)],
         env=env_512, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
     )
@@ -536,6 +675,7 @@ def main() -> None:
 
         if rutoken_test_dir is not None:
             verify_rutoken_extensions(rutoken_test_dir, spy, platform, work_dir)
+            verify_privilege_probe(rutoken_test_dir, platform)
             verify_rutoken_cli(tool, spy, rutoken_test_dir, platform, work_dir, env)
             if platform.startswith("windows-"):
                 rutoken_stub = rutoken_test_dir / "rutoken-stub.dll"
@@ -555,9 +695,14 @@ def main() -> None:
             verify_spy_config(tool, spy, softhsm, work_dir, env)
 
         scenario(tool, softhsm, work_dir, "direct", env)
+        verify_vko_cli(tool, softhsm, work_dir, env)
+
+        env["PKCS11SPY"] = str(softhsm)
+        vko_spy_log = work_dir / "pkcs11-spy-vko.log"
+        env["PKCS11SPY_OUTPUT"] = str(vko_spy_log)
+        verify_vko_spy_names(tool, spy, vko_spy_log, work_dir, env)
 
         spy_log = work_dir / "pkcs11-spy.log"
-        env["PKCS11SPY"] = str(softhsm)
         env["PKCS11SPY_OUTPUT"] = str(spy_log)
         scenario(tool, spy, work_dir, "spy", env)
         verify_spy_log(spy_log)

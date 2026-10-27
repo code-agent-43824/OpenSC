@@ -74,8 +74,11 @@ cc -shared -fPIC -I"$root_dir/src" "$root_dir/tests/rutoken-stub.c" \
   -o "$rutoken_test_dir/rutoken-stub.so"
 cc -I"$root_dir/src" "$root_dir/tests/rutoken-driver.c" \
   -o "$rutoken_test_dir/rutoken-driver" -ldl
+cc -I"$root_dir/src" "$root_dir/tests/rutoken-privilege-probe.c" \
+  -o "$rutoken_test_dir/rutoken-privilege-probe" -ldl
 strip --strip-unneeded "$rutoken_test_dir/rutoken-stub.so" \
-  "$rutoken_test_dir/rutoken-driver"
+  "$rutoken_test_dir/rutoken-driver" \
+  "$rutoken_test_dir/rutoken-privilege-probe"
 
 for binary in "$stage_dir/bin/pkcs11-tool" "$stage_dir/lib/pkcs11-spy.so"; do
   if ldd "$binary" | grep -Eq 'lib(crypto|ssl|opensc|pkcs11)'; then
