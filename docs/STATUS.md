@@ -345,3 +345,16 @@ Portable workflow в режиме `verify_only` для `9eaa156`
 (<https://github.com/code-agent-43824/OpenSC/actions/runs/40652577084>)
 зелёный: шесть сборок и шесть проверок test kit на чистых runner, включая
 `test.py` с последним SoftHSM-форком; публикация пропущена.
+
+## Релиз `.13` (2026-10-28)
+
+Ветка VKO слита в `master` fast-forward (`6e94d4c`), релиз
+[`0.27.1-portable.13`](https://github.com/code-agent-43824/OpenSC/releases/tag/0.27.1-portable.13)
+выпущен workflow
+<https://github.com/code-agent-43824/OpenSC/actions/runs/40657737860>: шесть
+сборок, шесть проверок на чистых runner, публикация. Все 12 ZIP скачаны
+заново: SHA-256 совпали с `SHA256SUMS`, архивы целы, вложенных ZIP нет;
+`pkcs11-tool --help` и README описывают новые KDF. Linux x64 test kit
+повторно прошёл вне CI (7 PASS, включая VKO на SoftHSM-форке и эталоны на
+заглушке). Probe 5 пересобран zig для Linux x86_64/aarch64 (glibc 2.17) и
+передан владельцу файлом.

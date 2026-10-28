@@ -46,6 +46,15 @@ USER и SO PIN успешны. Проверены отрицательные п�
 Никогда не включать в будущую работу ключи эмитента и CRISP. Старые пункты
 ниже описывают уже сделанное, а не возобновляют эти направления.
 
+- Релиз `.13`: <https://github.com/code-agent-43824/OpenSC/releases/tag/0.27.1-portable.13>
+  (workflow <https://github.com/code-agent-43824/OpenSC/actions/runs/40657737860>,
+  `master` `6e94d4c`). VKO дополнен: `--vko-kdf 4357` и
+  `gostr3411-2012-256`, `-m VKO-GOSTR3410-12-512` с GENERIC/MAGMA-TWIN/
+  KUZNECHIK-TWIN, открытый ключ в OCTET STRING и SPKI DER/PEM. Все 12 ZIP
+  скачаны заново, хэши совпали с `SHA256SUMS`, вложенных ZIP нет; Linux x64
+  test kit повторно прошёл вне CI. На устройстве новое ещё не проверено;
+  probe 5 передан владельцу файлом, отдельный GitHub-релиз для него не
+  создавался.
 - Релиз `.11`: <https://github.com/code-agent-43824/OpenSC/releases/tag/0.27.1-portable.11>
   (workflow <https://github.com/code-agent-43824/OpenSC/actions/runs/39276164329>).
   (`pkcs11-spy` теперь показывает имена типов ключей ГОСТ-512, KUZNECHIK,
