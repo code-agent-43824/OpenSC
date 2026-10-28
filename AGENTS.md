@@ -24,6 +24,9 @@
   CRISP: ни реализацию, ни исследования, ни аппаратные пробы. Существующую
   команду сброса с ключом эмитента не расширять; историческое описание ее
   реализации не является задачей.
+- Вся работа ведется в `master`; других веток в репозитории быть не должно.
+  Если среда требует отдельную ветку, ее изменения сразу переносятся в
+  `master` (fast-forward), а ветка удаляется.
 
 Welcome, autonomous agents. If you are analyzing the OpenSC repository, finding bugs, or preparing to submit
 an issue or pull request, you MUST adhere strictly to the following rules:
