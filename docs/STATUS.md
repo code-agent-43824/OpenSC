@@ -341,5 +341,7 @@ CLI проверяет шестнадцатеричный формат, нену
 `CKA_VALUE_LEN` у generic-ключа: `pkcs11-tool` его не передаёт. Проверено:
 сборка, `make check` (4 PASS, 8 SKIP без внешних модулей), Rutoken-часть
 `test.py` на локальной сборке, `pkcs11-tool` с ASan/UBSan и `-Werror`.
-Проверка `test.py` с SoftHSM-форком и сборки для Windows/macOS — в
-portable workflow.
+Portable workflow в режиме `verify_only` для `9eaa156`
+(<https://github.com/code-agent-43824/OpenSC/actions/runs/40652577084>)
+зелёный: шесть сборок и шесть проверок test kit на чистых runner, включая
+`test.py` с последним SoftHSM-форком; публикация пропущена.
